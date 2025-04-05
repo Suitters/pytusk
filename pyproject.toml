@@ -1,0 +1,63 @@
+# pyproject.toml
+[tool.pytest.ini_options]
+testpaths = ["tests", "tests/sync_tests", "tests/integration_sync"]
+pythonpath = ["pytusk"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel","setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pytusk"
+
+description = "Walrush client Python SDK"
+requires-python = ">=3.11"
+keywords = ["software development kit", "sui", "blockchain"]
+license = { text = "Apache-2.0" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Libraries",
+    "Programming Language :: Python",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3 :: Only",
+]
+
+dependencies = [
+]
+
+dynamic = ["version", "readme"]
+
+
+[project.scripts]
+
+[tool.setuptools.packages.find]
+
+
+exclude = [
+    "out*",
+    "temp*",
+    "test*",
+    "tools*",
+    "build*",
+    "doc*",
+    "images*",
+]
+
+
+[tool.setuptools.dynamic]
+version = { attr = "pytusk.version.__version__" }
+readme = { file = ["README.md"], content-type = "text/markdown" }
+
+[tool.setuptools.package-data]
+mypkg = ["*.json"]
+
+[project.urls]
+# changelog = "https://github.com/FrankC01/pysui/blob/main/CHANGELOG.md"
+# repository = "https://github.com/FrankC01/pysui"
+# issues = "https://github.com/FrankC01/pysui/issues"
+# documentation = "https://pysui.readthedocs.io"
