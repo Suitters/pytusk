@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pytusk"
 
-description = "Walrush client Python SDK"
+description = "Walrus client Python SDK"
 requires-python = ">=3.11"
 keywords = ["software development kit", "sui", "blockchain"]
 license = { text = "Apache-2.0" }
