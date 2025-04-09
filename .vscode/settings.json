@@ -1,0 +1,14 @@
+{
+    "pylint.args": [
+        "--max-line-length",
+        "90",
+        // This is because of false positive in create_new_address of sui_crypto.py
+        "--disable",
+        "unpacking-non-sequence",
+      ],
+    "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true,
+    },
+    
+}

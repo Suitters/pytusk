@@ -3,5 +3,4 @@
 
 # -*- coding: utf-8 -*-
 
-"""Pytusk package."""
-
+"""Pytusk operations."""

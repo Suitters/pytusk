@@ -1,7 +1,14 @@
+
+# macos
+
 .DS_Store
 
+# Distribution
 build/
 dist/
 pytusk.egg-info/
 
+# Development
 Pipfile.lock
+openapi.json
+test_*.py
