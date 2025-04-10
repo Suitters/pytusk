@@ -5,6 +5,9 @@
 
 """Pytusk Walrus clients."""
 
+from typing import Optional
+from json import JSONDecodeError
+import httpx
 from pysui.sui.sui_clients.async_client import SuiClient
 from pysui.sui.sui_config import SuiConfig
 
@@ -25,4 +28,56 @@ class ClientAsync:
             rpc_url=tgroup.active_profile.url,
             prv_keys=[akp],
         )
-        self.sui_client = SuiClient(pysui_cfg)
+        self._sui_client = SuiClient(pysui_cfg)
+        self._httpx = self._sui_client._client
+
+    @property
+    def sui_client(self) -> SuiClient:
+        """Get underlying pysui client."""
+        return self._sui_client
+
+    async def get_blob(self, *, blob_id) -> bytes:
+        """Get's a blob by ID."""
+        url = f"{self.config.aggregator_url}/v1/blobs/{blob_id}"
+        try:
+            result = await self._httpx.get(url)
+            return result.content
+        except (
+            httpx.HTTPError,
+            httpx.InvalidURL,
+            httpx.CookieConflict,
+        ) as hexc:
+            raise ValueError(f"HTTPX error: {hexc.__class__.__name__} -> {vars(hexc)}")
+
+    async def put_blob(
+        self,
+        *,
+        data: bytes,
+        deletable: Optional[bool] = False,
+        sends_to: Optional[str] = None,
+    ) -> dict:
+        """Get's a blob by ID."""
+        url = f"{self.config.publisher_url}/v1/blobs"
+        headers = {"Content-Type": "application/octet-stream"}
+        params = {}
+        # if encoding_type is not None:
+        #     params["encoding_type"] = encoding_type
+        # if epochs is not None:
+        #     params["epochs"] = str(epochs)
+        if deletable is not None:
+            params["deletable"] = "true" if deletable else "false"
+        if sends_to is not None:
+            params["send_object_to"] = sends_to
+        try:
+            result = await self._httpx.put(
+                url, data=data, params=params, headers=headers
+            )
+            return result.json()
+        except JSONDecodeError as jexc:
+            raise ValueError(f"JSON Decoder Error: {jexc.msg}")
+        except (
+            httpx.HTTPError,
+            httpx.InvalidURL,
+            httpx.CookieConflict,
+        ) as hexc:
+            raise ValueError(f"HTTPX error: {hexc.__class__.__name__} -> {vars(hexc)}")

@@ -31,7 +31,6 @@ class PytuskConfiguration:
         walrus_config_path: Optional[str] = None,
     ):
         """."""
-
         self._pysui_config: PysuiConfiguration = pysui_config
         # Get the walrus config
         self._walrus_cfg_path = Path(
@@ -40,6 +39,18 @@ class PytuskConfiguration:
         self._walrus_config: WalrusConfig = load_from_yaml(
             self._walrus_cfg_path, pysui_config
         )
+        self._aggregator: str = None
+        self._publisher: str = None
+
+    @property
+    def publisher_url(self) -> str:
+        """."""
+        return "https://publisher.walrus-testnet.walrus.space"
+
+    @property
+    def aggregator_url(self) -> str:
+        """."""
+        return "https://aggregator.walrus-testnet.walrus.space"
 
     @property
     def walrus_config(self) -> WalrusConfig:
