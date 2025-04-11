@@ -1,5 +1,5 @@
 """"""""""""""""""""""""""""""
-pytusk - Walrus and SEAL SDK
+pytusk - Walrus and SEAL SDK (ALPHA)
 """"""""""""""""""""""""""""""
 
 A python SDK for building interactions with Walrus storage management. 
