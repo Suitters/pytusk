@@ -1,0 +1,99 @@
+#    Copyright Frank V. Castellucci
+#    SPDX-License-Identifier: Apache-2.0
+
+# -*- coding: utf-8 -*-
+
+"""Walrus write commands (Sprint 2)."""
+
+import dataclasses
+
+from typing import Any
+
+import httpx
+from pysui import SuiRpcResult
+
+from pytusk.commands.walrus_command import (
+    WalrusCommand,
+    BlobReceipt,
+    QuiltReceipt,
+)
+
+
+@dataclasses.dataclass(kw_only=True)
+class StoreBlob(WalrusCommand):
+    """Store a blob on Walrus.
+
+    PUT {publisher}/v1/blobs
+
+    Args:
+        data (bytes): Raw blob content to store.
+        epochs (int): Number of epochs to store the blob for.
+        deletable (bool): If True, the blob may be deleted before expiry.
+    """
+
+    data: bytes
+    epochs: int
+    deletable: bool = dataclasses.field(default=False)
+
+    def http_method(self) -> str:
+        return "PUT"
+
+    def url_path(self, base_url: str) -> str:
+        return f"{base_url}/v1/blobs"
+
+    def query_params(self) -> dict[str, Any]:
+        return {"epochs": self.epochs, "deletable": str(self.deletable).lower()}
+
+    def request_body(self) -> bytes | None:
+        return self.data
+
+    def parse_response(self, response: httpx.Response) -> SuiRpcResult:
+        if response.is_error:
+            return SuiRpcResult(False, response.text)
+        data = response.json()
+        receipt = BlobReceipt(
+            blob_id=data.get("blobId", ""),
+            cost=data.get("cost", 0),
+            expiry_epoch=data.get("endEpoch", 0),
+            deletable=self.deletable,
+        )
+        return SuiRpcResult(True, "", receipt)
+
+
+@dataclasses.dataclass(kw_only=True)
+class StoreQuilt(WalrusCommand):
+    """Store a quilt (collection of named blobs) on Walrus.
+
+    POST {publisher}/v1/quilts
+
+    Args:
+        files (dict[str, bytes]): Mapping of patch key to raw file content.
+        epochs (int): Number of epochs to store the quilt for.
+    """
+
+    files: dict[str, bytes]
+    epochs: int
+
+    def http_method(self) -> str:
+        return "POST"
+
+    def url_path(self, base_url: str) -> str:
+        return f"{base_url}/v1/quilts"
+
+    def query_params(self) -> dict[str, Any]:
+        return {"epochs": self.epochs}
+
+    def form_files(self) -> dict[str, bytes] | None:
+        return self.files
+
+    def parse_response(self, response: httpx.Response) -> SuiRpcResult:
+        if response.is_error:
+            return SuiRpcResult(False, response.text)
+        data = response.json()
+        receipt = QuiltReceipt(
+            quilt_id=data.get("quiltId", ""),
+            patch_keys=data.get("patchKeys", []),
+            cost=data.get("cost", 0),
+            expiry_epoch=data.get("endEpoch", 0),
+        )
+        return SuiRpcResult(True, "", receipt)

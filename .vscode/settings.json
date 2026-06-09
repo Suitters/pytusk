@@ -4,7 +4,7 @@
         "90",
         // This is because of false positive in create_new_address of sui_crypto.py
         "--disable",
-        "unpacking-non-sequence",
+        "unpacking-non-sequence,C0301",
       ],
     "autoDocstring.docstringFormat": "google",
     "autoDocstring.generateDocstringOnEnter": true,
@@ -14,5 +14,6 @@
       "editor.defaultFormatter": "ms-python.black-formatter",
       "editor.formatOnSave": true,
     },
+    "python-envs.defaultEnvManager": "ms-python.python:pipenv",
     
 }

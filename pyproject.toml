@@ -57,3 +57,6 @@ pytusk = ["*.json"]
 
 [project.urls]
 repository = "https://github.com/Suitters/pytusk"
+
+[tool.pyright]
+reportMissingTypeStubs = false
