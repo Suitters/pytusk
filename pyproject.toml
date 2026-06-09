@@ -1,6 +1,6 @@
 # pyproject.toml
 [tool.pytest.ini_options]
-testpaths = ["tests", "tests/sync_tests", "tests/integration_sync"]
+testpaths = ["tests"]
 pythonpath = ["pytusk"]
 
 [build-system]
@@ -28,6 +28,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "pysui >= 1.0.0"
 ]
 
 dynamic = ["version", "readme"]
@@ -36,8 +37,6 @@ dynamic = ["version", "readme"]
 [project.scripts]
 
 [tool.setuptools.packages.find]
-
-
 exclude = [
     "out*",
     "temp*",
@@ -51,13 +50,10 @@ exclude = [
 
 [tool.setuptools.dynamic]
 version = { attr = "pytusk.version.__version__" }
-readme = { file = ["README.md"], content-type = "text/markdown" }
+readme = { file = ["README.rst"], content-type = "text/x-rst" }
 
 [tool.setuptools.package-data]
-mypkg = ["*.json"]
+pytusk = ["*.json"]
 
 [project.urls]
-# changelog = "https://github.com/FrankC01/pysui/blob/main/CHANGELOG.md"
-# repository = "https://github.com/FrankC01/pysui"
-# issues = "https://github.com/FrankC01/pysui/issues"
-# documentation = "https://pysui.readthedocs.io"
+repository = "https://github.com/Suitters/pytusk"

@@ -3,6 +3,11 @@
 
 .DS_Store
 
+# Claude
+CLAUDE.md
+memory
+.claude
+
 # Distribution
 build/
 dist/
