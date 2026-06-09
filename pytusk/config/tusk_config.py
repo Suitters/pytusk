@@ -18,7 +18,13 @@ class PytuskConfiguration:
         walrus_aggregator: str | None = None,
         walrus_publisher: str | None = None,
     ):
-        """Initialize core walrus properties."""
+        """Initializer.
+
+        Args:
+            pysui_config (PysuiConfiguration): Base pysui configuration object
+            walrus_aggregator (str | None, optional): Identifies the walrus aggregator URL. Defaults to None.
+            walrus_publisher (str | None, optional): Identifies the walrus publisher URL. Defaults to None.
+        """
         self._pysui_config: PysuiConfiguration = pysui_config
         # Set the walrus configs publisher and aggregator
         self._aggregator: str = walrus_aggregator
@@ -26,15 +32,31 @@ class PytuskConfiguration:
 
     @property
     def publisher_url(self) -> str:
-        """."""
+        """Returns the publisher URL.
+
+        Publishers `put` blobs on Walrus
+
+        Returns:
+            str: Publisher URL
+        """
         return self._publisher
 
     @property
     def aggregator_url(self) -> str:
-        """."""
+        """Returns the aggregator URL.
+
+        Aggregators `get` blobs on Walrus
+
+        Returns:
+            str: Aggregator URL
+        """
         return self._aggregator
 
     @property
     def pysui_config(self) -> PysuiConfiguration:
-        """Fetch pysui config."""
+        """Get the underlyting pysui configuration
+
+        Returns:
+            PysuiConfiguration: Underlyting keys and provider URLs
+        """
         return self._pysui_config

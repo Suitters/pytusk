@@ -6,8 +6,10 @@
 """Pytusk Walrus clients."""
 
 from typing import Optional
+import base64
 from json import JSONDecodeError
 import httpx
+from pysui import ObjectID
 from pysui.sui.sui_clients.async_client import SuiClient, SuiRpcResult
 from pysui.sui.sui_config import SuiConfig
 
@@ -52,6 +54,27 @@ class ClientAsync:
             return SuiRpcResult(
                 False, f"HTTPX error: {hexc.__class__.__name__} -> {vars(hexc)}"
             )
+
+    def _num_to_blob_id(self, blob_id_num):
+        """."""
+        extracted_bytes = []
+        for _ in range(32):
+            extracted_bytes += [blob_id_num & 0xFF]
+            blob_id_num = blob_id_num >> 8
+        assert blob_id_num == 0
+        blob_id_bytes = bytes(extracted_bytes)
+        encoded = base64.urlsafe_b64encode(blob_id_bytes)
+        return encoded.decode("ascii").strip("=")
+
+    async def get_blob_from_sui(self, *, sui_blob_object_id: str):
+        """."""
+        result = await self._sui_client.get_object(ObjectID(sui_blob_object_id))
+        if result.is_ok():
+            b_id = self._num_to_blob_id(
+                int(result.result_data.content.fields["blob_id"])
+            )
+            return await self.get_blob(blob_id=b_id)
+        return result
 
     async def put_blob(
         self,
