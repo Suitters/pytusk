@@ -144,7 +144,7 @@ class ConcatBlobs(WalrusCommand):
         return f"{base_url}/v1alpha/blobs/concat"
 
     def query_params(self) -> dict[str, Any]:
-        return {"ids": self.ids}
+        return {"ids": ",".join(self.ids)}
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
         if response.is_error:

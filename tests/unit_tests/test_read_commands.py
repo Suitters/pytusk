@@ -160,7 +160,7 @@ class TestConcatBlobs:
     def test_query_params(self) -> None:
         cmd = ConcatBlobs(ids=["id1", "id2", "id3"])
         params = cmd.query_params()
-        assert params["ids"] == ["id1", "id2", "id3"]
+        assert params["ids"] == "id1,id2,id3"
 
     def test_request_body_none(self) -> None:
         assert ConcatBlobs(ids=["a"]).request_body() is None
