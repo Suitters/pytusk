@@ -12,6 +12,7 @@ from pytusk.config.tusk_config import (
     WalrusNetworkConfig,
     PytuskConfigModel,
     PytuskConfiguration,
+    NetworkType,
 )
 
 # Client
@@ -45,6 +46,7 @@ from pytusk.commands.write_commands import (
 __all__ = [
     "__version__",
     # Configuration
+    "NetworkType",
     "WalrusNetworkConfig",
     "PytuskConfigModel",
     "PytuskConfiguration",

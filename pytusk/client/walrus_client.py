@@ -134,6 +134,13 @@ class WalrusClient(AsyncClientBase):
             SuiRpcResult: Parsed result from command.parse_response().
         """
         method = command.http_method()
+        if method != "GET" and not self._network.walrus_publisher:
+            raise ValueError(
+                "No publisher URL is configured for this network. "
+                "Mainnet has no public unauthenticated publisher. "
+                "Set walrus_publisher to a community publisher endpoint "
+                "from https://docs.wal.app/docs/network-reference or run your own."
+            )
         base_url = (
             self._network.walrus_aggregator
             if method == "GET"

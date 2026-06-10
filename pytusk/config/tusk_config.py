@@ -6,15 +6,23 @@
 """Pytusk configuration."""
 
 import dataclasses
+import enum
 import shutil
 from pathlib import Path
 from typing import Any
 
 from dataclasses_json import DataClassJsonMixin
 
+class NetworkType(enum.StrEnum):
+    """Indicates whether a network configuration targets a test or production environment."""
+
+    TEST = "test"
+    PRODUCTION = "production"
+
+
+_RESERVED_NETWORKS: frozenset[str] = frozenset({"testnet", "mainnet"})
 _DEFAULT_CONFIG_DIR: str = "~/.pytusk"
 _CONFIG_FILENAME: str = "PytuskConfig.json"
-_SUPPORTED_NETWORKS: frozenset[str] = frozenset({"testnet", "mainnet"})
 
 _DEFAULT_NETWORKS: list[dict[str, Any]] = [
     {
@@ -31,6 +39,7 @@ _DEFAULT_NETWORKS: list[dict[str, Any]] = [
             "0x83b454e524c71f30803f4d6c302a86fb6a39e96cdfb873c2d1e93bc1c26a3bc5",
             "0x8d63209cf8589ce7aef8f262437163c67577ed09f3e636a9d8e0813843fb8bf1",
         ],
+        "network_type": "test",
     },
     {
         "network_name": "mainnet",
@@ -41,6 +50,7 @@ _DEFAULT_NETWORKS: list[dict[str, Any]] = [
         "system_object": "0x2134d52768ea07e8c43570ef975eb3e4c27a39fa6396bef985b5abc58d03ddd2",
         "staking_object": "0x10b9d30c28448939ce6c4d6c6e0ffce4a7f8a4ada8248bdad09ef8b70e4a3904",
         "exchange_objects": [],
+        "network_type": "production",
     },
 ]
 
@@ -58,6 +68,7 @@ class WalrusNetworkConfig(DataClassJsonMixin):
         system_object (str): Walrus system object ID on-chain.
         staking_object (str): Walrus staking object ID on-chain.
         exchange_objects (list[str]): Walrus exchange object IDs for SUI->WAL swap (testnet only).
+        network_type (NetworkType): Whether this network is TEST or PRODUCTION. Defaults to TEST.
     """
 
     network_name: str = dataclasses.field(default="")
@@ -68,6 +79,7 @@ class WalrusNetworkConfig(DataClassJsonMixin):
     system_object: str = dataclasses.field(default="")
     staking_object: str = dataclasses.field(default="")
     exchange_objects: list[str] = dataclasses.field(default_factory=list)
+    network_type: NetworkType = dataclasses.field(default=NetworkType.TEST)
 
 
 @dataclasses.dataclass
@@ -122,8 +134,8 @@ class PytuskConfiguration:
         Args:
             from_cfg_path (str | None): Directory containing PytuskConfig.json.
                 Defaults to ~/.pytusk/.
-            active_network (str | None): Override the active network. Must be
-                'testnet' or 'mainnet'.
+            active_network (str | None): Override the active network. Must match
+                a network_name present in the loaded configuration.
             persist (bool): If True, persist any overrides back to the config file.
 
         Raises:
@@ -140,11 +152,20 @@ class PytuskConfiguration:
             self._model = self._default_model()
             self._write_model(cfg_dir)
 
+        loaded_names = {n.network_name for n in self._model.networks}
+        missing = _RESERVED_NETWORKS - loaded_names
+        if missing:
+            raise ValueError(
+                f"Configuration is missing required network(s): {sorted(missing)}. "
+                "The 'testnet' and 'mainnet' entries must always be present."
+            )
+
         if active_network is not None:
-            if active_network not in _SUPPORTED_NETWORKS:
+            known = {n.network_name for n in self._model.networks}
+            if active_network not in known:
                 raise ValueError(
-                    f"Unsupported network '{active_network}'. "
-                    f"Must be one of {sorted(_SUPPORTED_NETWORKS)}."
+                    f"Unknown network '{active_network}'. "
+                    f"Must be one of {sorted(known)}."
                 )
             self._model.active_network = active_network
 
@@ -236,18 +257,65 @@ class PytuskConfiguration:
         """Set the active network.
 
         Args:
-            network (str): Network name ('testnet' or 'mainnet').
+            network (str): Network name. Must match a network_name in the loaded configuration.
             persist (bool): If True, persist the change to the config file.
 
         Raises:
-            ValueError: If network is not a supported network.
+            ValueError: If network is not present in the loaded configuration.
         """
-        if network not in _SUPPORTED_NETWORKS:
+        known = {n.network_name for n in self._model.networks}
+        if network not in known:
             raise ValueError(
-                f"Unsupported network '{network}'. "
-                f"Must be one of {sorted(_SUPPORTED_NETWORKS)}."
+                f"Unknown network '{network}'. "
+                f"Must be one of {sorted(known)}."
             )
         self._model.active_network = network
+        if persist:
+            self._write_model(self._cfg_dir)
+
+    def add_network(self, network: WalrusNetworkConfig, *, persist: bool = False) -> None:
+        """Add or replace a network configuration entry.
+
+        If a network with the same network_name already exists it is replaced.
+
+        Args:
+            network (WalrusNetworkConfig): Network configuration to add or replace.
+            persist (bool): If True, persist the change to the config file.
+        """
+        if network.network_name in _RESERVED_NETWORKS:
+            raise ValueError(
+                f"Network name '{network.network_name}' is reserved. "
+                "The built-in testnet and mainnet entries cannot be replaced."
+            )
+        self._model.networks = [
+            n for n in self._model.networks if n.network_name != network.network_name
+        ]
+        self._model.networks.append(network)
+        if persist:
+            self._write_model(self._cfg_dir)
+
+    def remove_network(self, network_name: str, *, persist: bool = False) -> None:
+        """Remove a user-defined network configuration entry.
+
+        Args:
+            network_name (str): Name of the network to remove.
+            persist (bool): If True, persist the change to the config file.
+
+        Raises:
+            ValueError: If network_name is 'testnet' or 'mainnet' (reserved).
+            ValueError: If network_name is not found in the configuration.
+        """
+        if network_name in _RESERVED_NETWORKS:
+            raise ValueError(
+                f"Network '{network_name}' is reserved and cannot be removed."
+            )
+        if not any(n.network_name == network_name for n in self._model.networks):
+            raise ValueError(
+                f"Network '{network_name}' not found in configuration."
+            )
+        self._model.networks = [
+            n for n in self._model.networks if n.network_name != network_name
+        ]
         if persist:
             self._write_model(self._cfg_dir)
 
