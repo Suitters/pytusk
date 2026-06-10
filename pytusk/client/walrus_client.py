@@ -9,7 +9,12 @@ import types
 from typing import Any, ClassVar
 
 import httpx
-from pysui import AsyncClientBase, PysuiConfiguration, SuiRpcResult, client_factory
+from pysui import (
+    AsyncClientBase,
+    PysuiClient,
+    SuiRpcResult,
+    client_factory,
+)
 
 from pytusk.commands.walrus_command import WalrusCommand
 from pytusk.config.tusk_config import PytuskConfiguration, WalrusNetworkConfig
@@ -32,6 +37,7 @@ class WalrusClient(AsyncClientBase):
     """
 
     _protocol: ClassVar[str] = "walrus-http"
+    _pytusk_config: PytuskConfiguration
     _network: WalrusNetworkConfig
     _pysui_client: AsyncClientBase
     _httpx: httpx.AsyncClient
@@ -42,20 +48,37 @@ class WalrusClient(AsyncClientBase):
         Args:
             pytusk_config (PytuskConfiguration): Active pytusk configuration.
         """
+        self._pytusk_config = pytusk_config
         network = pytusk_config.active_network_entry
         self._network = network
-        self._pysui_client = client_factory(
-            PysuiConfiguration(
-                from_cfg_path=pytusk_config.pysui_config_path,
-                group_name=network.pysui_group_name,
-                profile_name=network.pysui_profile_name,
-            )
-        )
+        self._pysui_client = client_factory(pytusk_config.pysui_configuration)
         self._httpx = httpx.AsyncClient()
 
     # ------------------------------------------------------------------
     # AsyncClientBase abstract methods
     # ------------------------------------------------------------------
+
+    async def execute_for_all(
+        self,
+        *,
+        command: Any,
+        timeout: float | None = None,
+    ) -> SuiRpcResult:
+        """Execute a paged SuiCommand, automatically fetching all pages.
+
+        Forwards directly to the underlying pysui client's execute_for_all.
+        In a future release this may also support paged Walrus commands.
+
+        Args:
+            command: A SuiCommand instance that supports pagination.
+            timeout (float | None): Request timeout in seconds.
+
+        Returns:
+            SuiRpcResult: Aggregated result across all pages.
+        """
+        return await self._pysui_client.execute_for_all(
+            command=command, timeout=timeout
+        )
 
     async def execute(
         self,
@@ -86,6 +109,16 @@ class WalrusClient(AsyncClientBase):
         return await self._pysui_client.execute(
             command=command, timeout=timeout, headers=headers
         )
+
+    @property
+    def pysui_client(self) -> PysuiClient:
+        """The underlying pysui async client."""
+        return self._pysui_client  # type: ignore
+
+    @property
+    def config(self) -> PytuskConfiguration:
+        """The PytuskConfiguration driving this client."""
+        return self._pytusk_config
 
     async def transaction(self, **kwargs: Any) -> Any:
         """Return a new async transaction builder from the pysui client.

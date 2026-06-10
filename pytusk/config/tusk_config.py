@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from dataclasses_json import DataClassJsonMixin
+from pysui import PysuiConfiguration
 
 class NetworkType(enum.StrEnum):
     """Indicates whether a network configuration targets a test or production environment."""
@@ -115,6 +116,14 @@ class PytuskConfiguration:
             Defaults to ~/.pytusk/.
         active_network (str | None): Override the active network ('testnet' or 'mainnet').
         persist (bool): If True, persist any overrides back to the config file.
+        pysui_config_path (str | None): Override the pysui config folder path passed to
+            PysuiConfiguration. Defaults to the value stored in PytuskConfig.json.
+        pysui_group_name (str | None): Override the pysui ProfileGroup (protocol) for this
+            session. Defaults to the active network's pysui_group_name.
+        pysui_profile_name (str | None): Override the pysui Profile for this session.
+            Defaults to the active network's pysui_profile_name.
+        pysui_address (str | None): Set the active Sui address for this session.
+        pysui_alias (str | None): Set the active Sui address by alias for this session.
     """
 
     _model: PytuskConfigModel
@@ -126,6 +135,11 @@ class PytuskConfiguration:
         from_cfg_path: str | None = None,
         active_network: str | None = None,
         persist: bool = False,
+        pysui_config_path: str | None = None,
+        pysui_group_name: str | None = None,
+        pysui_profile_name: str | None = None,
+        pysui_address: str | None = None,
+        pysui_alias: str | None = None,
     ) -> None:
         """Initialise PytuskConfiguration.
 
@@ -137,6 +151,11 @@ class PytuskConfiguration:
             active_network (str | None): Override the active network. Must match
                 a network_name present in the loaded configuration.
             persist (bool): If True, persist any overrides back to the config file.
+            pysui_config_path (str | None): Override the pysui config folder path.
+            pysui_group_name (str | None): Override the pysui ProfileGroup (protocol).
+            pysui_profile_name (str | None): Override the pysui Profile.
+            pysui_address (str | None): Set the active Sui address.
+            pysui_alias (str | None): Set the active Sui address by alias.
 
         Raises:
             ValueError: If active_network is not a supported network.
@@ -173,6 +192,13 @@ class PytuskConfiguration:
 
         if persist:
             self._write_model(cfg_dir)
+
+        self._pysui_config_path_override = pysui_config_path
+        self._pysui_group_name_override = pysui_group_name
+        self._pysui_profile_name_override = pysui_profile_name
+        self._pysui_address = pysui_address
+        self._pysui_alias = pysui_alias
+        self._pysui_configuration: PysuiConfiguration | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -215,7 +241,40 @@ class PytuskConfiguration:
     @property
     def pysui_config_path(self) -> str:
         """Path to the pysui config folder."""
-        return self._model.pysui_config_path
+        return self._pysui_config_path_override or self._model.pysui_config_path
+
+    @property
+    def pysui_group_name(self) -> str:
+        """Active pysui ProfileGroup name; session override takes precedence over network default."""
+        return self._pysui_group_name_override or self.active_network_entry.pysui_group_name
+
+    @property
+    def pysui_profile_name(self) -> str:
+        """Active pysui Profile name; session override takes precedence over network default."""
+        return self._pysui_profile_name_override or self.active_network_entry.pysui_profile_name
+
+    @property
+    def pysui_address(self) -> str | None:
+        """Active Sui address override, or None."""
+        return self._pysui_address
+
+    @property
+    def pysui_alias(self) -> str | None:
+        """Active Sui address alias override, or None."""
+        return self._pysui_alias
+
+    @property
+    def pysui_configuration(self) -> PysuiConfiguration:
+        """Fully initialised PysuiConfiguration for this session."""
+        if self._pysui_configuration is None:
+            self._pysui_configuration = PysuiConfiguration(
+                from_cfg_path=self.pysui_config_path,
+                group_name=self.pysui_group_name,
+                profile_name=self.pysui_profile_name,
+                address=self._pysui_address,
+                alias=self._pysui_alias,
+            )
+        return self._pysui_configuration
 
     @property
     def walrus_binary_path(self) -> str | None:
@@ -231,6 +290,11 @@ class PytuskConfiguration:
     def networks(self) -> list[WalrusNetworkConfig]:
         """All network configuration entries."""
         return self._model.networks
+
+    @property
+    def network(self) -> WalrusNetworkConfig:
+        """WalrusNetworkConfig for the active network (shorthand for active_network_entry)."""
+        return self.active_network_entry
 
     @property
     def active_network_entry(self) -> WalrusNetworkConfig:

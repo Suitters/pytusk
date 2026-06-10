@@ -134,12 +134,14 @@ class BlobReceipt(DataClassJsonMixin):
     Used by: StoreBlob.
 
     Args:
+        object_id (str): Sui object ID of the stored blob (empty for alreadyCertified blobs).
         blob_id (str): Walrus blob identifier.
         cost (int): Storage cost in MIST.
         expiry_epoch (int): Sui epoch at which the blob expires.
         deletable (bool): True if the blob was stored as deletable.
     """
 
+    object_id: str = dataclasses.field(default="")
     blob_id: str = dataclasses.field(default="")
     cost: int = dataclasses.field(default=0)
     expiry_epoch: int = dataclasses.field(default=0)

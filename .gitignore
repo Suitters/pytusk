@@ -16,4 +16,4 @@ pytusk.egg-info/
 # Development
 Pipfile.lock
 openapi.json
-test_*.py
+temp_*.py

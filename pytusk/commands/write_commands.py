@@ -51,12 +51,27 @@ class StoreBlob(WalrusCommand):
         if response.is_error:
             return SuiRpcResult(False, response.text)
         data = response.json()
-        receipt = BlobReceipt(
-            blob_id=data.get("blobId", ""),
-            cost=data.get("cost", 0),
-            expiry_epoch=data.get("endEpoch", 0),
-            deletable=self.deletable,
-        )
+        if "newlyCreated" in data:
+            nc = data["newlyCreated"]
+            blob_obj = nc["blobObject"]
+            receipt = BlobReceipt(
+                object_id=blob_obj.get("id", ""),
+                blob_id=blob_obj.get("blobId", ""),
+                cost=nc.get("cost", 0),
+                expiry_epoch=blob_obj.get("storage", {}).get("endEpoch", 0),
+                deletable=blob_obj.get("deletable", False),
+            )
+        elif "alreadyCertified" in data:
+            ac = data["alreadyCertified"]
+            receipt = BlobReceipt(
+                object_id="",
+                blob_id=ac.get("blobId", ""),
+                cost=0,
+                expiry_epoch=ac.get("endEpoch", 0),
+                deletable=self.deletable,
+            )
+        else:
+            return SuiRpcResult(False, f"Unexpected publisher response: {data}")
         return SuiRpcResult(True, "", receipt)
 
 

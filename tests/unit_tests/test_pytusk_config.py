@@ -1,0 +1,326 @@
+#    Copyright Frank V. Castellucci
+#    SPDX-License-Identifier: Apache-2.0
+
+# -*- coding: utf-8 -*-
+
+"""Unit tests for PytuskConfiguration."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from pytusk.config.tusk_config import (
+    NetworkType,
+    PytuskConfigModel,
+    PytuskConfiguration,
+    WalrusNetworkConfig,
+)
+
+
+class TestWalrusNetworkConfig:
+    def test_default_fields(self) -> None:
+        net = WalrusNetworkConfig()
+        assert net.network_name == ""
+        assert net.pysui_group_name == ""
+        assert net.walrus_aggregator == ""
+        assert net.exchange_objects == []
+        assert net.network_type == NetworkType.TEST
+
+    def test_from_dict(self) -> None:
+        net = WalrusNetworkConfig.from_dict(
+            {
+                "network_name": "testnet",
+                "pysui_group_name": "sui_gql_config",
+                "pysui_profile_name": "testnet",
+                "walrus_aggregator": "https://agg.example.com",
+                "walrus_publisher": "https://pub.example.com",
+                "system_object": "0xabc",
+                "staking_object": "0xdef",
+                "exchange_objects": ["0x111", "0x222"],
+            }
+        )
+        assert net.network_name == "testnet"
+        assert net.pysui_group_name == "sui_gql_config"
+        assert net.walrus_aggregator == "https://agg.example.com"
+        assert net.exchange_objects == ["0x111", "0x222"]
+
+    def test_to_dict_round_trip(self) -> None:
+        net = WalrusNetworkConfig(
+            network_name="mainnet",
+            walrus_aggregator="https://agg.mainnet.example.com",
+        )
+        assert WalrusNetworkConfig.from_dict(net.to_dict()) == net
+
+    def test_network_type_default_is_test(self) -> None:
+        net = WalrusNetworkConfig(network_name="custom")
+        assert net.network_type == NetworkType.TEST
+
+    def test_network_type_production(self) -> None:
+        net = WalrusNetworkConfig(network_name="mainnet", network_type=NetworkType.PRODUCTION)
+        assert net.network_type == NetworkType.PRODUCTION
+
+    def test_network_type_round_trip(self) -> None:
+        net = WalrusNetworkConfig(network_name="mainnet", network_type=NetworkType.PRODUCTION)
+        restored = WalrusNetworkConfig.from_dict(net.to_dict())
+        assert restored.network_type == NetworkType.PRODUCTION
+
+
+class TestPytuskConfigModel:
+    def test_defaults(self) -> None:
+        model = PytuskConfigModel()
+        assert model.version == "1.0.0"
+        assert model.active_network == "testnet"
+        assert model.networks == []
+        assert model.walrus_binary_path is None
+
+    def test_json_round_trip(self) -> None:
+        model = PytuskConfigModel(active_network="mainnet")
+        loaded = PytuskConfigModel.from_json(model.to_json())
+        assert loaded.active_network == "mainnet"
+        assert loaded.version == "1.0.0"
+
+    def test_networks_serialise(self) -> None:
+        net = WalrusNetworkConfig(network_name="testnet", walrus_aggregator="https://agg.example.com")
+        model = PytuskConfigModel(networks=[net])
+        loaded = PytuskConfigModel.from_json(model.to_json())
+        assert len(loaded.networks) == 1
+        assert loaded.networks[0].network_name == "testnet"
+        assert loaded.networks[0].walrus_aggregator == "https://agg.example.com"
+
+
+class TestPytuskConfiguration:
+    def test_first_run_creates_file(self, tmp_path: Path) -> None:
+        PytuskConfiguration(from_cfg_path=str(tmp_path))
+        assert (tmp_path / "PytuskConfig.json").exists()
+
+    def test_first_run_default_network(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        assert cfg.active_network == "testnet"
+
+    def test_first_run_two_networks(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        names = [n.network_name for n in cfg.networks]
+        assert "testnet" in names
+        assert "mainnet" in names
+
+    def test_loads_existing_file(self, tmp_path: Path) -> None:
+        PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg2 = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        assert cfg2.active_network == "testnet"
+        assert len(cfg2.networks) == 2
+
+    def test_active_network_override(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path), active_network="mainnet")
+        assert cfg.active_network == "mainnet"
+
+    def test_invalid_network_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="Unknown network"):
+            PytuskConfiguration(from_cfg_path=str(tmp_path), active_network="devnet")
+
+    def test_active_network_entry_testnet(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        entry = cfg.active_network_entry
+        assert entry.network_name == "testnet"
+        assert entry.walrus_aggregator != ""
+        assert entry.walrus_publisher != ""
+        assert entry.network_type == NetworkType.TEST
+
+    def test_active_network_entry_mainnet(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path), active_network="mainnet")
+        entry = cfg.active_network_entry
+        assert entry.network_name == "mainnet"
+        assert entry.network_type == NetworkType.PRODUCTION
+
+    def test_set_active_network(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.set_active_network("mainnet")
+        assert cfg.active_network == "mainnet"
+
+    def test_set_active_network_invalid_raises(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        with pytest.raises(ValueError, match="Unknown network"):
+            cfg.set_active_network("devnet")
+
+    def test_set_active_network_persist(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.set_active_network("mainnet", persist=True)
+        cfg2 = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        assert cfg2.active_network == "mainnet"
+
+    def test_set_pysui_config_path(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.set_pysui_config_path("/custom/pysui")
+        assert cfg.pysui_config_path == "/custom/pysui"
+
+    def test_set_pysui_config_path_persist(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.set_pysui_config_path("/custom/pysui", persist=True)
+        cfg2 = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        assert cfg2.pysui_config_path == "/custom/pysui"
+
+    def test_set_walrus_binary_path(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.set_walrus_binary_path("/usr/local/bin/walrus")
+        assert cfg.walrus_binary_path == "/usr/local/bin/walrus"
+
+    def test_set_walrus_binary_path_persist(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.set_walrus_binary_path("/usr/local/bin/walrus", persist=True)
+        cfg2 = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        assert cfg2.walrus_binary_path == "/usr/local/bin/walrus"
+
+    def test_save(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.set_active_network("mainnet")
+        cfg.save()
+        cfg2 = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        assert cfg2.active_network == "mainnet"
+
+    def test_save_to(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        alt_dir = tmp_path / "alt"
+        cfg.save_to(str(alt_dir))
+        assert (alt_dir / "PytuskConfig.json").exists()
+
+    def test_json_structure(self, tmp_path: Path) -> None:
+        PytuskConfiguration(from_cfg_path=str(tmp_path))
+        data = json.loads((tmp_path / "PytuskConfig.json").read_text())
+        assert data["version"] == "1.0.0"
+        assert data["active_network"] == "testnet"
+        assert isinstance(data["networks"], list)
+        assert len(data["networks"]) == 2
+
+    def test_persist_on_init(self, tmp_path: Path) -> None:
+        PytuskConfiguration(from_cfg_path=str(tmp_path), active_network="mainnet", persist=True)
+        cfg2 = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        assert cfg2.active_network == "mainnet"
+
+    def test_add_network_new(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        custom = WalrusNetworkConfig(
+            network_name="custom",
+            walrus_aggregator="https://agg.example.com",
+            walrus_publisher="https://pub.example.com",
+            system_object="0xabc",
+            staking_object="0xdef",
+        )
+        cfg.add_network(custom)
+        names = [n.network_name for n in cfg.networks]
+        assert "custom" in names
+
+    def test_add_network_replaces_existing(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        custom = WalrusNetworkConfig(
+            network_name="custom",
+            walrus_aggregator="https://agg.example.com",
+            walrus_publisher="https://pub.example.com",
+            system_object="0xabc",
+            staking_object="0xdef",
+        )
+        cfg.add_network(custom)
+        updated = WalrusNetworkConfig(
+            network_name="custom",
+            walrus_aggregator="https://new-agg.example.com",
+            walrus_publisher="https://new-pub.example.com",
+            system_object="0x111",
+            staking_object="0x222",
+        )
+        cfg.add_network(updated)
+        custom_entries = [n for n in cfg.networks if n.network_name == "custom"]
+        assert len(custom_entries) == 1
+        assert custom_entries[0].walrus_aggregator == "https://new-agg.example.com"
+
+    def test_add_network_persist(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        custom = WalrusNetworkConfig(
+            network_name="custom",
+            walrus_aggregator="https://agg.example.com",
+            walrus_publisher="https://pub.example.com",
+            system_object="0xabc",
+            staking_object="0xdef",
+        )
+        cfg.add_network(custom, persist=True)
+        cfg2 = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        names = [n.network_name for n in cfg2.networks]
+        assert "custom" in names
+
+    def test_add_network_then_activate(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        custom = WalrusNetworkConfig(
+            network_name="custom",
+            walrus_aggregator="https://agg.example.com",
+            walrus_publisher="https://pub.example.com",
+            system_object="0xabc",
+            staking_object="0xdef",
+        )
+        cfg.add_network(custom)
+        cfg.set_active_network("custom")
+        assert cfg.active_network == "custom"
+        assert cfg.active_network_entry.walrus_aggregator == "https://agg.example.com"
+
+    def test_add_network_reserved_testnet_raises(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        with pytest.raises(ValueError, match="reserved"):
+            cfg.add_network(WalrusNetworkConfig(network_name="testnet"))
+
+    def test_add_network_reserved_mainnet_raises(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        with pytest.raises(ValueError, match="reserved"):
+            cfg.add_network(WalrusNetworkConfig(network_name="mainnet"))
+
+    def test_remove_network(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        custom = WalrusNetworkConfig(
+            network_name="custom",
+            walrus_aggregator="https://agg.example.com",
+            walrus_publisher="https://pub.example.com",
+            system_object="0xabc",
+            staking_object="0xdef",
+        )
+        cfg.add_network(custom)
+        cfg.remove_network("custom")
+        assert not any(n.network_name == "custom" for n in cfg.networks)
+
+    def test_remove_network_persist(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        custom = WalrusNetworkConfig(
+            network_name="custom",
+            walrus_aggregator="https://agg.example.com",
+            walrus_publisher="https://pub.example.com",
+            system_object="0xabc",
+            staking_object="0xdef",
+        )
+        cfg.add_network(custom, persist=True)
+        cfg.remove_network("custom", persist=True)
+        cfg2 = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        assert not any(n.network_name == "custom" for n in cfg2.networks)
+
+    def test_remove_network_reserved_testnet_raises(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        with pytest.raises(ValueError, match="reserved"):
+            cfg.remove_network("testnet")
+
+    def test_remove_network_reserved_mainnet_raises(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        with pytest.raises(ValueError, match="reserved"):
+            cfg.remove_network("mainnet")
+
+    def test_remove_network_not_found_raises(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        with pytest.raises(ValueError, match="not found"):
+            cfg.remove_network("nonexistent")
+
+    def test_init_fails_if_testnet_missing(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg._model.networks = [n for n in cfg._model.networks if n.network_name != "testnet"]
+        cfg.save()
+        with pytest.raises(ValueError, match="missing required"):
+            PytuskConfiguration(from_cfg_path=str(tmp_path))
+
+    def test_init_fails_if_mainnet_missing(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg._model.networks = [n for n in cfg._model.networks if n.network_name != "mainnet"]
+        cfg.save()
+        with pytest.raises(ValueError, match="missing required"):
+            PytuskConfiguration(from_cfg_path=str(tmp_path))
