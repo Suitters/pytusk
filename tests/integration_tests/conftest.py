@@ -13,14 +13,13 @@ import pytest_asyncio
 from pysui import (
     ExecuteTransaction,
     GetAddressCoinBalances,
-    GetBasicCurrentEpochInfo,
     GetObject,
     GetObjectsOwnedByAddress,
 )
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 
 from pytusk import BlobReceipt, PytuskConfiguration, QuiltReceipt, StoreBlob
-from pytusk.client.walrus_client import WalrusClient
+from pytusk.client.walrus_client import WalrusClient, get_walrus_epoch
 
 # Gas budget constants — update after running scratch/simulate_costs.py
 REQUIRED_COIN_BUDGET: int = 0  # WAL units; TBD
@@ -137,11 +136,11 @@ async def _ensure_wal(client: WalrusClient) -> None:
 
 async def _cleanup_blobs(client: WalrusClient, session_blob_ids: list[str] | None = None) -> None:
     """Delete active deletable blobs and burn expired blobs owned by the active address."""
-    epoch_result = await client.execute(command=GetBasicCurrentEpochInfo())
-    if not epoch_result.is_ok():
-        print(f"\ncleanup: cannot get epoch — {epoch_result.result_string}")
+    try:
+        current_epoch = await get_walrus_epoch(client)
+    except RuntimeError as exc:
+        print(f"\ncleanup: cannot get Walrus epoch — {exc}")
         return
-    current_epoch = epoch_result.result_data.epoch
 
     active_deletable = []
     expired = []
@@ -288,8 +287,10 @@ async def stored_blob(walrus_client: WalrusClient):
     data: bytes | None = None
     found = False
 
-    epoch_result = await walrus_client.execute(command=GetBasicCurrentEpochInfo())
-    current_epoch: int = epoch_result.result_data.epoch if epoch_result.is_ok() else 0
+    try:
+        current_epoch: int = await get_walrus_epoch(walrus_client)
+    except RuntimeError:
+        current_epoch = 0
 
     result = await walrus_client.execute_for_all(
         command=GetObjectsOwnedByAddress(

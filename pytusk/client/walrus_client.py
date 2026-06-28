@@ -11,6 +11,7 @@ from typing import Any, ClassVar, cast
 import httpx
 from pysui import (
     AsyncClientBase,
+    GetDynamicFields,
     PysuiClient,
     SuiCommand,
     SuiRpcResult,
@@ -206,3 +207,31 @@ class WalrusClient(AsyncClientBase):
             return SuiRpcResult(False, str(exc))
 
         return command.parse_response(response)
+
+
+async def get_walrus_epoch(client: WalrusClient) -> int:
+    """Return the current Walrus epoch from the StakingInnerV1 dynamic field.
+
+    Args:
+        client (WalrusClient): Active pytusk client.
+
+    Returns:
+        int: Current Walrus epoch.
+
+    Raises:
+        RuntimeError: If the staking dynamic fields cannot be fetched.
+    """
+    df_result = await client.execute(
+        command=GetDynamicFields(object_id=client.config.network.staking_object)
+    )
+    if not df_result.is_ok():
+        raise RuntimeError(
+            f"Cannot get staking dynamic fields: {df_result.result_string}"
+        )
+    dynamic_fields = df_result.result_data.dynamic_fields
+    if not dynamic_fields:
+        raise RuntimeError("Staking object has no dynamic fields")
+    return int(
+        dynamic_fields[0].field_object.json.struct_value.fields["value"]
+        .struct_value.fields["epoch"].number_value
+    )

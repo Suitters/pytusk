@@ -16,7 +16,7 @@ from pytusk.config.tusk_config import (
 )
 
 # Client
-from pytusk.client.walrus_client import WalrusClient
+from pytusk.client.walrus_client import WalrusClient, get_walrus_epoch
 
 # Command base and response types
 from pytusk.commands.walrus_command import (
@@ -52,6 +52,7 @@ __all__ = [
     "PytuskConfiguration",
     # Client
     "WalrusClient",
+    "get_walrus_epoch",
     # Command base and response types
     "WalrusCommand",
     "BlobData",
