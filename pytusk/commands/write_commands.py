@@ -123,7 +123,7 @@ class StoreQuilt(WalrusCommand):
         elif "alreadyCertified" in blob_result:
             ac = blob_result["alreadyCertified"]
             quilt_id = ac.get("blobId", "")
-            object_id = ac.get("object", "")
+            object_id = ac.get("objectId", "")
             cost = 0
             expiry_epoch = ac.get("endEpoch", 0)
         else:

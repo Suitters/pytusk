@@ -25,6 +25,7 @@ def mock_response(
 ) -> MagicMock:
     r: MagicMock = MagicMock(spec=httpx.Response)
     r.is_error = is_error
+    r.status_code = 400 if is_error else 200
     r.text = text
     r.json.return_value = json_data or {}
     return r
@@ -134,7 +135,7 @@ class TestStoreBlob:
 
 class TestStoreQuilt:
     def test_http_method(self) -> None:
-        assert StoreQuilt(files={"a": b"x"}, epochs=1).http_method() == "POST"
+        assert StoreQuilt(files={"a": b"x"}, epochs=1).http_method() == "PUT"
 
     def test_url_path(self) -> None:
         cmd = StoreQuilt(files={"a": b"x"}, epochs=1)
@@ -162,10 +163,20 @@ class TestStoreQuilt:
         result = cmd.parse_response(
             mock_response(
                 json_data={
-                    "quiltId": "quilt-123",
-                    "patchKeys": ["a", "b"],
-                    "cost": 200,
-                    "endEpoch": 15,
+                    "blobStoreResult": {
+                        "newlyCreated": {
+                            "blobObject": {
+                                "id": "obj-quilt-123",
+                                "blobId": "quilt-123",
+                                "storage": {"endEpoch": 15},
+                            },
+                            "cost": 200,
+                        }
+                    },
+                    "storedQuiltBlobs": [
+                        {"identifier": "a", "quiltPatchId": "patch-a"},
+                        {"identifier": "b", "quiltPatchId": "patch-b"},
+                    ],
                 }
             )
         )
@@ -177,9 +188,42 @@ class TestStoreQuilt:
         assert receipt.cost == 200
         assert receipt.expiry_epoch == 15
 
+    def test_parse_response_already_certified(self) -> None:
+        cmd = StoreQuilt(files={"a": b"x"}, epochs=3)
+        result = cmd.parse_response(
+            mock_response(
+                json_data={
+                    "blobStoreResult": {
+                        "alreadyCertified": {
+                            "blobId": "quilt-existing-id",
+                            "objectId": "obj-existing-123",
+                            "endEpoch": 20,
+                        }
+                    },
+                    "storedQuiltBlobs": [
+                        {"identifier": "a", "quiltPatchId": "patch-a"},
+                    ],
+                }
+            )
+        )
+        assert result.is_ok()
+        receipt: QuiltReceipt = result.result_data
+        assert receipt.quilt_id == "quilt-existing-id"
+        assert receipt.object_id == "obj-existing-123"
+        assert receipt.cost == 0
+        assert receipt.expiry_epoch == 20
+        assert receipt.patch_keys == ["a"]
+
     def test_parse_response_missing_fields_use_defaults(self) -> None:
         cmd = StoreQuilt(files={"a": b"x"}, epochs=1)
-        result = cmd.parse_response(mock_response(json_data={}))
+        result = cmd.parse_response(
+            mock_response(
+                json_data={
+                    "blobStoreResult": {"newlyCreated": {"blobObject": {}}},
+                    "storedQuiltBlobs": [],
+                }
+            )
+        )
         assert result.is_ok()
         receipt: QuiltReceipt = result.result_data
         assert receipt.quilt_id == ""
