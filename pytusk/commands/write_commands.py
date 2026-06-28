@@ -23,7 +23,7 @@ from pytusk.commands.walrus_command import (
 class StoreBlob(WalrusCommand):
     """Store a blob on Walrus.
 
-    PUT {publisher}/v1/blobs
+    PUT {walrus_url}/v1/blobs
 
     Args:
         data (bytes): Raw blob content to store.
@@ -49,7 +49,7 @@ class StoreBlob(WalrusCommand):
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
         if response.is_error:
-            return SuiRpcResult(False, response.text)
+            return SuiRpcResult(False, f"HTTP {response.status_code}: {response.text}")
         data = response.json()
         if "newlyCreated" in data:
             nc = data["newlyCreated"]
@@ -79,7 +79,7 @@ class StoreBlob(WalrusCommand):
 class StoreQuilt(WalrusCommand):
     """Store a quilt (collection of named blobs) on Walrus.
 
-    POST {publisher}/v1/quilts
+    PUT {walrus_url}/v1/quilts
 
     Args:
         files (dict[str, bytes]): Mapping of patch key to raw file content.
@@ -90,7 +90,7 @@ class StoreQuilt(WalrusCommand):
     epochs: int
 
     def http_method(self) -> str:
-        return "POST"
+        return "PUT"
 
     def url_path(self, base_url: str) -> str:
         return f"{base_url}/v1/quilts"
@@ -103,12 +103,38 @@ class StoreQuilt(WalrusCommand):
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
         if response.is_error:
-            return SuiRpcResult(False, response.text)
+            return SuiRpcResult(False, f"HTTP {response.status_code}: {response.text}")
         data = response.json()
+        blob_result = data.get("blobStoreResult", {})
+        stored_blobs = data.get("storedQuiltBlobs", [])
+
+        quilt_id = ""
+        object_id = ""
+        cost = 0
+        expiry_epoch = 0
+
+        if "newlyCreated" in blob_result:
+            nc = blob_result["newlyCreated"]
+            blob_obj = nc.get("blobObject", {})
+            quilt_id = blob_obj.get("blobId", "")
+            object_id = blob_obj.get("id", "")
+            cost = nc.get("cost", 0)
+            expiry_epoch = blob_obj.get("storage", {}).get("endEpoch", 0)
+        elif "alreadyCertified" in blob_result:
+            ac = blob_result["alreadyCertified"]
+            quilt_id = ac.get("blobId", "")
+            object_id = ac.get("object", "")
+            cost = 0
+            expiry_epoch = ac.get("endEpoch", 0)
+        else:
+            return SuiRpcResult(False, f"Unexpected quilt response: {data}")
+
+        patch_keys = [item.get("identifier", "") for item in stored_blobs]
         receipt = QuiltReceipt(
-            quilt_id=data.get("quiltId", ""),
-            patch_keys=data.get("patchKeys", []),
-            cost=data.get("cost", 0),
-            expiry_epoch=data.get("endEpoch", 0),
+            quilt_id=quilt_id,
+            patch_keys=patch_keys,
+            cost=cost,
+            expiry_epoch=expiry_epoch,
+            object_id=object_id,
         )
         return SuiRpcResult(True, "", receipt)

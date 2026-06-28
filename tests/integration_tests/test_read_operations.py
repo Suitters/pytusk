@@ -82,17 +82,18 @@ class TestReadBlobByObjectId:
 
 
 class TestConcatBlobs:
-    async def test_concat_blob_with_itself(
-        self, walrus_client: WalrusClient, stored_blob
+    async def test_concat_two_distinct_blobs(
+        self, walrus_client: WalrusClient, stored_blob, stored_blob_2
     ):
-        blob_id, _, data = stored_blob
+        blob_id_1, _, data_1 = stored_blob
+        blob_id_2, _, data_2 = stored_blob_2
         result = await walrus_client.execute(
-            command=ConcatBlobs(ids=[blob_id, blob_id])
+            command=ConcatBlobs(ids=[blob_id_1, blob_id_2])
         )
         assert result.is_ok(), f"ConcatBlobs failed: {result.result_string}"
         content = result.result_data.content
         assert isinstance(content, bytes)
-        if data is not None:
-            assert content == data + data
+        if data_1 is not None and data_2 is not None:
+            assert content == data_1 + data_2
         else:
             assert len(content) > 0

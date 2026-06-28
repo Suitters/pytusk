@@ -36,7 +36,7 @@ class WalrusCommand(ABC):
         """Construct the full request URL.
 
         Args:
-            base_url (str): Aggregator or publisher base URL from active network config.
+            base_url (str): Walrus daemon base URL from active network config.
 
         Returns:
             str: Full request URL.
@@ -159,9 +159,11 @@ class QuiltReceipt(DataClassJsonMixin):
         patch_keys (list[str]): Keys assigned to each patch in the quilt.
         cost (int): Storage cost in MIST.
         expiry_epoch (int): Sui epoch at which the quilt expires.
+        object_id (str): Sui object ID of the stored quilt blob.
     """
 
     quilt_id: str = dataclasses.field(default="")
     patch_keys: list[str] = dataclasses.field(default_factory=list)
     cost: int = dataclasses.field(default=0)
     expiry_epoch: int = dataclasses.field(default=0)
+    object_id: str = dataclasses.field(default="")

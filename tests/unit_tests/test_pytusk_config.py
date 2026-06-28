@@ -19,11 +19,14 @@ from pytusk.config.tusk_config import (
 
 
 class TestWalrusNetworkConfig:
-    def test_default_fields(self) -> None:
-        net = WalrusNetworkConfig()
-        assert net.network_name == ""
+    def test_default_fields_raises_on_empty_name(self) -> None:
+        with pytest.raises(ValueError, match="network_name must not be empty"):
+            WalrusNetworkConfig()
+
+    def test_default_fields_with_name(self) -> None:
+        net = WalrusNetworkConfig(network_name="custom")
         assert net.pysui_group_name == ""
-        assert net.walrus_aggregator == ""
+        assert net.walrus_url == ""
         assert net.exchange_objects == []
         assert net.network_type == NetworkType.TEST
 
@@ -33,8 +36,7 @@ class TestWalrusNetworkConfig:
                 "network_name": "testnet",
                 "pysui_group_name": "sui_gql_config",
                 "pysui_profile_name": "testnet",
-                "walrus_aggregator": "https://agg.example.com",
-                "walrus_publisher": "https://pub.example.com",
+                "walrus_url": "https://daemon.example.com",
                 "system_object": "0xabc",
                 "staking_object": "0xdef",
                 "exchange_objects": ["0x111", "0x222"],
@@ -42,13 +44,13 @@ class TestWalrusNetworkConfig:
         )
         assert net.network_name == "testnet"
         assert net.pysui_group_name == "sui_gql_config"
-        assert net.walrus_aggregator == "https://agg.example.com"
+        assert net.walrus_url == "https://daemon.example.com"
         assert net.exchange_objects == ["0x111", "0x222"]
 
     def test_to_dict_round_trip(self) -> None:
         net = WalrusNetworkConfig(
             network_name="mainnet",
-            walrus_aggregator="https://agg.mainnet.example.com",
+            walrus_url="https://daemon.mainnet.example.com",
         )
         assert WalrusNetworkConfig.from_dict(net.to_dict()) == net
 
@@ -81,12 +83,12 @@ class TestPytuskConfigModel:
         assert loaded.version == "1.0.0"
 
     def test_networks_serialise(self) -> None:
-        net = WalrusNetworkConfig(network_name="testnet", walrus_aggregator="https://agg.example.com")
+        net = WalrusNetworkConfig(network_name="testnet", walrus_url="https://daemon.example.com")
         model = PytuskConfigModel(networks=[net])
         loaded = PytuskConfigModel.from_json(model.to_json())
         assert len(loaded.networks) == 1
         assert loaded.networks[0].network_name == "testnet"
-        assert loaded.networks[0].walrus_aggregator == "https://agg.example.com"
+        assert loaded.networks[0].walrus_url == "https://daemon.example.com"
 
 
 class TestPytuskConfiguration:
@@ -122,8 +124,7 @@ class TestPytuskConfiguration:
         cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
         entry = cfg.active_network_entry
         assert entry.network_name == "testnet"
-        assert entry.walrus_aggregator != ""
-        assert entry.walrus_publisher != ""
+        assert entry.walrus_url != ""
         assert entry.network_type == NetworkType.TEST
 
     def test_active_network_entry_mainnet(self, tmp_path: Path) -> None:
@@ -200,8 +201,7 @@ class TestPytuskConfiguration:
         cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
         custom = WalrusNetworkConfig(
             network_name="custom",
-            walrus_aggregator="https://agg.example.com",
-            walrus_publisher="https://pub.example.com",
+            walrus_url="https://daemon.example.com",
             system_object="0xabc",
             staking_object="0xdef",
         )
@@ -213,30 +213,27 @@ class TestPytuskConfiguration:
         cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
         custom = WalrusNetworkConfig(
             network_name="custom",
-            walrus_aggregator="https://agg.example.com",
-            walrus_publisher="https://pub.example.com",
+            walrus_url="https://daemon.example.com",
             system_object="0xabc",
             staking_object="0xdef",
         )
         cfg.add_network(custom)
         updated = WalrusNetworkConfig(
             network_name="custom",
-            walrus_aggregator="https://new-agg.example.com",
-            walrus_publisher="https://new-pub.example.com",
+            walrus_url="https://new-daemon.example.com",
             system_object="0x111",
             staking_object="0x222",
         )
         cfg.add_network(updated)
         custom_entries = [n for n in cfg.networks if n.network_name == "custom"]
         assert len(custom_entries) == 1
-        assert custom_entries[0].walrus_aggregator == "https://new-agg.example.com"
+        assert custom_entries[0].walrus_url == "https://new-daemon.example.com"
 
     def test_add_network_persist(self, tmp_path: Path) -> None:
         cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
         custom = WalrusNetworkConfig(
             network_name="custom",
-            walrus_aggregator="https://agg.example.com",
-            walrus_publisher="https://pub.example.com",
+            walrus_url="https://daemon.example.com",
             system_object="0xabc",
             staking_object="0xdef",
         )
@@ -249,15 +246,14 @@ class TestPytuskConfiguration:
         cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
         custom = WalrusNetworkConfig(
             network_name="custom",
-            walrus_aggregator="https://agg.example.com",
-            walrus_publisher="https://pub.example.com",
+            walrus_url="https://daemon.example.com",
             system_object="0xabc",
             staking_object="0xdef",
         )
         cfg.add_network(custom)
         cfg.set_active_network("custom")
         assert cfg.active_network == "custom"
-        assert cfg.active_network_entry.walrus_aggregator == "https://agg.example.com"
+        assert cfg.active_network_entry.walrus_url == "https://daemon.example.com"
 
     def test_add_network_reserved_testnet_raises(self, tmp_path: Path) -> None:
         cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
@@ -273,8 +269,7 @@ class TestPytuskConfiguration:
         cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
         custom = WalrusNetworkConfig(
             network_name="custom",
-            walrus_aggregator="https://agg.example.com",
-            walrus_publisher="https://pub.example.com",
+            walrus_url="https://daemon.example.com",
             system_object="0xabc",
             staking_object="0xdef",
         )
@@ -286,8 +281,7 @@ class TestPytuskConfiguration:
         cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
         custom = WalrusNetworkConfig(
             network_name="custom",
-            walrus_aggregator="https://agg.example.com",
-            walrus_publisher="https://pub.example.com",
+            walrus_url="https://daemon.example.com",
             system_object="0xabc",
             staking_object="0xdef",
         )

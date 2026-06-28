@@ -6,27 +6,27 @@
 """WalrusClient — async Walrus HTTP client."""
 
 import types
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import httpx
 from pysui import (
     AsyncClientBase,
     PysuiClient,
+    SuiCommand,
     SuiRpcResult,
     client_factory,
 )
 
 from pytusk.commands.walrus_command import WalrusCommand
-from pytusk.config.tusk_config import PytuskConfiguration, WalrusNetworkConfig
+from pytusk.config.tusk_config import PytuskConfiguration
 
 
 class WalrusClient(AsyncClientBase):
     """Async client for Walrus HTTP operations and Sui transactions.
 
-    Wraps an httpx.AsyncClient for Walrus aggregator/publisher calls and
-    an internal pysui async client for Sui-level operations. Dispatches
-    WalrusCommand instances over HTTP and SuiCommand instances through
-    the pysui client.
+    Wraps an httpx.AsyncClient for Walrus daemon calls and an internal
+    pysui async client for Sui-level operations. Dispatches WalrusCommand
+    instances over HTTP and SuiCommand instances through the pysui client.
 
     Use as an async context manager to ensure the underlying httpx client
     is properly opened and closed.
@@ -38,7 +38,6 @@ class WalrusClient(AsyncClientBase):
 
     _protocol: ClassVar[str] = "walrus-http"
     _pytusk_config: PytuskConfiguration
-    _network: WalrusNetworkConfig
     _pysui_client: AsyncClientBase
     _httpx: httpx.AsyncClient
 
@@ -49,8 +48,6 @@ class WalrusClient(AsyncClientBase):
             pytusk_config (PytuskConfiguration): Active pytusk configuration.
         """
         self._pytusk_config = pytusk_config
-        network = pytusk_config.active_network_entry
-        self._network = network
         self._pysui_client = client_factory(pytusk_config.pysui_configuration)
         self._httpx = httpx.AsyncClient()
 
@@ -61,8 +58,9 @@ class WalrusClient(AsyncClientBase):
     async def execute_for_all(
         self,
         *,
-        command: Any,
+        command: SuiCommand,
         timeout: float | None = None,
+        headers: dict | None = None,
     ) -> SuiRpcResult:
         """Execute a paged SuiCommand, automatically fetching all pages.
 
@@ -72,26 +70,27 @@ class WalrusClient(AsyncClientBase):
         Args:
             command: A SuiCommand instance that supports pagination.
             timeout (float | None): Request timeout in seconds.
+            headers (dict | None): Optional headers passed to the transport.
 
         Returns:
             SuiRpcResult: Aggregated result across all pages.
         """
         return await self._pysui_client.execute_for_all(
-            command=command, timeout=timeout
+            command=command, timeout=timeout, headers=headers
         )
 
     async def execute(
         self,
         *,
-        command: Any,
+        command: WalrusCommand | SuiCommand,
         timeout: float | None = None,
-        headers: dict[str, str] | None = None,
+        headers: dict | None = None,
     ) -> SuiRpcResult:
         """Execute a WalrusCommand or SuiCommand.
 
         WalrusCommand instances are dispatched via httpx to the Walrus
-        aggregator or publisher. SuiCommand instances are forwarded to
-        the internal pysui client.
+        daemon. SuiCommand instances are forwarded to the internal pysui
+        client.
 
         Args:
             command: A WalrusCommand or SuiCommand instance.
@@ -113,7 +112,7 @@ class WalrusClient(AsyncClientBase):
     @property
     def pysui_client(self) -> PysuiClient:
         """The underlying pysui async client."""
-        return self._pysui_client  # type: ignore
+        return cast(PysuiClient, self._pysui_client)
 
     @property
     def config(self) -> PytuskConfiguration:
@@ -155,8 +154,7 @@ class WalrusClient(AsyncClientBase):
     ) -> SuiRpcResult:
         """Dispatch a WalrusCommand over HTTP.
 
-        GET requests are routed to the aggregator; PUT/POST requests are
-        routed to the publisher.
+        All requests are routed to the configured Walrus daemon URL.
 
         Args:
             command (WalrusCommand): Command to dispatch.
@@ -167,18 +165,7 @@ class WalrusClient(AsyncClientBase):
             SuiRpcResult: Parsed result from command.parse_response().
         """
         method = command.http_method()
-        if method != "GET" and not self._network.walrus_publisher:
-            raise ValueError(
-                "No publisher URL is configured for this network. "
-                "Mainnet has no public unauthenticated publisher. "
-                "Set walrus_publisher to a community publisher endpoint "
-                "from https://docs.wal.app/docs/network-reference or run your own."
-            )
-        base_url = (
-            self._network.walrus_aggregator
-            if method == "GET"
-            else self._network.walrus_publisher
-        )
+        base_url = self._pytusk_config.network.walrus_url
         url = command.url_path(base_url)
         params = command.query_params() or None
         body = command.request_body()

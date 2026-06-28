@@ -22,7 +22,7 @@ class NetworkType(enum.StrEnum):
 
 
 _RESERVED_NETWORKS: frozenset[str] = frozenset({"testnet", "mainnet"})
-_DEFAULT_CONFIG_DIR: str = "~/.pytusk"
+_DEFAULT_CONFIG_DIR: str = "~/.pysui"
 _CONFIG_FILENAME: str = "PytuskConfig.json"
 
 _DEFAULT_NETWORKS: list[dict[str, Any]] = [
@@ -30,8 +30,7 @@ _DEFAULT_NETWORKS: list[dict[str, Any]] = [
         "network_name": "testnet",
         "pysui_group_name": "sui_gql_config",
         "pysui_profile_name": "testnet",
-        "walrus_aggregator": "https://aggregator.walrus-testnet.walrus.space",
-        "walrus_publisher": "https://publisher.walrus-testnet.walrus.space",
+        "walrus_url": "https://aggregator.walrus-testnet.walrus.space",
         "system_object": "0x6c2547cbbc38025cf3adac45f63cb0a8d12ecf777cdc75a4971612bf97fdf6af",
         "staking_object": "0xbe46180321c30aab2f8b3501e24048377287fa708018a5b7c2792b35fe339ee3",
         "exchange_objects": [
@@ -46,8 +45,7 @@ _DEFAULT_NETWORKS: list[dict[str, Any]] = [
         "network_name": "mainnet",
         "pysui_group_name": "sui_gql_config",
         "pysui_profile_name": "mainnet",
-        "walrus_aggregator": "https://aggregator.walrus-mainnet.walrus.space",
-        "walrus_publisher": "https://upload-relay.mainnet.walrus.space",
+        "walrus_url": "https://aggregator.walrus-mainnet.walrus.space",
         "system_object": "0x2134d52768ea07e8c43570ef975eb3e4c27a39fa6396bef985b5abc58d03ddd2",
         "staking_object": "0x10b9d30c28448939ce6c4d6c6e0ffce4a7f8a4ada8248bdad09ef8b70e4a3904",
         "exchange_objects": [],
@@ -64,8 +62,7 @@ class WalrusNetworkConfig(DataClassJsonMixin):
         network_name (str): Network identifier (e.g. 'testnet', 'mainnet').
         pysui_group_name (str): pysui ProfileGroup name (e.g. 'sui_gql_config').
         pysui_profile_name (str): pysui Profile name matching the user's pysui config.
-        walrus_aggregator (str): Walrus aggregator URL for read operations.
-        walrus_publisher (str): Walrus publisher (or upload relay) URL for write operations.
+        walrus_url (str): Walrus daemon URL for read and write operations.
         system_object (str): Walrus system object ID on-chain.
         staking_object (str): Walrus staking object ID on-chain.
         exchange_objects (list[str]): Walrus exchange object IDs for SUI->WAL swap (testnet only).
@@ -75,12 +72,15 @@ class WalrusNetworkConfig(DataClassJsonMixin):
     network_name: str = dataclasses.field(default="")
     pysui_group_name: str = dataclasses.field(default="")
     pysui_profile_name: str = dataclasses.field(default="")
-    walrus_aggregator: str = dataclasses.field(default="")
-    walrus_publisher: str = dataclasses.field(default="")
+    walrus_url: str = dataclasses.field(default="")
     system_object: str = dataclasses.field(default="")
     staking_object: str = dataclasses.field(default="")
     exchange_objects: list[str] = dataclasses.field(default_factory=list)
     network_type: NetworkType = dataclasses.field(default=NetworkType.TEST)
+
+    def __post_init__(self) -> None:
+        if not self.network_name:
+            raise ValueError("WalrusNetworkConfig.network_name must not be empty.")
 
 
 @dataclasses.dataclass
@@ -107,13 +107,13 @@ class PytuskConfigModel(DataClassJsonMixin):
 class PytuskConfiguration:
     """pytusk configuration.
 
-    Loads from or creates a JSON config file (default: ~/.pytusk/PytuskConfig.json).
+    Loads from or creates a JSON config file (default: ~/.pysui/PytuskConfig.json).
     On first run the file is auto-created with testnet and mainnet defaults pre-populated.
     The walrus binary path is auto-detected from ~/.cargo/bin/walrus or PATH on creation.
 
     Args:
         from_cfg_path (str | None): Directory containing PytuskConfig.json.
-            Defaults to ~/.pytusk/.
+            Defaults to ~/.pysui/.
         active_network (str | None): Override the active network ('testnet' or 'mainnet').
         persist (bool): If True, persist any overrides back to the config file.
         pysui_config_path (str | None): Override the pysui config folder path passed to
@@ -147,7 +147,7 @@ class PytuskConfiguration:
 
         Args:
             from_cfg_path (str | None): Directory containing PytuskConfig.json.
-                Defaults to ~/.pytusk/.
+                Defaults to ~/.pysui/.
             active_network (str | None): Override the active network. Must match
                 a network_name present in the loaded configuration.
             persist (bool): If True, persist any overrides back to the config file.
@@ -241,17 +241,17 @@ class PytuskConfiguration:
     @property
     def pysui_config_path(self) -> str:
         """Path to the pysui config folder."""
-        return self._pysui_config_path_override or self._model.pysui_config_path
+        return self._pysui_config_path_override if self._pysui_config_path_override is not None else self._model.pysui_config_path
 
     @property
     def pysui_group_name(self) -> str:
         """Active pysui ProfileGroup name; session override takes precedence over network default."""
-        return self._pysui_group_name_override or self.active_network_entry.pysui_group_name
+        return self._pysui_group_name_override if self._pysui_group_name_override is not None else self.network.pysui_group_name
 
     @property
     def pysui_profile_name(self) -> str:
         """Active pysui Profile name; session override takes precedence over network default."""
-        return self._pysui_profile_name_override or self.active_network_entry.pysui_profile_name
+        return self._pysui_profile_name_override if self._pysui_profile_name_override is not None else self.network.pysui_profile_name
 
     @property
     def pysui_address(self) -> str | None:
@@ -293,11 +293,6 @@ class PytuskConfiguration:
 
     @property
     def network(self) -> WalrusNetworkConfig:
-        """WalrusNetworkConfig for the active network (shorthand for active_network_entry)."""
-        return self.active_network_entry
-
-    @property
-    def active_network_entry(self) -> WalrusNetworkConfig:
         """WalrusNetworkConfig for the active network.
 
         Returns:
@@ -312,6 +307,11 @@ class PytuskConfiguration:
         raise ValueError(
             f"No network config found for active network '{self._model.active_network}'."
         )
+
+    @property
+    def active_network_entry(self) -> WalrusNetworkConfig:
+        """Alias for network; retained for backwards compatibility."""
+        return self.network
 
     # ------------------------------------------------------------------
     # CRUD
@@ -334,6 +334,7 @@ class PytuskConfiguration:
                 f"Must be one of {sorted(known)}."
             )
         self._model.active_network = network
+        self._pysui_configuration = None
         if persist:
             self._write_model(self._cfg_dir)
 
@@ -355,6 +356,7 @@ class PytuskConfiguration:
             n for n in self._model.networks if n.network_name != network.network_name
         ]
         self._model.networks.append(network)
+        self._pysui_configuration = None
         if persist:
             self._write_model(self._cfg_dir)
 
@@ -391,6 +393,7 @@ class PytuskConfiguration:
             persist (bool): If True, persist the change to the config file.
         """
         self._model.pysui_config_path = str(Path(path).expanduser())
+        self._pysui_configuration = None
         if persist:
             self._write_model(self._cfg_dir)
 
