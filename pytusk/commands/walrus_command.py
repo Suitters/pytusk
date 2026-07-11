@@ -8,7 +8,7 @@
 import dataclasses
 from abc import ABC, abstractmethod
 
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 from dataclasses_json import DataClassJsonMixin
@@ -23,6 +23,8 @@ class WalrusCommand(ABC):
     the abstract methods to describe the HTTP request and parse the response.
     """
 
+    _endpoint_role: ClassVar[str] = "aggregator"
+
     @abstractmethod
     def http_method(self) -> str:
         """HTTP method for this command (e.g. 'GET', 'PUT', 'POST').
@@ -36,7 +38,8 @@ class WalrusCommand(ABC):
         """Construct the full request URL.
 
         Args:
-            base_url (str): Walrus daemon base URL from active network config.
+            base_url (str): Walrus aggregator or publisher base URL, selected by
+                the client according to this command's _endpoint_role.
 
         Returns:
             str: Full request URL.

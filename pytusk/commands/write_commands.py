@@ -7,7 +7,7 @@
 
 import dataclasses
 
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 from pysui import SuiRpcResult
@@ -23,13 +23,15 @@ from pytusk.commands.walrus_command import (
 class StoreBlob(WalrusCommand):
     """Store a blob on Walrus.
 
-    PUT {walrus_url}/v1/blobs
+    PUT {walrus_publisher_url}/v1/blobs
 
     Args:
         data (bytes): Raw blob content to store.
         epochs (int): Number of epochs to store the blob for.
         deletable (bool): If True, the blob may be deleted before expiry.
     """
+
+    _endpoint_role: ClassVar[str] = "publisher"
 
     data: bytes
     epochs: int
@@ -79,12 +81,14 @@ class StoreBlob(WalrusCommand):
 class StoreQuilt(WalrusCommand):
     """Store a quilt (collection of named blobs) on Walrus.
 
-    PUT {walrus_url}/v1/quilts
+    PUT {walrus_publisher_url}/v1/quilts
 
     Args:
         files (dict[str, bytes]): Mapping of patch key to raw file content.
         epochs (int): Number of epochs to store the quilt for.
     """
+
+    _endpoint_role: ClassVar[str] = "publisher"
 
     files: dict[str, bytes]
     epochs: int

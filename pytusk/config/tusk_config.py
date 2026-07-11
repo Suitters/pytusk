@@ -30,7 +30,8 @@ _DEFAULT_NETWORKS: list[dict[str, Any]] = [
         "network_name": "testnet",
         "pysui_group_name": "sui_gql_config",
         "pysui_profile_name": "testnet",
-        "walrus_url": "https://aggregator.walrus-testnet.walrus.space",
+        "walrus_aggregator_url": "https://aggregator.walrus-testnet.walrus.space",
+        "walrus_publisher_url": "https://publisher.walrus-testnet.walrus.space",
         "system_object": "0x6c2547cbbc38025cf3adac45f63cb0a8d12ecf777cdc75a4971612bf97fdf6af",
         "staking_object": "0xbe46180321c30aab2f8b3501e24048377287fa708018a5b7c2792b35fe339ee3",
         "exchange_objects": [
@@ -45,7 +46,8 @@ _DEFAULT_NETWORKS: list[dict[str, Any]] = [
         "network_name": "mainnet",
         "pysui_group_name": "sui_gql_config",
         "pysui_profile_name": "mainnet",
-        "walrus_url": "https://aggregator.walrus-mainnet.walrus.space",
+        "walrus_aggregator_url": "https://aggregator.walrus-mainnet.walrus.space",
+        "walrus_publisher_url": "",
         "system_object": "0x2134d52768ea07e8c43570ef975eb3e4c27a39fa6396bef985b5abc58d03ddd2",
         "staking_object": "0x10b9d30c28448939ce6c4d6c6e0ffce4a7f8a4ada8248bdad09ef8b70e4a3904",
         "exchange_objects": [],
@@ -62,7 +64,9 @@ class WalrusNetworkConfig(DataClassJsonMixin):
         network_name (str): Network identifier (e.g. 'testnet', 'mainnet').
         pysui_group_name (str): pysui ProfileGroup name (e.g. 'sui_gql_config').
         pysui_profile_name (str): pysui Profile name matching the user's pysui config.
-        walrus_url (str): Walrus daemon URL for read and write operations.
+        walrus_aggregator_url (str): Walrus aggregator URL for read operations.
+        walrus_publisher_url (str): Walrus publisher URL for write operations. May be
+            empty (e.g. mainnet has no public unauthenticated publisher by design).
         system_object (str): Walrus system object ID on-chain.
         staking_object (str): Walrus staking object ID on-chain.
         exchange_objects (list[str]): Walrus exchange object IDs for SUI->WAL swap (testnet only).
@@ -72,7 +76,8 @@ class WalrusNetworkConfig(DataClassJsonMixin):
     network_name: str = dataclasses.field(default="")
     pysui_group_name: str = dataclasses.field(default="")
     pysui_profile_name: str = dataclasses.field(default="")
-    walrus_url: str = dataclasses.field(default="")
+    walrus_aggregator_url: str = dataclasses.field(default="")
+    walrus_publisher_url: str = dataclasses.field(default="")
     system_object: str = dataclasses.field(default="")
     staking_object: str = dataclasses.field(default="")
     exchange_objects: list[str] = dataclasses.field(default_factory=list)
@@ -407,6 +412,55 @@ class PytuskConfiguration:
         self._model.walrus_binary_path = str(Path(path).expanduser())
         if persist:
             self._write_model(self._cfg_dir)
+
+    def set_walrus_aggregator_url(self, *, network_name: str, url: str, persist: bool = False) -> None:
+        """Set the Walrus aggregator URL for a network.
+
+        Unlike add_network/remove_network, this method may target reserved
+        networks (testnet, mainnet) since it only updates a single field
+        rather than replacing the whole network entry.
+
+        Args:
+            network_name (str): Name of the network to update.
+            url (str): Walrus aggregator URL for read operations.
+            persist (bool): If True, persist the change to the config file.
+
+        Raises:
+            ValueError: If network_name is not found in the configuration.
+        """
+        for net in self._model.networks:
+            if net.network_name == network_name:
+                net.walrus_aggregator_url = url
+                if persist:
+                    self._write_model(self._cfg_dir)
+                return
+        raise ValueError(f"Network '{network_name}' not found in configuration.")
+
+    def set_walrus_publisher_url(self, *, network_name: str, url: str, persist: bool = False) -> None:
+        """Set the Walrus publisher URL for a network.
+
+        Unlike add_network/remove_network, this method may target reserved
+        networks (testnet, mainnet) since it only updates a single field
+        rather than replacing the whole network entry. This is the intended
+        way to configure a self-hosted publisher for mainnet, which ships
+        with an empty default (Mysten runs no public unauthenticated
+        mainnet publisher).
+
+        Args:
+            network_name (str): Name of the network to update.
+            url (str): Walrus publisher URL for write operations.
+            persist (bool): If True, persist the change to the config file.
+
+        Raises:
+            ValueError: If network_name is not found in the configuration.
+        """
+        for net in self._model.networks:
+            if net.network_name == network_name:
+                net.walrus_publisher_url = url
+                if persist:
+                    self._write_model(self._cfg_dir)
+                return
+        raise ValueError(f"Network '{network_name}' not found in configuration.")
 
     def save(self) -> None:
         """Persist the current configuration to disk."""

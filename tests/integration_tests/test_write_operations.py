@@ -102,7 +102,7 @@ class TestStoreQuilt:
 class TestPublisherGuard:
     async def test_store_raises_without_publisher(self):
         cfg = PytuskConfiguration()
-        cfg.active_network_entry.walrus_publisher = ""
+        cfg.active_network_entry.walrus_publisher_url = ""
         async with WalrusClient(pytusk_config=cfg) as client:
             with pytest.raises(ValueError, match="No publisher URL"):
                 await client.execute(

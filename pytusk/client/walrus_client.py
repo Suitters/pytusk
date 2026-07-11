@@ -25,9 +25,10 @@ from pytusk.config.tusk_config import PytuskConfiguration
 class WalrusClient(AsyncClientBase):
     """Async client for Walrus HTTP operations and Sui transactions.
 
-    Wraps an httpx.AsyncClient for Walrus daemon calls and an internal
-    pysui async client for Sui-level operations. Dispatches WalrusCommand
-    instances over HTTP and SuiCommand instances through the pysui client.
+    Wraps an httpx.AsyncClient for Walrus aggregator/publisher calls and an
+    internal pysui async client for Sui-level operations. Dispatches
+    WalrusCommand instances over HTTP and SuiCommand instances through the
+    pysui client.
 
     Use as an async context manager to ensure the underlying httpx client
     is properly opened and closed.
@@ -155,7 +156,8 @@ class WalrusClient(AsyncClientBase):
     ) -> SuiRpcResult:
         """Dispatch a WalrusCommand over HTTP.
 
-        All requests are routed to the configured Walrus daemon URL.
+        Requests are routed to the network's aggregator URL for reads or
+        publisher URL for writes, based on the command's _endpoint_role.
 
         Args:
             command (WalrusCommand): Command to dispatch.
@@ -164,9 +166,21 @@ class WalrusClient(AsyncClientBase):
 
         Returns:
             SuiRpcResult: Parsed result from command.parse_response().
+
+        Raises:
+            ValueError: If command requires the publisher role and no
+                publisher URL is configured for the active network.
         """
         method = command.http_method()
-        base_url = self._pytusk_config.network.walrus_url
+        network = self._pytusk_config.network
+        if command._endpoint_role == "publisher":
+            base_url = network.walrus_publisher_url
+            if not base_url:
+                raise ValueError(
+                    f"No publisher URL configured for network '{network.network_name}'."
+                )
+        else:
+            base_url = network.walrus_aggregator_url
         url = command.url_path(base_url)
         params = command.query_params() or None
         body = command.request_body()

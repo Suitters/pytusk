@@ -12,6 +12,8 @@ twine = "*"
 build = "*"
 pytest = "*"
 pytest-asyncio = "*"
+sphinx = "*"
+sphinx_rtd_theme = "*"
 
 [requires]
 python_version = "3.11"

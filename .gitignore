@@ -17,3 +17,7 @@ pytusk.egg-info/
 Pipfile.lock
 openapi.json
 temp_*.py
+
+# Sphinx auto-generated module stubs
+doc/source/modules.rst
+doc/source/pytusk*.rst
