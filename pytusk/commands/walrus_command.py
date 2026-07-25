@@ -140,7 +140,7 @@ class BlobReceipt(DataClassJsonMixin):
         object_id (str): Sui object ID of the stored blob (empty for alreadyCertified blobs).
         blob_id (str): Walrus blob identifier.
         cost (int): Storage cost in MIST.
-        expiry_epoch (int): Sui epoch at which the blob expires.
+        expiry_epoch (int): Walrus epoch at which the blob expires.
         deletable (bool): True if the blob was stored as deletable.
     """
 
@@ -161,7 +161,7 @@ class QuiltReceipt(DataClassJsonMixin):
         quilt_id (str): Walrus quilt identifier.
         patch_keys (list[str]): Keys assigned to each patch in the quilt.
         cost (int): Storage cost in MIST.
-        expiry_epoch (int): Sui epoch at which the quilt expires.
+        expiry_epoch (int): Walrus epoch at which the quilt expires.
         object_id (str): Sui object ID of the stored quilt blob.
     """
 
