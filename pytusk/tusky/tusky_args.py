@@ -41,36 +41,45 @@ def _add_config_args(subp: argparse.ArgumentParser) -> None:
     subp.add_argument(
         "--pysui-profile",
         dest="pysui_profile_name",
-        default=None,
-        help="Override the pysui Profile for this session.",
+        default="testnet",
+        help="Override the pysui Profile for this session (default: testnet).",
     )
-    subp.add_argument(
+    addr_group = subp.add_mutually_exclusive_group()
+    addr_group.add_argument(
         "--pysui-address",
         dest="pysui_address",
         default=None,
-        help="Set the active Sui address for this session.",
+        help="Set the active Sui address for this session. Mutually exclusive with --pysui-alias.",
     )
-    subp.add_argument(
+    addr_group.add_argument(
         "--pysui-alias",
         dest="pysui_alias",
         default=None,
-        help="Set the active Sui address by alias for this session.",
+        help="Set the active Sui address by alias for this session. Mutually exclusive with --pysui-address.",
     )
 
 
-def _add_blob_id_arg(subp: argparse.ArgumentParser, *, required: bool = True) -> None:
+def _add_blob_id_arg(
+    subp: argparse.ArgumentParser,
+    *,
+    required: bool = True,
+    help_text: str = "Sui object ID of the blob.",
+) -> None:
     """Add the -i/--blobid argument.
 
     Args:
         subp (argparse.ArgumentParser): The subparser to add the argument to.
         required (bool): Whether the argument is required. Defaults to True.
+        help_text (str): Help text for the argument. Defaults to describing
+            a Sui object ID; override for commands that take a different
+            identifier (e.g. read_blob's Walrus blob ID).
     """
     subp.add_argument(
         "-i",
         "--blobid",
         dest="blobid",
         required=required,
-        help="Sui object ID of the blob.",
+        help=help_text,
     )
 
 
@@ -122,6 +131,18 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_blobs = subparsers.add_parser(
         "blobs", help="List all blobs owned by the active address."
     )
+    p_blobs.add_argument(
+        "--deletable",
+        choices=["any", "true", "false"],
+        default="any",
+        help="Filter by deletable status (default: any).",
+    )
+    p_blobs.add_argument(
+        "--status",
+        choices=["any", "active", "expired"],
+        default="any",
+        help="Filter by expiry status relative to the current Walrus epoch (default: any).",
+    )
     _add_config_args(p_blobs)
 
     p_blob = subparsers.add_parser(
@@ -133,7 +154,10 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_read_blob = subparsers.add_parser(
         "read_blob", help="Read blob content via the Walrus HTTP aggregator."
     )
-    _add_blob_id_arg(p_read_blob)
+    _add_blob_id_arg(
+        p_read_blob,
+        help_text="Walrus blob ID (URL-safe base64, content hash) to read.",
+    )
     _add_config_args(p_read_blob)
 
     # --- HTTP action command (no --mode; no transaction involved) ---
@@ -141,14 +165,31 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_store_blob = subparsers.add_parser(
         "store_blob", help="Store a blob via the Walrus HTTP publisher."
     )
-    p_store_blob.add_argument(
-        "--content", required=True, help="Blob content (UTF-8 text)."
+    content_group = p_store_blob.add_mutually_exclusive_group(required=True)
+    content_group.add_argument(
+        "--content",
+        help="Blob content (UTF-8 text). Mutually exclusive with --file.",
+    )
+    content_group.add_argument(
+        "--file",
+        help="Path to a file whose raw bytes will be stored. Mutually exclusive with --content.",
     )
     p_store_blob.add_argument(
         "--epochs", type=int, required=True, help="Number of epochs to store."
     )
     p_store_blob.add_argument(
         "--deletable", action="store_true", help="Store as a deletable blob."
+    )
+    p_store_blob.add_argument(
+        "--permanent",
+        action="store_true",
+        help="Store as a permanent blob (cannot be deleted before expiry).",
+    )
+    p_store_blob.add_argument(
+        "--recipient",
+        dest="recipient",
+        default=None,
+        help="Sui address to receive the stored blob object (default: active address).",
     )
     _add_config_args(p_store_blob)
 

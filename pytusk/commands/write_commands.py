@@ -28,14 +28,23 @@ class StoreBlob(WalrusCommand):
     Args:
         data (bytes): Raw blob content to store.
         epochs (int): Number of epochs to store the blob for.
+        send_object_to (str): Sui address to receive the created blob object.
+            The publisher creates the blob object under its own wallet unless
+            this is set, so ownership never transfers to the caller otherwise.
         deletable (bool): If True, the blob may be deleted before expiry.
+        permanent (bool): If True, the blob cannot be deleted before expiry.
+            Sent as its own query parameter alongside deletable, matching the
+            Walrus HTTP API's own two-parameter model rather than assuming
+            deletable=False is equivalent (unconfirmed against a live publisher).
     """
 
     _endpoint_role: ClassVar[str] = "publisher"
 
     data: bytes
     epochs: int
+    send_object_to: str
     deletable: bool = dataclasses.field(default=False)
+    permanent: bool = dataclasses.field(default=False)
 
     def http_method(self) -> str:
         return "PUT"
@@ -44,7 +53,12 @@ class StoreBlob(WalrusCommand):
         return f"{base_url}/v1/blobs"
 
     def query_params(self) -> dict[str, Any]:
-        return {"epochs": self.epochs, "deletable": str(self.deletable).lower()}
+        return {
+            "epochs": self.epochs,
+            "deletable": str(self.deletable).lower(),
+            "permanent": str(self.permanent).lower(),
+            "send_object_to": self.send_object_to,
+        }
 
     def request_body(self) -> bytes | None:
         return self.data

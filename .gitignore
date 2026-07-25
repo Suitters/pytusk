@@ -18,6 +18,8 @@ Pipfile.lock
 openapi.json
 temp_*.py
 temp_*.json
+__pycache__
+.pytest_cache
 
 # Sphinx auto-generated module stubs
 doc/source/modules.rst

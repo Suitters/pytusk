@@ -5,25 +5,33 @@
 
 """tusky CLI entry point.
 
-This is currently a parser-only scaffold: it builds the argument parser and
-prints the parsed arguments. Dispatch to command handlers (tusky_cmds.py)
-and PytuskConfiguration/WalrusClient wiring are added in a follow-up once
-the PytuskConfiguration initialization issue is resolved.
+Dispatches parsed subcommands to their handlers in tusky_cmds.py. Only a
+subset of subcommands have a wired handler so far; the rest fall through to
+a "not yet implemented" message.
 """
 
+import asyncio
 import sys
 
+from pytusk.tusky import tusky_cmds
 from pytusk.tusky.tusky_args import build_parser
+
+_DISPATCH = {
+    "read_blob": tusky_cmds.read_blob,
+    "store_blob": tusky_cmds.store_blob,
+    "blobs": tusky_cmds.blobs,
+    "blob": tusky_cmds.blob,
+}
 
 
 def main() -> None:
-    """Parse CLI arguments and print the resulting namespace.
-
-    This is a placeholder entry point for exercising the argparse structure
-    (`tusky -h`, `tusky <command> -h`) before command dispatch is wired in.
-    """
+    """Parse CLI arguments and dispatch to the matching subcommand handler."""
     parsed = build_parser(in_args=sys.argv[1:])
-    print(parsed)
+    handler = _DISPATCH.get(parsed.subcommand)
+    if handler is None:
+        print(f"'{parsed.subcommand}' is not yet implemented.", file=sys.stderr)
+        sys.exit(1)
+    asyncio.run(handler(parsed))
 
 
 if __name__ == "__main__":
