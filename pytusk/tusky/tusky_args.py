@@ -160,6 +160,17 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     _add_config_args(p_read_blob)
 
+    p_wal_coins = subparsers.add_parser(
+        "wal_coins", help="List WAL coin objects owned by an address."
+    )
+    p_wal_coins.add_argument(
+        "--address",
+        dest="address",
+        default=None,
+        help="Sui address to list WAL coins for (default: active address).",
+    )
+    _add_config_args(p_wal_coins)
+
     # --- HTTP action command (no --mode; no transaction involved) ---
 
     p_store_blob = subparsers.add_parser(
@@ -195,17 +206,17 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
 
     # --- PTB action commands (--mode + sender/sponsor apply) ---
 
-    p_get_wal = subparsers.add_parser(
-        "get_wal", help="Exchange SUI for WAL (testnet only)."
+    p_exchange_for_wal = subparsers.add_parser(
+        "exchange_for_wal", help="Exchange SUI for WAL (testnet only)."
     )
-    p_get_wal.add_argument(
+    p_exchange_for_wal.add_argument(
         "--amount",
         type=int,
         required=True,
         help="Amount of SUI to exchange, in MIST.",
     )
-    _add_signing_args(p_get_wal)
-    _add_config_args(p_get_wal)
+    _add_signing_args(p_exchange_for_wal)
+    _add_config_args(p_exchange_for_wal)
 
     p_exchange_for_sui = subparsers.add_parser(
         "exchange_for_sui", help="Exchange WAL for SUI (testnet only)."
@@ -215,6 +226,14 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         type=int,
         required=True,
         help="Amount of WAL to exchange, in FROST.",
+    )
+    p_exchange_for_sui.add_argument(
+        "--merge",
+        action="store_true",
+        help=(
+            "Merge multiple owned WAL coins (largest-first) if no single "
+            "coin covers --amount."
+        ),
     )
     _add_signing_args(p_exchange_for_sui)
     _add_config_args(p_exchange_for_sui)
