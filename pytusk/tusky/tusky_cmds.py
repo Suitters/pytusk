@@ -24,6 +24,7 @@ from pysui import (
     GetObjectsOwnedByAddress,
     PysuiConfiguration,
     SimulateTransaction,
+    SuiRpcResult,
 )
 from pysui.sui.sui_bcs import bcs
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
@@ -60,6 +61,27 @@ def _config_from_args(args: argparse.Namespace) -> PytuskConfiguration:
     )
 
 
+def _resolve_address_or_alias(*, config: PysuiConfiguration, arg: str) -> str:
+    """Resolve an address or alias string to a Sui address known to PysuiConfiguration.
+
+    Args:
+        config (PysuiConfiguration): The active pysui configuration used to
+            resolve addresses and aliases.
+        arg (str): Address (0x-prefixed) or alias to resolve.
+
+    Returns:
+        str: The resolved address.
+
+    Raises:
+        ValueError: If arg is an address or alias not found in the active
+            PysuiConfiguration group.
+    """
+    if arg.startswith("0x"):
+        config.alias_for_address(address=arg)
+        return arg
+    return config.address_for_alias(alias_name=arg)
+
+
 def _resolve_sender(*, config: PysuiConfiguration, sender_arg: str | None) -> str:
     """Resolve a --sender argument to a Sui address known to PysuiConfiguration.
 
@@ -78,10 +100,37 @@ def _resolve_sender(*, config: PysuiConfiguration, sender_arg: str | None) -> st
     """
     if not sender_arg:
         return config.active_address
-    if sender_arg.startswith("0x"):
-        config.alias_for_address(address=sender_arg)
-        return sender_arg
-    return config.address_for_alias(alias_name=sender_arg)
+    return _resolve_address_or_alias(config=config, arg=sender_arg)
+
+
+def _resolve_sponsor(
+    *, config: PysuiConfiguration, sponsor_arg: str | None
+) -> str | None:
+    """Resolve a --sponsor argument to a Sui address known to PysuiConfiguration.
+
+    tusky assumes sponsors are addresses/keys already known to the active
+    PysuiConfiguration, since build_and_sign() signs for sender and sponsor
+    both by looking up local keypairs; an out-of-band sponsor-signing flow
+    for externally-held sponsors is not supported here (that belongs in
+    pysui itself, not tusky).
+
+    Args:
+        config (PysuiConfiguration): The active pysui configuration used to
+            resolve addresses and aliases.
+        sponsor_arg (str | None): Address or alias from --sponsor, or None
+            if no sponsor was given.
+
+    Returns:
+        str | None: The resolved sponsor address, or None if no sponsor was
+            given.
+
+    Raises:
+        ValueError: If sponsor_arg is an address or alias not found in the
+            active PysuiConfiguration group.
+    """
+    if not sponsor_arg:
+        return None
+    return _resolve_address_or_alias(config=config, arg=sponsor_arg)
 
 
 def _require_testnet_exchange(*, config: PytuskConfiguration, command_name: str) -> None:
@@ -155,6 +204,127 @@ async def _wal_balance_and_decimals(
         )
         sys.exit(1)
     return wal_entry, metadata.decimals
+
+
+_MAX_BURNS_PER_PTB = 100
+
+
+async def _walrus_package_id(*, client: WalrusClient) -> tuple[str, str]:
+    """Fetch the System object ID and the current Walrus package ID.
+
+    The package ID is read from System.package_id rather than assumed from
+    a Blob's type-tag address, since the type-tag address can go stale
+    after a package upgrade.
+
+    Args:
+        client (WalrusClient): Client used to fetch the System object.
+
+    Returns:
+        tuple[str, str]: (system_obj_id, walrus_pkg).
+    """
+    system_obj_id = client.config.network.system_object
+    sys_result = await client.execute(command=GetObject(object_id=system_obj_id))
+    if not sys_result.is_ok():
+        print(
+            f"Error fetching System object: {sys_result.result_string}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    walrus_pkg = sys_result.result_data.json.struct_value.fields[
+        "package_id"
+    ].string_value
+    return system_obj_id, walrus_pkg
+
+
+def _blob_deletable_and_end_epoch(obj: sui_prot.Object) -> tuple[bool, int]:
+    """Extract a Blob object's deletable flag and storage end_epoch.
+
+    Args:
+        obj (sui_prot.Object): A fetched object expected to be a Walrus Blob.
+
+    Returns:
+        tuple[bool, int]: (deletable, end_epoch); (False, 0) if the expected
+            fields are missing.
+    """
+    if not (obj.json and obj.json.struct_value):
+        return False, 0
+    fields = obj.json.struct_value.fields
+    end_epoch = 0
+    storage_val = fields.get("storage")
+    if storage_val and storage_val.struct_value:
+        end_epoch_val = storage_val.struct_value.fields.get("end_epoch")
+        end_epoch = int(end_epoch_val.number_value) if end_epoch_val else 0
+    deletable_val = fields.get("deletable")
+    deletable = bool(deletable_val and deletable_val.bool_value)
+    return deletable, end_epoch
+
+
+async def _submit(*, client: WalrusClient, txdict: dict, mode: str) -> SuiRpcResult:
+    """Simulate or execute a signed transaction dict, per --mode.
+
+    Args:
+        client (WalrusClient): Client used to submit the transaction.
+        txdict (dict): Result of AsyncSuiTransaction.build_and_sign().
+        mode (str): "simulate" or "execute".
+
+    Returns:
+        SuiRpcResult: The result of the simulate or execute RPC call.
+    """
+    if mode == "simulate":
+        return await client.execute(
+            command=SimulateTransaction(tx_bytestr=txdict["tx_bytestr"])
+        )
+    return await client.execute(command=ExecuteTransaction(**txdict))
+
+
+async def _burn_blob_batches(
+    *,
+    client: WalrusClient,
+    walrus_pkg: str,
+    blob_ids: list[str],
+    sender: str,
+    sponsor: str | None,
+    mode: str,
+) -> list[sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse]:
+    """Burn blob objects via blob::burn, batched _MAX_BURNS_PER_PTB per PTB.
+
+    Args:
+        client (WalrusClient): Client used to build and submit transactions.
+        walrus_pkg (str): Walrus package ID (from System.package_id).
+        blob_ids (list[str]): Sui object IDs of blobs to burn.
+        sender (str): Resolved sender address.
+        sponsor (str | None): Resolved sponsor address, if any.
+        mode (str): "simulate" or "execute".
+
+    Returns:
+        list[sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse]:
+            One result per batch transaction.
+    """
+    results: list[
+        sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse
+    ] = []
+    for batch_start in range(0, len(blob_ids), _MAX_BURNS_PER_PTB):
+        batch = blob_ids[batch_start : batch_start + _MAX_BURNS_PER_PTB]
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        for blob_id in batch:
+            await txn.move_call(
+                target=f"{walrus_pkg}::blob::burn",
+                arguments=[blob_id],
+                type_arguments=[],
+            )
+        txdict = await txn.build_and_sign()
+        result = await _submit(client=client, txdict=txdict, mode=mode)
+        if not result.is_ok():
+            print(
+                f"Error burning batch {batch_start // _MAX_BURNS_PER_PTB + 1}: "
+                f"{result.result_string}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        results.append(result.result_data)
+    return results
 
 
 async def read_blob(args: argparse.Namespace) -> None:
@@ -315,8 +485,11 @@ async def exchange_for_wal(args: argparse.Namespace) -> None:
             sender = _resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
+            sponsor = _resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
         except ValueError as exc:
-            print(f"Error resolving --sender: {exc}", file=sys.stderr)
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
             sys.exit(1)
 
         exchange_obj_id = client.config.network.exchange_objects[0]
@@ -332,7 +505,7 @@ async def exchange_for_wal(args: argparse.Namespace) -> None:
         wal_exchange_pkg = exchange_result.result_data.object_type.split("::")[0]
 
         txn: AsyncSuiTransaction = await client.transaction(
-            initial_sender=sender, initial_sponsor=args.sponsor
+            initial_sender=sender, initial_sponsor=sponsor
         )
         split = await txn.split_coin(coin=txn.gas, amounts=[args.amount])
         wal_coin = cast(
@@ -387,8 +560,11 @@ async def exchange_for_sui(args: argparse.Namespace) -> None:
             sender = _resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
+            sponsor = _resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
         except ValueError as exc:
-            print(f"Error resolving --sender: {exc}", file=sys.stderr)
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
             sys.exit(1)
 
         exchange_obj_id = client.config.network.exchange_objects[0]
@@ -449,7 +625,7 @@ async def exchange_for_sui(args: argparse.Namespace) -> None:
         )
 
         txn: AsyncSuiTransaction = await client.transaction(
-            initial_sender=sender, initial_sponsor=args.sponsor
+            initial_sender=sender, initial_sponsor=sponsor
         )
 
         use_coin_id = coins[0].object_id
@@ -510,6 +686,187 @@ async def exchange_for_sui(args: argparse.Namespace) -> None:
         print(f"Error in exchange_for_sui: {result.result_string}", file=sys.stderr)
         sys.exit(1)
     print(result.result_data.to_json(indent=2))
+
+
+async def delete_blob(args: argparse.Namespace) -> None:
+    """Delete one blob, or all active deletable blobs, owned by the sender.
+
+    In -i mode, the target blob is deleted via system::delete_blob if it is
+    deletable and not expired; if it is not eligible and --burn was given,
+    it is burned instead via blob::burn (an ineligible blob without --burn
+    is a clean error). In --all-blobs mode, all active deletable blobs
+    owned by the sender are deleted in one transaction; if --burn was
+    given, expired blobs (any type) are additionally burned in a separate
+    batched pass.
+
+    Args:
+        args (argparse.Namespace): Parsed `delete_blob` subcommand arguments.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = _resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = _resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            current_epoch = await get_walrus_epoch(client)
+        except RuntimeError as exc:
+            print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        system_obj_id, walrus_pkg = await _walrus_package_id(client=client)
+
+        if args.blobid:
+            blob_result = await client.execute(
+                command=GetObject(object_id=args.blobid)
+            )
+            if not blob_result.is_ok():
+                print(
+                    f"Error fetching blob object: {blob_result.result_string}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            obj = blob_result.result_data
+            if not (obj.object_type and "::blob::Blob" in obj.object_type):
+                print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
+                sys.exit(1)
+            deletable, end_epoch = _blob_deletable_and_end_epoch(obj)
+
+            txn: AsyncSuiTransaction = await client.transaction(
+                initial_sender=sender, initial_sponsor=sponsor
+            )
+            if deletable and end_epoch > current_epoch:
+                storage = await txn.move_call(
+                    target=f"{walrus_pkg}::system::delete_blob",
+                    arguments=[system_obj_id, args.blobid],
+                    type_arguments=[],
+                )
+                await txn.transfer_objects(transfers=[storage], recipient=sender)
+                action = "Deleted"
+            elif args.burn:
+                await txn.move_call(
+                    target=f"{walrus_pkg}::blob::burn",
+                    arguments=[args.blobid],
+                    type_arguments=[],
+                )
+                action = "Burned"
+            else:
+                print(
+                    f"{args.blobid} is not eligible for delete_blob "
+                    f"(deletable={deletable}, end_epoch={end_epoch}, "
+                    f"current_epoch={current_epoch}); pass --burn to burn it instead.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            txdict = await txn.build_and_sign()
+            result = await _submit(client=client, txdict=txdict, mode=args.mode)
+            if not result.is_ok():
+                print(f"Error in delete_blob: {result.result_string}", file=sys.stderr)
+                sys.exit(1)
+            print(f"{action} {args.blobid}.")
+            print(result.result_data.to_json(indent=2))
+            return
+
+        objects_result = await client.execute_for_all(
+            command=GetObjectsOwnedByAddress(owner=sender)
+        )
+        if not objects_result.is_ok():
+            print(
+                f"Error listing owned objects: {objects_result.result_string}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        active_deletable: list[str] = []
+        expired: list[str] = []
+        for obj in objects_result.result_data.objects:
+            if not (obj.object_type and "::blob::Blob" in obj.object_type):
+                continue
+            deletable, end_epoch = _blob_deletable_and_end_epoch(obj)
+            if end_epoch <= current_epoch:
+                expired.append(obj.object_id)
+            elif deletable:
+                active_deletable.append(obj.object_id)
+
+        if not active_deletable and not (args.burn and expired):
+            print("No blobs to delete.")
+            return
+
+        if active_deletable:
+            txn: AsyncSuiTransaction = await client.transaction(
+                initial_sender=sender, initial_sponsor=sponsor
+            )
+            storage_objects = []
+            for blob_id in active_deletable:
+                storage = await txn.move_call(
+                    target=f"{walrus_pkg}::system::delete_blob",
+                    arguments=[system_obj_id, blob_id],
+                    type_arguments=[],
+                )
+                storage_objects.append(storage)
+            await txn.transfer_objects(transfers=storage_objects, recipient=sender)
+            txdict = await txn.build_and_sign()
+            result = await _submit(client=client, txdict=txdict, mode=args.mode)
+            if not result.is_ok():
+                print(f"Error deleting blobs: {result.result_string}", file=sys.stderr)
+                sys.exit(1)
+            print(f"Deleted {len(active_deletable)} blob(s).")
+            print(result.result_data.to_json(indent=2))
+
+        if args.burn and expired:
+            results = await _burn_blob_batches(
+                client=client,
+                walrus_pkg=walrus_pkg,
+                blob_ids=expired,
+                sender=sender,
+                sponsor=sponsor,
+                mode=args.mode,
+            )
+            for idx, result_data in enumerate(results, start=1):
+                print(f"Burned expired batch {idx}/{len(results)}.")
+                print(result_data.to_json(indent=2))
+
+
+async def burn_blob(args: argparse.Namespace) -> None:
+    """Burn one or more blob objects directly via blob::burn.
+
+    Args:
+        args (argparse.Namespace): Parsed `burn_blob` subcommand arguments.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = _resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = _resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        _, walrus_pkg = await _walrus_package_id(client=client)
+        results = await _burn_blob_batches(
+            client=client,
+            walrus_pkg=walrus_pkg,
+            blob_ids=args.blobid,
+            sender=sender,
+            sponsor=sponsor,
+            mode=args.mode,
+        )
+
+    for idx, result_data in enumerate(results, start=1):
+        print(f"Burned batch {idx}/{len(results)}.")
+        print(result_data.to_json(indent=2))
 
 
 async def wal_coins(args: argparse.Namespace) -> None:

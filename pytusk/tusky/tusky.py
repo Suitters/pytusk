@@ -24,6 +24,8 @@ _DISPATCH = {
     "wal_coins": tusky_cmds.wal_coins,
     "exchange_for_wal": tusky_cmds.exchange_for_wal,
     "exchange_for_sui": tusky_cmds.exchange_for_sui,
+    "delete_blob": tusky_cmds.delete_blob,
+    "burn_blob": tusky_cmds.burn_blob,
 }
 
 
