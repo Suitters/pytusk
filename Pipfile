@@ -14,6 +14,8 @@ pytest = "*"
 pytest-asyncio = "*"
 sphinx = "*"
 sphinx_rtd_theme = "*"
+ruff = "*"
+mypy = "*"
 
 [requires]
 python_version = "3.11"

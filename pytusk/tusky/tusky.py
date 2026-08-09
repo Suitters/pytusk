@@ -5,9 +5,7 @@
 
 """tusky CLI entry point.
 
-Dispatches parsed subcommands to their handlers in tusky_cmds.py. Only a
-subset of subcommands have a wired handler so far; the rest fall through to
-a "not yet implemented" message.
+Dispatches parsed subcommands to their handlers in tusky_cmds.py.
 """
 
 import asyncio
@@ -21,9 +19,12 @@ _DISPATCH = {
     "store_blob": tusky_cmds.store_blob,
     "blobs": tusky_cmds.blobs,
     "blob": tusky_cmds.blob,
+    "epoch": tusky_cmds.epoch,
+    "expiry_report": tusky_cmds.expiry_report,
     "wal_coins": tusky_cmds.wal_coins,
     "exchange_for_wal": tusky_cmds.exchange_for_wal,
     "exchange_for_sui": tusky_cmds.exchange_for_sui,
+    "extend_blob_expiration": tusky_cmds.extend_blob_expiration,
     "delete_blob": tusky_cmds.delete_blob,
     "burn_blob": tusky_cmds.burn_blob,
 }

@@ -14,6 +14,7 @@ from typing import Any
 from dataclasses_json import DataClassJsonMixin
 from pysui import PysuiConfiguration
 
+
 class NetworkType(enum.StrEnum):
     """Indicates whether a network configuration targets a test or production environment."""
 
@@ -51,6 +52,7 @@ _DEFAULT_NETWORKS: list[dict[str, Any]] = [
         "system_object": "0x2134d52768ea07e8c43570ef975eb3e4c27a39fa6396bef985b5abc58d03ddd2",
         "staking_object": "0x10b9d30c28448939ce6c4d6c6e0ffce4a7f8a4ada8248bdad09ef8b70e4a3904",
         "exchange_objects": [],
+        "wal_coin_type": "0x356a26eb9e012a68958082340d4c4116e7f55615cf27affcff209cf0ae544f59::wal::WAL",
         "network_type": "production",
     },
 ]
@@ -70,6 +72,11 @@ class WalrusNetworkConfig(DataClassJsonMixin):
         system_object (str): Walrus system object ID on-chain.
         staking_object (str): Walrus staking object ID on-chain.
         exchange_objects (list[str]): Walrus exchange object IDs for SUI->WAL swap (testnet only).
+        wal_coin_type (str): Canonical `<package>::wal::WAL` coin type for
+            this network, used for exact WAL-coin identification instead of
+            a substring match. Empty ("") on networks (e.g. testnet) whose
+            WAL package address isn't stable enough to pin — callers fall
+            back to a substring match in that case.
         network_type (NetworkType): Whether this network is TEST or PRODUCTION. Defaults to TEST.
     """
 
@@ -81,6 +88,7 @@ class WalrusNetworkConfig(DataClassJsonMixin):
     system_object: str = dataclasses.field(default="")
     staking_object: str = dataclasses.field(default="")
     exchange_objects: list[str] = dataclasses.field(default_factory=list)
+    wal_coin_type: str = dataclasses.field(default="")
     network_type: NetworkType = dataclasses.field(default=NetworkType.TEST)
 
     def __post_init__(self) -> None:

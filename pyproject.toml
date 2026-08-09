@@ -31,13 +31,14 @@ classifiers = [
 ]
 
 dependencies = [
-    "pysui>=1.2.0"
+    "pysui>=1.3.0"
 ]
 
 dynamic = ["version", "readme"]
 
 
 [project.scripts]
+tusky = "pytusk.tusky.tusky:main"
 
 [tool.setuptools.packages.find]
 exclude = [

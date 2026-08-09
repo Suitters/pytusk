@@ -11,10 +11,12 @@ tusky.py drives them via asyncio.run.
 """
 
 import argparse
+import asyncio
 import base64
 import sys
 from typing import cast
 
+import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 from pysui import (
     ExecuteTransaction,
     GetAddressCoinBalances,
@@ -28,7 +30,6 @@ from pysui import (
 )
 from pysui.sui.sui_bcs import bcs
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
-import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 
 from pytusk import (
     BlobData,
@@ -51,14 +52,20 @@ def _config_from_args(args: argparse.Namespace) -> PytuskConfiguration:
     Returns:
         PytuskConfiguration: Configuration for this CLI invocation.
     """
-    return PytuskConfiguration(
-        from_cfg_path=args.from_cfg_path,
-        pysui_config_path=args.pysui_config_path,
-        pysui_group_name=args.pysui_group_name,
-        pysui_profile_name=args.pysui_profile_name,
-        pysui_address=args.pysui_address,
-        pysui_alias=args.pysui_alias,
-    )
+    try:
+        return PytuskConfiguration(
+            from_cfg_path=args.from_cfg_path,
+            pysui_config_path=args.pysui_config_path,
+            pysui_group_name=args.pysui_group_name,
+            pysui_profile_name=args.pysui_profile_name,
+            pysui_address=args.pysui_address,
+            pysui_alias=args.pysui_alias,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI entry boundary: convert any
+        # config-loading failure into a clean message instead of a raw
+        # traceback exposing local file paths.
+        print(f"Error loading configuration: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _resolve_address_or_alias(*, config: PysuiConfiguration, arg: str) -> str:
@@ -176,11 +183,15 @@ async def _wal_balance_and_decimals(
             file=sys.stderr,
         )
         sys.exit(1)
+    wal_coin_type = client.config.network.wal_coin_type
     wal_entry = next(
         (
             entry
             for entry in balances_result.result_data.balances
-            if entry.coin_type and "::wal::WAL" in entry.coin_type
+            if entry.coin_type
+            and _matches_wal_coin_type(
+                coin_type=entry.coin_type, wal_coin_type=wal_coin_type
+            )
         ),
         None,
     )
@@ -206,7 +217,28 @@ async def _wal_balance_and_decimals(
     return wal_entry, metadata.decimals
 
 
-_MAX_BURNS_PER_PTB = 100
+_MAX_BLOB_OPS_PER_PTB = 100
+
+
+def _matches_wal_coin_type(*, coin_type: str, wal_coin_type: str) -> bool:
+    """Check whether a coin_type string identifies the WAL coin.
+
+    Uses an exact match against `wal_coin_type` when the active network has
+    a pinned value (currently mainnet only); falls back to a substring
+    match when unpinned (e.g. testnet, whose contracts are redeployed and
+    don't have a stable package address to pin against).
+
+    Args:
+        coin_type (str): The coin_type string to check.
+        wal_coin_type (str): The active network's pinned WAL coin type, or
+            "" if unpinned.
+
+    Returns:
+        bool: True if coin_type identifies the WAL coin.
+    """
+    if wal_coin_type:
+        return coin_type == wal_coin_type
+    return "::wal::WAL" in coin_type
 
 
 async def _walrus_package_id(*, client: WalrusClient) -> tuple[str, str]:
@@ -243,19 +275,37 @@ def _blob_deletable_and_end_epoch(obj: sui_prot.Object) -> tuple[bool, int]:
         obj (sui_prot.Object): A fetched object expected to be a Walrus Blob.
 
     Returns:
-        tuple[bool, int]: (deletable, end_epoch); (False, 0) if the expected
-            fields are missing.
+        tuple[bool, int]: (deletable, end_epoch).
+
+    Raises:
+        ValueError: If the object's JSON view is missing fields a Walrus
+            Blob object is expected to have (e.g. an incomplete RPC
+            response). This is distinct from a normal blob with a real
+            deletable/end_epoch value and must not be silently treated as
+            "not eligible" by callers.
     """
     if not (obj.json and obj.json.struct_value):
-        return False, 0
+        raise ValueError(
+            f"Object {obj.object_id} has no JSON view; cannot determine "
+            "deletable/end_epoch."
+        )
     fields = obj.json.struct_value.fields
-    end_epoch = 0
     storage_val = fields.get("storage")
-    if storage_val and storage_val.struct_value:
-        end_epoch_val = storage_val.struct_value.fields.get("end_epoch")
-        end_epoch = int(end_epoch_val.number_value) if end_epoch_val else 0
+    if not (storage_val and storage_val.struct_value):
+        raise ValueError(
+            f"Object {obj.object_id} is missing its 'storage' field; "
+            "cannot determine end_epoch."
+        )
+    end_epoch_val = storage_val.struct_value.fields.get("end_epoch")
+    if end_epoch_val is None:
+        raise ValueError(
+            f"Object {obj.object_id}'s storage field is missing 'end_epoch'."
+        )
+    end_epoch = int(end_epoch_val.number_value or 0)
     deletable_val = fields.get("deletable")
-    deletable = bool(deletable_val and deletable_val.bool_value)
+    if deletable_val is None:
+        raise ValueError(f"Object {obj.object_id} is missing its 'deletable' field.")
+    deletable = bool(deletable_val.bool_value)
     return deletable, end_epoch
 
 
@@ -285,8 +335,16 @@ async def _burn_blob_batches(
     sender: str,
     sponsor: str | None,
     mode: str,
+    label: str = "Burned batch",
 ) -> list[sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse]:
-    """Burn blob objects via blob::burn, batched _MAX_BURNS_PER_PTB per PTB.
+    """Burn blob objects via blob::burn, batched _MAX_BLOB_OPS_PER_PTB per PTB.
+
+    Each batch's result is printed to stdout as soon as it completes, so a
+    failure partway through still leaves a full record of every batch that
+    succeeded beforehand — nothing is buffered until the end. A single
+    invalid or already-consumed blob ID within a batch aborts that entire
+    batch (all-or-nothing per batch); other, already-submitted batches are
+    unaffected.
 
     Args:
         client (WalrusClient): Client used to build and submit transactions.
@@ -295,16 +353,20 @@ async def _burn_blob_batches(
         sender (str): Resolved sender address.
         sponsor (str | None): Resolved sponsor address, if any.
         mode (str): "simulate" or "execute".
+        label (str): Prefix used in each batch's progress line.
 
     Returns:
         list[sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse]:
-            One result per batch transaction.
+            One result per successfully submitted batch transaction.
     """
     results: list[
         sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse
     ] = []
-    for batch_start in range(0, len(blob_ids), _MAX_BURNS_PER_PTB):
-        batch = blob_ids[batch_start : batch_start + _MAX_BURNS_PER_PTB]
+    total_batches = (len(blob_ids) + _MAX_BLOB_OPS_PER_PTB - 1) // _MAX_BLOB_OPS_PER_PTB
+    for batch_num, batch_start in enumerate(
+        range(0, len(blob_ids), _MAX_BLOB_OPS_PER_PTB), start=1
+    ):
+        batch = blob_ids[batch_start : batch_start + _MAX_BLOB_OPS_PER_PTB]
         txn: AsyncSuiTransaction = await client.transaction(
             initial_sender=sender, initial_sponsor=sponsor
         )
@@ -318,11 +380,20 @@ async def _burn_blob_batches(
         result = await _submit(client=client, txdict=txdict, mode=mode)
         if not result.is_ok():
             print(
-                f"Error burning batch {batch_start // _MAX_BURNS_PER_PTB + 1}: "
-                f"{result.result_string}",
+                f"Error burning batch {batch_num}/{total_batches} "
+                f"({len(batch)} blob(s)): {result.result_string}",
                 file=sys.stderr,
             )
+            if results:
+                print(
+                    f"{len(results)}/{total_batches} batch(es) burned "
+                    "successfully before this failure (see above for their "
+                    "receipts).",
+                    file=sys.stderr,
+                )
             sys.exit(1)
+        print(f"{label} {batch_num}/{total_batches} ({len(batch)} blob(s)).")
+        print(result.result_data.to_json(indent=2))
         results.append(result.result_data)
     return results
 
@@ -345,6 +416,19 @@ async def read_blob(args: argparse.Namespace) -> None:
         sys.stdout.buffer.write(b"\n")
 
 
+def _read_file_bytes(path: str) -> bytes:
+    """Read a file's raw bytes synchronously.
+
+    Args:
+        path (str): Filesystem path to read.
+
+    Returns:
+        bytes: The file's raw content.
+    """
+    with open(path, "rb") as f:
+        return f.read()
+
+
 async def store_blob(args: argparse.Namespace) -> None:
     """Store a blob via the Walrus HTTP publisher and print the resulting receipt.
 
@@ -358,8 +442,7 @@ async def store_blob(args: argparse.Namespace) -> None:
     """
     if args.file:
         try:
-            with open(args.file, "rb") as f:
-                data = f.read()
+            data = await asyncio.to_thread(_read_file_bytes, args.file)
         except OSError as exc:
             print(f"Error reading file {args.file}: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -432,13 +515,16 @@ async def blobs(args: argparse.Namespace) -> None:
         blob_id_b64 = ""
         blob_id_val = fields.get("blob_id")
         if blob_id_val and blob_id_val.string_value:
-            blob_id_b64 = (
-                base64.urlsafe_b64encode(
-                    int(blob_id_val.string_value).to_bytes(32, byteorder="little")
+            try:
+                blob_id_b64 = (
+                    base64.urlsafe_b64encode(
+                        int(blob_id_val.string_value).to_bytes(32, byteorder="little")
+                    )
+                    .rstrip(b"=")
+                    .decode()
                 )
-                .rstrip(b"=")
-                .decode()
-            )
+            except (ValueError, OverflowError):
+                blob_id_b64 = "(unparseable)"
 
         found = True
         print(
@@ -448,6 +534,62 @@ async def blobs(args: argparse.Namespace) -> None:
 
     if not found:
         print("No blobs found matching the given filters.")
+
+
+async def expiry_report(args: argparse.Namespace) -> None:
+    """Print an aging report of owned blobs, sorted soonest-to-expire first.
+
+    Lists each blob's Sui object ID alongside its storage end_epoch, the
+    current Walrus epoch, and the number of epochs remaining before
+    expiration. A blob's status is "expired" when remaining epochs is
+    negative, "expiring" when exactly zero, and "active" when positive.
+
+    Args:
+        args (argparse.Namespace): Parsed `expiry_report` subcommand
+            arguments, including an optional `address` override.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        current_epoch = await get_walrus_epoch(client)
+        owner = args.address or client.pysui_client.config.active_address
+        objects_result = await client.execute_for_all(
+            command=GetObjectsOwnedByAddress(owner=owner)
+        )
+    if not objects_result.is_ok():
+        print(
+            f"Error listing owned objects: {objects_result.result_string}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    rows: list[tuple[str, int, int]] = []
+    for obj in objects_result.result_data.objects:
+        if not (obj.object_type and "::blob::Blob" in obj.object_type):
+            continue
+        _, end_epoch = _blob_deletable_and_end_epoch(obj)
+        rows.append((obj.object_id, end_epoch, end_epoch - current_epoch))
+
+    if not rows:
+        print("No blobs found.")
+        return
+
+    rows.sort(key=lambda row: row[2])
+
+    print(
+        f"{'OBJECT ID':<66}  {'END_EPOCH':>10}  {'CURRENT_EPOCH':>13}  "
+        f"{'REMAINING':>9}  STATUS"
+    )
+    for object_id, end_epoch, remaining in rows:
+        if remaining < 0:
+            status = "expired"
+        elif remaining == 0:
+            status = "expiring"
+        else:
+            status = "active"
+        print(
+            f"{object_id:<66}  {end_epoch:>10}  {current_epoch:>13}  "
+            f"{remaining:>9}  {status}"
+        )
 
 
 async def blob(args: argparse.Namespace) -> None:
@@ -463,6 +605,22 @@ async def blob(args: argparse.Namespace) -> None:
         print(f"Error fetching object: {result.result_string}", file=sys.stderr)
         sys.exit(1)
     print(result.result_data.to_json(indent=2))
+
+
+async def epoch(args: argparse.Namespace) -> None:
+    """Print the current Walrus epoch.
+
+    Args:
+        args (argparse.Namespace): Parsed `epoch` subcommand arguments.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            current_epoch = await get_walrus_epoch(client)
+        except RuntimeError as exc:
+            print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
+            sys.exit(1)
+    print(current_epoch)
 
 
 async def exchange_for_wal(args: argparse.Namespace) -> None:
@@ -519,12 +677,7 @@ async def exchange_for_wal(args: argparse.Namespace) -> None:
         await txn.transfer_objects(transfers=[wal_coin], recipient=sender)
         txdict = await txn.build_and_sign()
 
-        if args.mode == "simulate":
-            result = await client.execute(
-                command=SimulateTransaction(tx_bytestr=txdict["tx_bytestr"])
-            )
-        else:
-            result = await client.execute(command=ExecuteTransaction(**txdict))
+        result = await _submit(client=client, txdict=txdict, mode=args.mode)
 
     if not result.is_ok():
         print(f"Error in exchange_for_wal: {result.result_string}", file=sys.stderr)
@@ -588,11 +741,15 @@ async def exchange_for_sui(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        wal_coin_type = client.config.network.wal_coin_type
         wal_entry = next(
             (
                 entry
                 for entry in balances_result.result_data.balances
-                if entry.coin_type and "::wal::WAL" in entry.coin_type
+                if entry.coin_type
+                and _matches_wal_coin_type(
+                    coin_type=entry.coin_type, wal_coin_type=wal_coin_type
+                )
             ),
             None,
         )
@@ -623,6 +780,9 @@ async def exchange_for_sui(args: argparse.Namespace) -> None:
             key=lambda c: c.balance or 0,
             reverse=True,
         )
+        if not coins:
+            print(f"No WAL coins found for sender {sender}.", file=sys.stderr)
+            sys.exit(1)
 
         txn: AsyncSuiTransaction = await client.transaction(
             initial_sender=sender, initial_sponsor=sponsor
@@ -675,17 +835,153 @@ async def exchange_for_sui(args: argparse.Namespace) -> None:
         await txn.transfer_objects(transfers=[sui_coin], recipient=sender)
         txdict = await txn.build_and_sign()
 
-        if args.mode == "simulate":
-            result = await client.execute(
-                command=SimulateTransaction(tx_bytestr=txdict["tx_bytestr"])
-            )
-        else:
-            result = await client.execute(command=ExecuteTransaction(**txdict))
+        result = await _submit(client=client, txdict=txdict, mode=args.mode)
 
     if not result.is_ok():
         print(f"Error in exchange_for_sui: {result.result_string}", file=sys.stderr)
         sys.exit(1)
     print(result.result_data.to_json(indent=2))
+
+
+async def extend_blob_expiration(args: argparse.Namespace) -> None:
+    """Extend a blob's storage expiration via system::extend_blob.
+
+    Only the blob's expiry epoch changes; content, size, and object ID are
+    unaffected. The target blob must not be expired; extend_blob does not
+    gate on deletable vs permanent. Payment is a WAL coin passed by mutable
+    reference — system::extend_blob deducts what it needs per extended
+    epoch and leaves the remainder in the same coin object, so the exact
+    cost does not need to be computed up front. If no single owned WAL
+    coin covers the eventual cost, pass --merge to combine all owned WAL
+    coins into one before extending.
+
+    Args:
+        args (argparse.Namespace): Parsed `extend_blob_expiration`
+            subcommand arguments.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = _resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = _resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        blob_result = await client.execute(command=GetObject(object_id=args.blobid))
+        if not blob_result.is_ok():
+            print(
+                f"Error fetching blob object: {blob_result.result_string}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        obj = blob_result.result_data
+        if not (obj.object_type and "::blob::Blob" in obj.object_type):
+            print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
+            sys.exit(1)
+        try:
+            _, end_epoch = _blob_deletable_and_end_epoch(obj)
+        except ValueError as exc:
+            print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            current_epoch = await get_walrus_epoch(client)
+        except RuntimeError as exc:
+            print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if end_epoch <= current_epoch:
+            print(
+                f"{args.blobid} is expired (end_epoch={end_epoch}, "
+                f"current_epoch={current_epoch}); expired blobs cannot be "
+                "extended.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        system_obj_id, walrus_pkg = await _walrus_package_id(client=client)
+
+        wal_entry, decimals = await _wal_balance_and_decimals(
+            client=client, owner=sender
+        )
+        coins_result = await client.execute_for_all(
+            command=GetCoins(
+                owner=sender, coin_type=f"0x2::coin::Coin<{wal_entry.coin_type}>"
+            )
+        )
+        if not coins_result.is_ok():
+            print(
+                f"Error listing WAL coins: {coins_result.result_string}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        coins = sorted(
+            coins_result.result_data.objects,
+            key=lambda c: c.balance or 0,
+            reverse=True,
+        )
+        if not coins:
+            print(f"No WAL coins found for sender {sender}.", file=sys.stderr)
+            sys.exit(1)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        payment_coin_id = coins[0].object_id
+        if args.merge and len(coins) > 1:
+            await txn.merge_coins(
+                merge_to=payment_coin_id,
+                merge_from=[coin.object_id for coin in coins[1:]],
+            )
+
+        await txn.move_call(
+            target=f"{walrus_pkg}::system::extend_blob",
+            arguments=[system_obj_id, args.blobid, args.epochs, payment_coin_id],
+            type_arguments=[],
+        )
+        txdict = await txn.build_and_sign()
+        result = await _submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            hint = (
+                ""
+                if args.merge
+                else " If this is an insufficient-balance abort, retry with --merge."
+            )
+            print(
+                f"Error in extend_blob_expiration: {result.result_string}.{hint}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(result.result_data.to_json(indent=2))
+        print(f"Extended {args.blobid}'s expiration by {args.epochs} epoch(s).")
+        transaction = getattr(result.result_data, "transaction", None)
+        if transaction is None:
+            print(
+                "WAL estimated cost: unavailable (response had no "
+                "transaction/balance_changes data).",
+                file=sys.stderr,
+            )
+        else:
+            balance_changes = getattr(transaction, "balance_changes", None) or []
+            wal_change = next(
+                (
+                    bc
+                    for bc in balance_changes
+                    if bc.address == sender and bc.coin_type == wal_entry.coin_type
+                ),
+                None,
+            )
+            if wal_change is not None:
+                spent = -int(wal_change.amount)
+                divisor = 10**decimals
+                print(
+                    f"WAL estimated cost: {spent} Frosts -> "
+                    f"{spent / divisor:.4f} WAL"
+                )
 
 
 async def delete_blob(args: argparse.Namespace) -> None:
@@ -694,10 +990,16 @@ async def delete_blob(args: argparse.Namespace) -> None:
     In -i mode, the target blob is deleted via system::delete_blob if it is
     deletable and not expired; if it is not eligible and --burn was given,
     it is burned instead via blob::burn (an ineligible blob without --burn
-    is a clean error). In --all-blobs mode, all active deletable blobs
-    owned by the sender are deleted in one transaction; if --burn was
-    given, expired blobs (any type) are additionally burned in a separate
-    batched pass.
+    is a clean error). Burning a blob that is not yet expired (i.e. it was
+    burned only because it isn't deletable) prints a warning first, since
+    that destroys an active, paid-for blob irreversibly. In --all-blobs
+    mode, all active deletable blobs owned by the sender are deleted,
+    batched _MAX_BLOB_OPS_PER_PTB per PTB; if --burn was given, expired
+    blobs (any type) are additionally burned in a separate batched pass.
+    A blob object whose on-chain data can't be fully read (e.g. an
+    incomplete RPC response) is treated as a hard error in -i mode, and
+    skipped with a warning in --all-blobs mode — never silently treated as
+    "not eligible."
 
     Args:
         args (argparse.Namespace): Parsed `delete_blob` subcommand arguments.
@@ -737,20 +1039,35 @@ async def delete_blob(args: argparse.Namespace) -> None:
             if not (obj.object_type and "::blob::Blob" in obj.object_type):
                 print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
                 sys.exit(1)
-            deletable, end_epoch = _blob_deletable_and_end_epoch(obj)
+            try:
+                deletable, end_epoch = _blob_deletable_and_end_epoch(obj)
+            except ValueError as exc:
+                print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+                sys.exit(1)
 
             txn: AsyncSuiTransaction = await client.transaction(
                 initial_sender=sender, initial_sponsor=sponsor
             )
             if deletable and end_epoch > current_epoch:
-                storage = await txn.move_call(
-                    target=f"{walrus_pkg}::system::delete_blob",
-                    arguments=[system_obj_id, args.blobid],
-                    type_arguments=[],
+                storage = cast(
+                    bcs.Argument,
+                    await txn.move_call(
+                        target=f"{walrus_pkg}::system::delete_blob",
+                        arguments=[system_obj_id, args.blobid],
+                        type_arguments=[],
+                    ),
                 )
                 await txn.transfer_objects(transfers=[storage], recipient=sender)
                 action = "Deleted"
             elif args.burn:
+                if end_epoch > current_epoch:
+                    print(
+                        f"Warning: {args.blobid} is not expired "
+                        f"(end_epoch={end_epoch}, current_epoch={current_epoch}) "
+                        "and not deletable; burning it now destroys an "
+                        "active, paid-for blob irreversibly.",
+                        file=sys.stderr,
+                    )
                 await txn.move_call(
                     target=f"{walrus_pkg}::blob::burn",
                     arguments=[args.blobid],
@@ -790,7 +1107,14 @@ async def delete_blob(args: argparse.Namespace) -> None:
         for obj in objects_result.result_data.objects:
             if not (obj.object_type and "::blob::Blob" in obj.object_type):
                 continue
-            deletable, end_epoch = _blob_deletable_and_end_epoch(obj)
+            try:
+                deletable, end_epoch = _blob_deletable_and_end_epoch(obj)
+            except ValueError as exc:
+                print(
+                    f"Warning: skipping blob {obj.object_id}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
             if end_epoch <= current_epoch:
                 expired.append(obj.object_id)
             elif deletable:
@@ -801,42 +1125,70 @@ async def delete_blob(args: argparse.Namespace) -> None:
             return
 
         if active_deletable:
-            txn: AsyncSuiTransaction = await client.transaction(
-                initial_sender=sender, initial_sponsor=sponsor
-            )
-            storage_objects = []
-            for blob_id in active_deletable:
-                storage = await txn.move_call(
-                    target=f"{walrus_pkg}::system::delete_blob",
-                    arguments=[system_obj_id, blob_id],
-                    type_arguments=[],
+            total_batches = (
+                len(active_deletable) + _MAX_BLOB_OPS_PER_PTB - 1
+            ) // _MAX_BLOB_OPS_PER_PTB
+            for batch_num, batch_start in enumerate(
+                range(0, len(active_deletable), _MAX_BLOB_OPS_PER_PTB), start=1
+            ):
+                batch = active_deletable[
+                    batch_start : batch_start + _MAX_BLOB_OPS_PER_PTB
+                ]
+                txn = await client.transaction(
+                    initial_sender=sender, initial_sponsor=sponsor
                 )
-                storage_objects.append(storage)
-            await txn.transfer_objects(transfers=storage_objects, recipient=sender)
-            txdict = await txn.build_and_sign()
-            result = await _submit(client=client, txdict=txdict, mode=args.mode)
-            if not result.is_ok():
-                print(f"Error deleting blobs: {result.result_string}", file=sys.stderr)
-                sys.exit(1)
-            print(f"Deleted {len(active_deletable)} blob(s).")
-            print(result.result_data.to_json(indent=2))
+                storage_objects = []
+                for blob_id in batch:
+                    storage = cast(
+                        bcs.Argument,
+                        await txn.move_call(
+                            target=f"{walrus_pkg}::system::delete_blob",
+                            arguments=[system_obj_id, blob_id],
+                            type_arguments=[],
+                        ),
+                    )
+                    storage_objects.append(storage)
+                await txn.transfer_objects(
+                    transfers=storage_objects, recipient=sender
+                )
+                txdict = await txn.build_and_sign()
+                result = await _submit(client=client, txdict=txdict, mode=args.mode)
+                if not result.is_ok():
+                    print(
+                        f"Error deleting batch {batch_num}/{total_batches} "
+                        f"({len(batch)} blob(s)): {result.result_string}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                print(
+                    f"Deleted batch {batch_num}/{total_batches} "
+                    f"({len(batch)} blob(s))."
+                )
+                print(result.result_data.to_json(indent=2))
 
         if args.burn and expired:
-            results = await _burn_blob_batches(
+            await _burn_blob_batches(
                 client=client,
                 walrus_pkg=walrus_pkg,
                 blob_ids=expired,
                 sender=sender,
                 sponsor=sponsor,
                 mode=args.mode,
+                label="Burned expired batch",
             )
-            for idx, result_data in enumerate(results, start=1):
-                print(f"Burned expired batch {idx}/{len(results)}.")
-                print(result_data.to_json(indent=2))
 
 
 async def burn_blob(args: argparse.Namespace) -> None:
     """Burn one or more blob objects directly via blob::burn.
+
+    Duplicate object IDs passed via repeated -i/--blobid are de-duplicated
+    (preserving first-seen order) before batching, since a repeated
+    reference to an already-consumed object argument would abort that
+    batch. Each target's on-chain state is checked before burning; a blob
+    that is not yet expired prints a warning first, since burning it
+    destroys an active, paid-for blob irreversibly. A blob ID that can't
+    be fetched, isn't a Walrus Blob object, or has unreadable on-chain
+    data is skipped with a warning rather than burned blind.
 
     Args:
         args (argparse.Namespace): Parsed `burn_blob` subcommand arguments.
@@ -854,19 +1206,57 @@ async def burn_blob(args: argparse.Namespace) -> None:
             print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
             sys.exit(1)
 
+        try:
+            current_epoch = await get_walrus_epoch(client)
+        except RuntimeError as exc:
+            print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
+            sys.exit(1)
+
         _, walrus_pkg = await _walrus_package_id(client=client)
-        results = await _burn_blob_batches(
+        blob_ids = list(dict.fromkeys(args.blobid))
+
+        confirmed_ids: list[str] = []
+        for blob_id in blob_ids:
+            blob_result = await client.execute(command=GetObject(object_id=blob_id))
+            if not blob_result.is_ok():
+                print(
+                    f"Warning: skipping {blob_id}: {blob_result.result_string}",
+                    file=sys.stderr,
+                )
+                continue
+            obj = blob_result.result_data
+            if not (obj.object_type and "::blob::Blob" in obj.object_type):
+                print(
+                    f"Warning: skipping {blob_id}: not a Walrus Blob object.",
+                    file=sys.stderr,
+                )
+                continue
+            try:
+                _, end_epoch = _blob_deletable_and_end_epoch(obj)
+            except ValueError as exc:
+                print(f"Warning: skipping {blob_id}: {exc}", file=sys.stderr)
+                continue
+            if end_epoch > current_epoch:
+                print(
+                    f"Warning: {blob_id} is not expired (end_epoch={end_epoch}, "
+                    f"current_epoch={current_epoch}); burning it now destroys "
+                    "an active, paid-for blob irreversibly.",
+                    file=sys.stderr,
+                )
+            confirmed_ids.append(blob_id)
+
+        if not confirmed_ids:
+            print("No blobs to burn.")
+            return
+
+        await _burn_blob_batches(
             client=client,
             walrus_pkg=walrus_pkg,
-            blob_ids=args.blobid,
+            blob_ids=confirmed_ids,
             sender=sender,
             sponsor=sponsor,
             mode=args.mode,
         )
-
-    for idx, result_data in enumerate(results, start=1):
-        print(f"Burned batch {idx}/{len(results)}.")
-        print(result_data.to_json(indent=2))
 
 
 async def wal_coins(args: argparse.Namespace) -> None:

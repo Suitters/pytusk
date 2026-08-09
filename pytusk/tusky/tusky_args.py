@@ -59,11 +59,35 @@ def _add_config_args(subp: argparse.ArgumentParser) -> None:
     )
 
 
+def _positive_int(value: str) -> int:
+    """Parse a CLI argument as a positive (>0) integer.
+
+    Args:
+        value (str): Raw CLI argument text.
+
+    Returns:
+        int: The parsed positive integer.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value isn't a positive integer.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"{value!r} must be greater than 0")
+    return parsed
+
+
 def _add_blob_id_arg(
     subp: argparse.ArgumentParser,
     *,
     required: bool = True,
-    help_text: str = "Sui object ID of the blob.",
+    help_text: str = (
+        "Sui object ID of the blob (0x-prefixed) — not the Walrus blob ID "
+        "(content hash)."
+    ),
 ) -> None:
     """Add the -i/--blobid argument.
 
@@ -151,6 +175,24 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_blob_id_arg(p_blob)
     _add_config_args(p_blob)
 
+    p_epoch = subparsers.add_parser("epoch", help="Show the current Walrus epoch.")
+    _add_config_args(p_epoch)
+
+    p_expiry_report = subparsers.add_parser(
+        "expiry_report",
+        help=(
+            "Show an aging report of owned blobs (object ID, end_epoch, "
+            "current epoch, remaining epochs), sorted soonest-to-expire first."
+        ),
+    )
+    p_expiry_report.add_argument(
+        "--address",
+        dest="address",
+        default=None,
+        help="Sui address to report on (default: active address).",
+    )
+    _add_config_args(p_expiry_report)
+
     p_read_blob = subparsers.add_parser(
         "read_blob", help="Read blob content via the Walrus HTTP aggregator."
     )
@@ -186,12 +228,19 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         help="Path to a file whose raw bytes will be stored. Mutually exclusive with --content.",
     )
     p_store_blob.add_argument(
-        "--epochs", type=int, required=True, help="Number of epochs to store."
+        "--epochs",
+        type=_positive_int,
+        required=True,
+        help=(
+            "Number of epochs to store the blob for, counted from now "
+            "(a duration, not an absolute epoch number)."
+        ),
     )
-    p_store_blob.add_argument(
+    lifecycle_group = p_store_blob.add_mutually_exclusive_group()
+    lifecycle_group.add_argument(
         "--deletable", action="store_true", help="Store as a deletable blob."
     )
-    p_store_blob.add_argument(
+    lifecycle_group.add_argument(
         "--permanent",
         action="store_true",
         help="Store as a permanent blob (cannot be deleted before expiry).",
@@ -211,7 +260,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     p_exchange_for_wal.add_argument(
         "--amount",
-        type=int,
+        type=_positive_int,
         required=True,
         help="Amount of SUI to exchange, in MIST.",
     )
@@ -223,7 +272,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     p_exchange_for_sui.add_argument(
         "--amount",
-        type=int,
+        type=_positive_int,
         required=True,
         help="Amount of WAL to exchange, in FROST.",
     )
@@ -238,25 +287,47 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_signing_args(p_exchange_for_sui)
     _add_config_args(p_exchange_for_sui)
 
-    p_extend_blob = subparsers.add_parser(
-        "extend_blob", help="Extend a blob's storage lifetime."
+    p_extend_blob_expiration = subparsers.add_parser(
+        "extend_blob_expiration",
+        help=(
+            "Extend a blob's storage expiration (only the expiry epoch "
+            "changes; content and object ID are unaffected)."
+        ),
     )
-    _add_blob_id_arg(p_extend_blob)
-    p_extend_blob.add_argument(
+    _add_blob_id_arg(p_extend_blob_expiration)
+    p_extend_blob_expiration.add_argument(
         "--epochs",
-        type=int,
+        type=_positive_int,
         required=True,
-        help="Number of Walrus epochs to extend by.",
+        help=(
+            "Number of epochs to extend the blob's storage by, counted "
+            "from its current end_epoch (a duration, not an absolute "
+            "epoch number)."
+        ),
     )
-    _add_signing_args(p_extend_blob)
-    _add_config_args(p_extend_blob)
+    p_extend_blob_expiration.add_argument(
+        "--merge",
+        action="store_true",
+        help=(
+            "Merge all owned WAL coins into one before extending, in case "
+            "no single coin covers the extension cost."
+        ),
+    )
+    _add_signing_args(p_extend_blob_expiration)
+    _add_config_args(p_extend_blob_expiration)
 
     p_delete_blob = subparsers.add_parser(
         "delete_blob", help="Delete one blob, or all active deletable blobs."
     )
     target_group = p_delete_blob.add_mutually_exclusive_group(required=True)
     target_group.add_argument(
-        "-i", "--blobid", dest="blobid", help="Sui object ID of the blob to delete."
+        "-i",
+        "--blobid",
+        dest="blobid",
+        help=(
+            "Sui object ID of the blob to delete (0x-prefixed) — not the "
+            "Walrus blob ID (content hash)."
+        ),
     )
     target_group.add_argument(
         "--all-blobs",
@@ -267,8 +338,10 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         "--burn",
         action="store_true",
         help=(
-            "Also burn: in -i mode, burns this blob after deleting it; "
-            "in --all-blobs mode, additionally burns expired blobs in the same pass."
+            "Fallback to burning instead of deleting: in -i mode, burns "
+            "this blob only if it isn't eligible for delete_blob (already "
+            "expired or not deletable); in --all-blobs mode, additionally "
+            "burns expired blobs in the same pass."
         ),
     )
     _add_signing_args(p_delete_blob)
@@ -283,7 +356,10 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         dest="blobid",
         action="append",
         required=True,
-        help="Sui object ID of a blob to burn (repeatable).",
+        help=(
+            "Sui object ID of a blob to burn (0x-prefixed, repeatable) — "
+            "not the Walrus blob ID (content hash)."
+        ),
     )
     _add_signing_args(p_burn_blob)
     _add_config_args(p_burn_blob)
