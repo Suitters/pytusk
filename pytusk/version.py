@@ -12,5 +12,5 @@
 # -*- coding: utf-8 -*-
 
 # Read in command line and posting to PyPi
-__version__ = "0.0.2"
+__version__ = "0.2.0"
 """Pytusk Version."""
