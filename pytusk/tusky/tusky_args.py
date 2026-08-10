@@ -80,6 +80,26 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _key_value_pair(value: str) -> tuple[str, str]:
+    """Parse a CLI argument as a KEY=VALUE pair.
+
+    Args:
+        value (str): Raw CLI argument text in the form "key=value".
+
+    Returns:
+        tuple[str, str]: The parsed (key, value) pair.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value isn't in KEY=VALUE form.
+    """
+    key, sep, val = value.partition("=")
+    if not sep or not key:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} must be in KEY=VALUE form (e.g. patch1=path/to/file)"
+        )
+    return key, val
+
+
 def _add_blob_id_arg(
     subp: argparse.ArgumentParser,
     *,
@@ -202,6 +222,23 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     _add_config_args(p_read_blob)
 
+    p_read_quilt = subparsers.add_parser(
+        "read_quilt", help="Read a single patch from a quilt via the Walrus HTTP aggregator."
+    )
+    p_read_quilt.add_argument(
+        "--quilt-id",
+        dest="quilt_id",
+        required=True,
+        help="Walrus quilt identifier.",
+    )
+    p_read_quilt.add_argument(
+        "--patch-key",
+        dest="patch_key",
+        required=True,
+        help="Key identifying the patch within the quilt.",
+    )
+    _add_config_args(p_read_quilt)
+
     p_wal_coins = subparsers.add_parser(
         "wal_coins", help="List WAL coin objects owned by an address."
     )
@@ -248,6 +285,67 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         help="Sui address to receive the stored blob object (default: active address).",
     )
     _add_config_args(p_store_blob)
+
+    p_store_quilt = subparsers.add_parser(
+        "store_quilt",
+        help="Store a quilt (batch of named files) via the Walrus HTTP publisher.",
+    )
+    p_store_quilt.add_argument(
+        "--paths",
+        dest="paths",
+        nargs="*",
+        default=[],
+        metavar="PATH",
+        help=(
+            "File paths to include in the quilt (shell-expandable, e.g. "
+            "*.py); the patch key for each is derived from its filename."
+        ),
+    )
+    p_store_quilt.add_argument(
+        "--file",
+        dest="file",
+        action="append",
+        default=[],
+        type=_key_value_pair,
+        metavar="KEY=PATH",
+        help=(
+            "Patch key and file path for a quilt member, in KEY=PATH form "
+            "(repeatable)."
+        ),
+    )
+    p_store_quilt.add_argument(
+        "--content",
+        dest="content",
+        action="append",
+        default=[],
+        type=_key_value_pair,
+        metavar="KEY=TEXT",
+        help=(
+            "Patch key and inline UTF-8 text content for a quilt member, in "
+            "KEY=TEXT form (repeatable)."
+        ),
+    )
+    p_store_quilt.add_argument(
+        "--epochs",
+        type=_positive_int,
+        required=True,
+        help=(
+            "Number of epochs to store the quilt for, counted from now "
+            "(a duration, not an absolute epoch number)."
+        ),
+    )
+    p_store_quilt.add_argument(
+        "--permanent",
+        action="store_true",
+        help="Store as a permanent quilt (cannot be deleted before expiry).",
+    )
+    p_store_quilt.add_argument(
+        "--recipient",
+        dest="recipient",
+        default=None,
+        help="Sui address to receive the stored quilt object (default: active address).",
+    )
+    _add_config_args(p_store_quilt)
 
     # --- PTB action commands (--mode + sender/sponsor apply) ---
 

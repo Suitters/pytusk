@@ -13,6 +13,7 @@ tusky.py drives them via asyncio.run.
 import argparse
 import asyncio
 import base64
+import os
 import sys
 from typing import cast
 
@@ -34,8 +35,11 @@ from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 from pytusk import (
     BlobData,
     PytuskConfiguration,
+    QuiltPatch,
     ReadBlob,
+    ReadQuiltPatch,
     StoreBlob,
+    StoreQuilt,
     WalrusClient,
     get_walrus_epoch,
 )
@@ -416,6 +420,26 @@ async def read_blob(args: argparse.Namespace) -> None:
         sys.stdout.buffer.write(b"\n")
 
 
+async def read_quilt(args: argparse.Namespace) -> None:
+    """Read a single quilt patch via the Walrus HTTP aggregator and write it to stdout.
+
+    Args:
+        args (argparse.Namespace): Parsed `read_quilt` subcommand arguments.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        result = await client.execute(
+            command=ReadQuiltPatch(quilt_id=args.quilt_id, patch_key=args.patch_key)
+        )
+    if not result.is_ok():
+        print(f"Error reading quilt patch: {result.result_string}", file=sys.stderr)
+        sys.exit(1)
+    data: QuiltPatch = result.result_data
+    sys.stdout.buffer.write(data.content)
+    if sys.stdout.isatty():
+        sys.stdout.buffer.write(b"\n")
+
+
 def _read_file_bytes(path: str) -> bytes:
     """Read a file's raw bytes synchronously.
 
@@ -462,6 +486,68 @@ async def store_blob(args: argparse.Namespace) -> None:
         )
     if not result.is_ok():
         print(f"Error storing blob: {result.result_string}", file=sys.stderr)
+        sys.exit(1)
+    print(result.result_data.to_json(indent=2))
+
+
+async def store_quilt(args: argparse.Namespace) -> None:
+    """Store a quilt via the Walrus HTTP publisher and print the resulting receipt.
+
+    Patch content comes from --paths (file paths, patch key = filename),
+    --file (KEY=PATH, read from disk), and/or --content (KEY=TEXT, UTF-8
+    encoded) — all repeatable and combinable. The quilt object is sent to
+    --recipient if given, otherwise to the active address, so it transfers
+    to a wallet instead of staying with the publisher.
+
+    Args:
+        args (argparse.Namespace): Parsed `store_quilt` subcommand arguments.
+    """
+    files: dict[str, bytes] = {}
+    for path in args.paths:
+        key = os.path.basename(path)
+        if key in files:
+            print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            files[key] = await asyncio.to_thread(_read_file_bytes, path)
+        except OSError as exc:
+            print(f"Error reading file {path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+    for key, path in args.file:
+        if key in files:
+            print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            files[key] = await asyncio.to_thread(_read_file_bytes, path)
+        except OSError as exc:
+            print(f"Error reading file {path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+    for key, text in args.content:
+        if key in files:
+            print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
+            sys.exit(1)
+        files[key] = text.encode("utf-8")
+
+    if not files:
+        print(
+            "Error: at least one --paths, --file, or --content patch is required",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        recipient = args.recipient or client.pysui_client.config.active_address
+        result = await client.execute(
+            command=StoreQuilt(
+                files=files,
+                epochs=args.epochs,
+                send_object_to=recipient,
+                permanent=args.permanent,
+            )
+        )
+    if not result.is_ok():
+        print(f"Error storing quilt: {result.result_string}", file=sys.stderr)
         sys.exit(1)
     print(result.result_data.to_json(indent=2))
 

@@ -16,7 +16,9 @@ from pytusk.tusky.tusky_args import build_parser
 
 _DISPATCH = {
     "read_blob": tusky_cmds.read_blob,
+    "read_quilt": tusky_cmds.read_quilt,
     "store_blob": tusky_cmds.store_blob,
+    "store_quilt": tusky_cmds.store_quilt,
     "blobs": tusky_cmds.blobs,
     "blob": tusky_cmds.blob,
     "epoch": tusky_cmds.epoch,
