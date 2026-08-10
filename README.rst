@@ -1,19 +1,24 @@
 ===================================================
-pytusk - Walrus and SEAL SDK (ALPHA)
+pytusk - Walrus SDK (BETA)
 ===================================================
 
-A python SDK for building interactions with Walrus storage management. 
+A python SDK for building interactions with Walrus storage management.
 
-Installing ``pytusk`` automatically installes ``pysui`` SDK for underlying configuration and transport support.
+Installing ``pytusk`` automatically installs the ``pysui`` SDK for underlying
+configuration and transport support.
+
+Requires **Python 3.10.6 or later**.
 
 *****************
 Installation
 *****************
 
-1. Create a virtual environment (e.g. ``venv``, ``pipenv``, etc.)
-2. Enter the virtual environment
-3. Install ``pytusk`` (dependent on what virtual environment being used)
+.. code-block:: bash
 
+    pip install pytusk
+
+Any Python package manager (pipenv, poetry, uv, etc.) works equally well in
+place of ``pip``.
 
 *****************
 Quick start
@@ -23,39 +28,35 @@ Quick start
 Configuration setup
 -------------------
 
-As noted, ``pytusk`` leverages ``pysui`` for configuration and client transport support. So 
-when setting up to interact with Walrus the configuration setup is first step::
+As noted, ``pytusk`` leverages ``pysui`` for configuration and client transport
+support. So when setting up to interact with Walrus the configuration setup is
+first step::
 
-    import asyncio
-    from pysui import PysuiConfiguration
-    from pytusk.config.tusk_config import PytuskConfiguration
-    from pytusk.clients.walrus_client import ClientAsync
+    from pytusk import PytuskConfiguration
+    from pytusk.client.walrus_client import WalrusClient
 
-    async def main(client:ClientAsync):
-        """Work with Walrus"""
+    cfg = PytuskConfiguration(active_network="testnet", pysui_profile_name="testnet")
+    client = WalrusClient(pytusk_config=cfg)
 
-    # pylint: disable=broad-exception-caught
+``active_network`` and ``pysui_profile_name`` must both be set, and to the same
+network — ``pytusk`` does not infer one from the other, and Walrus is not
+available on devnet.
 
-    if __name__ == "__main__":
+See the full documentation for configuration options, available commands, and
+transaction examples.
 
-        client_init: ClientAsync = None
-        try:
-            cfg = PytuskConfiguration(
-                pysui_config=PysuiConfiguration(
-                    group_name=PysuiConfiguration.SUI_JSON_RPC_GROUP,
-                    profile_name="testnet",
-                ),
-                walrus_aggregator="https://aggregator.walrus-testnet.walrus.space",
-                walrus_publisher="https://publisher.walrus-testnet.walrus.space",
-            )
-            client_init = ClientAsync(pytusk_config=cfg)
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(main(client_init))
-            except KeyboardInterrupt:
-                pass
+-------------------
+tusky CLI
+-------------------
 
-        except Exception as ex:
-            print(ex.args)
+``pytusk`` also installs the ``tusky`` command-line tool, for storing, reading,
+and managing the lifecycle of Walrus blobs and quilts without writing any code::
 
+    tusky --help
+
+*****************
+Documentation
+*****************
+
+Full documentation (configuration, commands, transactions, and the tusky CLI
+reference) is available at https://pytusk.readthedocs.io/en/latest/index.html.
