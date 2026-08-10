@@ -236,11 +236,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
             "(a duration, not an absolute epoch number)."
         ),
     )
-    lifecycle_group = p_store_blob.add_mutually_exclusive_group()
-    lifecycle_group.add_argument(
-        "--deletable", action="store_true", help="Store as a deletable blob."
-    )
-    lifecycle_group.add_argument(
+    p_store_blob.add_argument(
         "--permanent",
         action="store_true",
         help="Store as a permanent blob (cannot be deleted before expiry).",

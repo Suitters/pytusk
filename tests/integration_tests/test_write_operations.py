@@ -42,39 +42,49 @@ async def _balances(client: WalrusClient, label: str = "") -> None:
 class TestStoreBlob:
     async def test_store_receipt_fields(self, walrus_client: WalrusClient):
         result = await walrus_client.execute(
-            command=StoreBlob(data=_TEST_PAYLOAD, epochs=1, deletable=True)
+            command=StoreBlob(
+                data=_TEST_PAYLOAD,
+                epochs=1,
+                send_object_to=walrus_client.pysui_client.config.active_address,
+            )
+        )
+        assert result.is_ok(), f"StoreBlob failed: {result.result_string}"
+        receipt = result.result_data
+        print(f"\n[StoreBlob deletable-default]\n{json.dumps(dataclasses.asdict(receipt), indent=2)}")
+        await asyncio.sleep(5)
+        await _balances(walrus_client, label="after store deletable-default")
+        assert isinstance(receipt, BlobReceipt)
+        assert receipt.blob_id
+        assert receipt.expiry_epoch > 0
+
+    async def test_store_permanent_flag(self, walrus_client: WalrusClient):
+        result = await walrus_client.execute(
+            command=StoreBlob(
+                data=_TEST_PAYLOAD,
+                epochs=1,
+                send_object_to=walrus_client.pysui_client.config.active_address,
+                permanent=True,
+            )
         )
         assert result.is_ok(), f"StoreBlob failed: {result.result_string}"
         receipt = result.result_data
         print(f"\n[StoreBlob permanent]\n{json.dumps(dataclasses.asdict(receipt), indent=2)}")
         await asyncio.sleep(5)
         await _balances(walrus_client, label="after store permanent")
-        assert isinstance(receipt, BlobReceipt)
         assert receipt.blob_id
-        assert receipt.expiry_epoch > 0
-
-    async def test_store_deletable_flag(self, walrus_client: WalrusClient):
-        result = await walrus_client.execute(
-            command=StoreBlob(data=_TEST_PAYLOAD, epochs=1, deletable=True)
-        )
-        assert result.is_ok(), f"StoreBlob failed: {result.result_string}"
-        receipt = result.result_data
-        print(f"\n[StoreBlob deletable]\n{json.dumps(dataclasses.asdict(receipt), indent=2)}")
-        await asyncio.sleep(5)
-        await _balances(walrus_client, label="after store deletable")
-        assert receipt.blob_id
-        assert receipt.deletable is True
+        assert receipt.deletable is False
 
     async def test_duplicate_content_reuses_blob_id(self, walrus_client: WalrusClient):
         """Storing the same content twice returns the same blob_id (content addressing)."""
         payload = b"pytusk duplicate blob test"
+        recipient = walrus_client.pysui_client.config.active_address
         first = await walrus_client.execute(
-            command=StoreBlob(data=payload, epochs=1, deletable=True)
+            command=StoreBlob(data=payload, epochs=1, send_object_to=recipient)
         )
         assert first.is_ok()
         await asyncio.sleep(5)
         second = await walrus_client.execute(
-            command=StoreBlob(data=payload, epochs=1, deletable=True)
+            command=StoreBlob(data=payload, epochs=1, send_object_to=recipient)
         )
         assert second.is_ok()
         print(f"\n[StoreBlob duplicate]\n{json.dumps(dataclasses.asdict(second.result_data), indent=2)}")
@@ -86,7 +96,11 @@ class TestStoreBlob:
 class TestStoreQuilt:
     async def test_store_quilt_receipt_fields(self, walrus_client: WalrusClient):
         result = await walrus_client.execute(
-            command=StoreQuilt(files=_QUILT_FILES, epochs=1)
+            command=StoreQuilt(
+                files=_QUILT_FILES,
+                epochs=1,
+                send_object_to=walrus_client.pysui_client.config.active_address,
+            )
         )
         assert result.is_ok(), f"StoreQuilt failed: {result.result_string}"
         receipt = result.result_data
@@ -106,5 +120,5 @@ class TestPublisherGuard:
         async with WalrusClient(pytusk_config=cfg) as client:
             with pytest.raises(ValueError, match="No publisher URL"):
                 await client.execute(
-                    command=StoreBlob(data=b"test", epochs=1, deletable=False)
+                    command=StoreBlob(data=b"test", epochs=1, send_object_to="0x0")
                 )

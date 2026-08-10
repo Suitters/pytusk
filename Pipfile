@@ -5,6 +5,7 @@ name = "pypi"
 
 [packages]
 pysui = "*"
+pytusk = {file = ".", editable = true}
 
 [dev-packages]
 setuptools-scm = "*"

@@ -28,15 +28,29 @@ class ReadBlob(WalrusCommand):
 
     Args:
         blob_id (str): Walrus blob identifier.
+        strict_consistency_check (bool): If True, force strict integrity
+            verification of the read blob against its metadata.
+        skip_consistency_check (bool): If True, skip integrity verification.
+            Only safe when the writer is known and trusted.
     """
 
     blob_id: str
+    strict_consistency_check: bool = dataclasses.field(default=False)
+    skip_consistency_check: bool = dataclasses.field(default=False)
 
     def http_method(self) -> str:
         return "GET"
 
     def url_path(self, base_url: str) -> str:
         return f"{base_url}/v1/blobs/{self.blob_id}"
+
+    def query_params(self) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if self.strict_consistency_check:
+            params["strict_consistency_check"] = "true"
+        if self.skip_consistency_check:
+            params["skip_consistency_check"] = "true"
+        return params
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
         if response.is_error:
@@ -83,15 +97,29 @@ class ReadBlobByObjectId(WalrusCommand):
 
     Args:
         object_id (str): Sui object ID of the blob.
+        strict_consistency_check (bool): If True, force strict integrity
+            verification of the read blob against its metadata.
+        skip_consistency_check (bool): If True, skip integrity verification.
+            Only safe when the writer is known and trusted.
     """
 
     object_id: str
+    strict_consistency_check: bool = dataclasses.field(default=False)
+    skip_consistency_check: bool = dataclasses.field(default=False)
 
     def http_method(self) -> str:
         return "GET"
 
     def url_path(self, base_url: str) -> str:
         return f"{base_url}/v1/blobs/by-object-id/{self.object_id}"
+
+    def query_params(self) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if self.strict_consistency_check:
+            params["strict_consistency_check"] = "true"
+        if self.skip_consistency_check:
+            params["skip_consistency_check"] = "true"
+        return params
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
         if response.is_error:
@@ -133,9 +161,15 @@ class ConcatBlobs(WalrusCommand):
 
     Args:
         ids (list[str]): Ordered list of Walrus blob IDs to concatenate.
+        strict_consistency_check (bool): If True, force strict integrity
+            verification of the concatenated blobs against their metadata.
+        skip_consistency_check (bool): If True, skip integrity verification.
+            Only safe when the writer is known and trusted.
     """
 
     ids: list[str]
+    strict_consistency_check: bool = dataclasses.field(default=False)
+    skip_consistency_check: bool = dataclasses.field(default=False)
 
     def http_method(self) -> str:
         return "GET"
@@ -144,7 +178,12 @@ class ConcatBlobs(WalrusCommand):
         return f"{base_url}/v1alpha/blobs/concat"
 
     def query_params(self) -> dict[str, Any]:
-        return {"ids": ",".join(self.ids)}
+        params: dict[str, Any] = {"ids": ",".join(self.ids)}
+        if self.strict_consistency_check:
+            params["strict_consistency_check"] = "true"
+        if self.skip_consistency_check:
+            params["skip_consistency_check"] = "true"
+        return params
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
         if response.is_error:

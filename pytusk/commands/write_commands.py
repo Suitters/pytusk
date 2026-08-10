@@ -31,11 +31,11 @@ class StoreBlob(WalrusCommand):
         send_object_to (str): Sui address to receive the created blob object.
             The publisher creates the blob object under its own wallet unless
             this is set, so ownership never transfers to the caller otherwise.
-        deletable (bool): If True, the blob may be deleted before expiry.
         permanent (bool): If True, the blob cannot be deleted before expiry.
-            Sent as its own query parameter alongside deletable, matching the
-            Walrus HTTP API's own two-parameter model rather than assuming
-            deletable=False is equivalent (unconfirmed against a live publisher).
+            Blobs are deletable by default (Walrus v1.33+); the publisher's
+            `deletable` query parameter has been deprecated since v1.35 and
+            has no effect, so this command does not send it — `permanent`
+            is the only lever that controls persistence.
     """
 
     _endpoint_role: ClassVar[str] = "publisher"
@@ -43,7 +43,6 @@ class StoreBlob(WalrusCommand):
     data: bytes
     epochs: int
     send_object_to: str
-    deletable: bool = dataclasses.field(default=False)
     permanent: bool = dataclasses.field(default=False)
 
     def http_method(self) -> str:
@@ -55,7 +54,6 @@ class StoreBlob(WalrusCommand):
     def query_params(self) -> dict[str, Any]:
         return {
             "epochs": self.epochs,
-            "deletable": str(self.deletable).lower(),
             "permanent": str(self.permanent).lower(),
             "send_object_to": self.send_object_to,
         }
@@ -84,7 +82,7 @@ class StoreBlob(WalrusCommand):
                 blob_id=ac.get("blobId", ""),
                 cost=0,
                 expiry_epoch=ac.get("endEpoch", 0),
-                deletable=self.deletable,
+                deletable=not self.permanent,
             )
         else:
             return SuiRpcResult(False, f"Unexpected publisher response: {data}")
@@ -100,12 +98,21 @@ class StoreQuilt(WalrusCommand):
     Args:
         files (dict[str, bytes]): Mapping of patch key to raw file content.
         epochs (int): Number of epochs to store the quilt for.
+        send_object_to (str): Sui address to receive the created quilt blob
+            object. The publisher creates the blob object under its own
+            wallet unless this is set, so ownership never transfers to the
+            caller otherwise.
+        permanent (bool): If True, the quilt cannot be deleted before expiry.
+            Quilts are deletable by default (Walrus v1.33+), matching
+            StoreBlob's persistence semantics.
     """
 
     _endpoint_role: ClassVar[str] = "publisher"
 
     files: dict[str, bytes]
     epochs: int
+    send_object_to: str
+    permanent: bool = dataclasses.field(default=False)
 
     def http_method(self) -> str:
         return "PUT"
@@ -114,7 +121,11 @@ class StoreQuilt(WalrusCommand):
         return f"{base_url}/v1/quilts"
 
     def query_params(self) -> dict[str, Any]:
-        return {"epochs": self.epochs}
+        return {
+            "epochs": self.epochs,
+            "permanent": str(self.permanent).lower(),
+            "send_object_to": self.send_object_to,
+        }
 
     def form_files(self) -> dict[str, bytes] | None:
         return self.files

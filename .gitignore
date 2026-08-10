@@ -20,6 +20,8 @@ temp_*.py
 temp_*.json
 __pycache__
 .pytest_cache
+.mypy_cache
+.ruff_cache
 
 # Sphinx auto-generated module stubs
 doc/source/modules.rst

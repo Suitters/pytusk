@@ -457,7 +457,6 @@ async def store_blob(args: argparse.Namespace) -> None:
                 data=data,
                 epochs=args.epochs,
                 send_object_to=recipient,
-                deletable=args.deletable,
                 permanent=args.permanent,
             )
         )
