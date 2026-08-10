@@ -15,8 +15,10 @@ from dataclasses_json import DataClassJsonMixin
 from pysui import PysuiConfiguration
 
 
-class NetworkType(enum.StrEnum):
+class NetworkType(str, enum.Enum):
     """Indicates whether a network configuration targets a test or production environment."""
+
+    __str__ = str.__str__
 
     TEST = "test"
     PRODUCTION = "production"

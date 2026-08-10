@@ -1,7 +1,7 @@
 Installation
 ============
 
-``pytusk`` requires **Python 3.11 or later**. It depends on `pysui
+``pytusk`` requires **Python 3.10.6 or later**. It depends on `pysui
 <https://github.com/FrankC01/pysui>`_ for Sui-level configuration and
 transport, which is installed automatically as a dependency.
 
