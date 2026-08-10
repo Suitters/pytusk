@@ -58,6 +58,22 @@ and cannot be added or removed, though their individual fields (aggregator
 URL, publisher URL, etc.) can still be updated — see Bottom Up Changes
 below.
 
+Session Properties
+========================================
+In addition to the ``PytuskConfigModel`` fields above, ``PytuskConfiguration``
+exposes properties for the pysui session overrides passed to the
+constructor, and for accessing derived state:
+
+* ``pysui_group_name`` / ``pysui_profile_name`` — the pysui
+  ``ProfileGroup``/``Profile`` name overrides passed at construction, if
+  any.
+* ``pysui_address`` / ``pysui_alias`` — the active Sui address/alias
+  override passed at construction, if any.
+* ``pysui_configuration`` — the underlying, lazily-constructed
+  ``PysuiConfiguration`` instance.
+* ``network`` (alias: ``active_network_entry``) — the ``WalrusNetworkConfig``
+  for the currently active network.
+
 PytuskConfiguration
 ========================================
 
@@ -249,6 +265,17 @@ found.
     ) -> None:
         """Set the Walrus publisher URL for a network."""
 
+    def set_exchange_objects(
+        self,
+        *,
+        network_name: str,
+        exchange_objects: list[str],
+        persist: bool = False,
+    ) -> None:
+        """Set the WAL/SUI exchange object IDs for a network. Mainnet
+        ships with an empty default — use this to register mainnet
+        exchange object IDs once available."""
+
 .. code-block:: python
     :linenos:
 
@@ -274,6 +301,23 @@ Two additional setters exist outside the per-network model:
 
     def set_walrus_binary_path(self, path: str, *, persist: bool = False) -> None:
         """Set the walrus binary path."""
+
+Persisting Changes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Two methods write the current in-memory configuration to disk directly,
+independent of any setter's ``persist`` keyword:
+
+.. code-block:: python
+
+    def save(self) -> None:
+        """Persist the current configuration to disk."""
+
+    def save_to(self, path: str) -> None:
+        """Persist the current configuration to an alternate directory."""
+
+Most setters above accept a ``persist`` keyword that calls ``save()``
+internally. Call ``save()`` or ``save_to()`` directly to persist changes
+made without it, or to write the configuration to a different location.
 
 FAQ
 ========================================

@@ -27,6 +27,12 @@ def _add_config_args(subp: argparse.ArgumentParser) -> None:
         help="Directory containing PytuskConfig.json (default: ~/.pysui).",
     )
     subp.add_argument(
+        "--network",
+        dest="active_network",
+        default=None,
+        help="Override the active Walrus network (e.g. testnet, mainnet). Default: value stored in PytuskConfig.json.",
+    )
+    subp.add_argument(
         "--pysui-config-path",
         dest="pysui_config_path",
         default=None,
@@ -350,7 +356,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     # --- PTB action commands (--mode + sender/sponsor apply) ---
 
     p_exchange_for_wal = subparsers.add_parser(
-        "exchange_for_wal", help="Exchange SUI for WAL (testnet only)."
+        "exchange_for_wal", help="Exchange SUI for WAL."
     )
     p_exchange_for_wal.add_argument(
         "--amount",
@@ -362,7 +368,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_config_args(p_exchange_for_wal)
 
     p_exchange_for_sui = subparsers.add_parser(
-        "exchange_for_sui", help="Exchange WAL for SUI (testnet only)."
+        "exchange_for_sui", help="Exchange WAL for SUI."
     )
     p_exchange_for_sui.add_argument(
         "--amount",

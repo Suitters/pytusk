@@ -1,4 +1,0 @@
-Write Commands
-==============
-
-.. placeholder

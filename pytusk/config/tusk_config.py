@@ -470,6 +470,35 @@ class PytuskConfiguration:
                 return
         raise ValueError(f"Network '{network_name}' not found in configuration.")
 
+    def set_exchange_objects(
+        self, *, network_name: str, exchange_objects: list[str], persist: bool = False
+    ) -> None:
+        """Set the WAL/SUI exchange object IDs for a network.
+
+        Unlike add_network/remove_network, this method may target reserved
+        networks (testnet, mainnet) since it only updates a single field
+        rather than replacing the whole network entry. Mainnet ships with
+        an empty default — use this to register mainnet exchange object
+        IDs once available, or to point at custom/self-deployed exchange
+        objects.
+
+        Args:
+            network_name (str): Name of the network to update.
+            exchange_objects (list[str]): WAL/SUI exchange object IDs for
+                this network.
+            persist (bool): If True, persist the change to the config file.
+
+        Raises:
+            ValueError: If network_name is not found in the configuration.
+        """
+        for net in self._model.networks:
+            if net.network_name == network_name:
+                net.exchange_objects = exchange_objects
+                if persist:
+                    self._write_model(self._cfg_dir)
+                return
+        raise ValueError(f"Network '{network_name}' not found in configuration.")
+
     def save(self) -> None:
         """Persist the current configuration to disk."""
         self._write_model(self._cfg_dir)

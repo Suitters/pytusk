@@ -2,13 +2,38 @@ pytusk
 ======
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+   :maxdepth: 1
+   :caption: Getting Started
 
    installation
-   quickstart
+   intro
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Configuration
+
    configuration
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Commands
+
    commands
-   read_commands
-   write_commands
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Transactions
+
+   transactions
+
+.. toctree::
+   :maxdepth: 1
+   :caption: CLI
+
+   tusky
+
+.. toctree::
+   :maxdepth: 1
+   :caption: API Reference
+
    modules

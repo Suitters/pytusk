@@ -215,6 +215,22 @@ class TestPytuskConfiguration:
         with pytest.raises(ValueError, match="not found"):
             cfg.set_walrus_publisher_url(network_name="nonexistent", url="https://my-publisher.example.com")
 
+    def test_set_exchange_objects(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.set_exchange_objects(network_name="testnet", exchange_objects=["0xabc", "0xdef"])
+        assert cfg.network.exchange_objects == ["0xabc", "0xdef"]
+
+    def test_set_exchange_objects_persist(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.set_exchange_objects(network_name="testnet", exchange_objects=["0xabc", "0xdef"], persist=True)
+        cfg2 = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        assert cfg2.network.exchange_objects == ["0xabc", "0xdef"]
+
+    def test_set_exchange_objects_not_found_raises(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        with pytest.raises(ValueError, match="not found"):
+            cfg.set_exchange_objects(network_name="nonexistent", exchange_objects=["0xabc"])
+
     def test_save(self, tmp_path: Path) -> None:
         cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
         cfg.set_active_network("mainnet")

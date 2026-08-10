@@ -50,8 +50,9 @@ def _config_from_args(args: argparse.Namespace) -> PytuskConfiguration:
 
     Args:
         args (argparse.Namespace): Parsed arguments carrying the
-            `_add_config_args` fields (from_cfg_path, pysui_config_path,
-            pysui_group_name, pysui_profile_name, pysui_address, pysui_alias).
+            `_add_config_args` fields (from_cfg_path, active_network,
+            pysui_config_path, pysui_group_name, pysui_profile_name,
+            pysui_address, pysui_alias).
 
     Returns:
         PytuskConfiguration: Configuration for this CLI invocation.
@@ -59,6 +60,7 @@ def _config_from_args(args: argparse.Namespace) -> PytuskConfiguration:
     try:
         return PytuskConfiguration(
             from_cfg_path=args.from_cfg_path,
+            active_network=args.active_network,
             pysui_config_path=args.pysui_config_path,
             pysui_group_name=args.pysui_group_name,
             pysui_profile_name=args.pysui_profile_name,
@@ -709,7 +711,7 @@ async def epoch(args: argparse.Namespace) -> None:
 
 
 async def exchange_for_wal(args: argparse.Namespace) -> None:
-    """Exchange SUI for WAL via the testnet wal_exchange contract.
+    """Exchange SUI for WAL via the wal_exchange contract.
 
     Builds a PTB that splits --amount MIST of SUI from gas, exchanges it for
     WAL via wal_exchange::exchange_all_for_wal, and transfers the resulting
@@ -771,7 +773,7 @@ async def exchange_for_wal(args: argparse.Namespace) -> None:
 
 
 async def exchange_for_sui(args: argparse.Namespace) -> None:
-    """Exchange WAL for SUI via the testnet wal_exchange contract.
+    """Exchange WAL for SUI via the wal_exchange contract.
 
     Selects WAL coin(s) owned by the resolved sender to cover --amount FROST.
     If the largest owned coin covers the amount, no client-side split is
