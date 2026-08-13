@@ -11,7 +11,7 @@ if test "$base_dir" = "pytusk"; then
     rm -rf doc/build
 
     echo "Generating module RSTs"
-    sphinx-apidoc -o doc/source pytusk/
+    sphinx-apidoc -o doc/source pytusk/ pytusk/tusky
 
     cd doc
     echo "Building HTML"
