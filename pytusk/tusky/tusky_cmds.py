@@ -41,7 +41,6 @@ from pytusk import (
     StoreBlob,
     StoreQuilt,
     WalrusClient,
-    get_walrus_epoch,
 )
 
 
@@ -146,7 +145,9 @@ def _resolve_sponsor(
     return _resolve_address_or_alias(config=config, arg=sponsor_arg)
 
 
-def _require_testnet_exchange(*, config: PytuskConfiguration, command_name: str) -> None:
+def _require_testnet_exchange(
+    *, config: PytuskConfiguration, command_name: str
+) -> None:
     """Exit with a clear error if the active network has no wal_exchange objects.
 
     Args:
@@ -564,7 +565,7 @@ async def blobs(args: argparse.Namespace) -> None:
     """
     config = _config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
-        current_epoch = await get_walrus_epoch(client)
+        current_epoch = await client.walrus_epoch()
         owner = client.pysui_client.config.active_address
         objects_result = await client.execute_for_all(
             command=GetObjectsOwnedByAddress(owner=owner)
@@ -637,7 +638,7 @@ async def expiry_report(args: argparse.Namespace) -> None:
     """
     config = _config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
-        current_epoch = await get_walrus_epoch(client)
+        current_epoch = await client.walrus_epoch()
         owner = args.address or client.pysui_client.config.active_address
         objects_result = await client.execute_for_all(
             command=GetObjectsOwnedByAddress(owner=owner)
@@ -703,11 +704,44 @@ async def epoch(args: argparse.Namespace) -> None:
     config = _config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            current_epoch = await get_walrus_epoch(client)
+            current_epoch = await client.walrus_epoch()
         except RuntimeError as exc:
             print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
             sys.exit(1)
     print(current_epoch)
+
+
+async def committee(args: argparse.Namespace) -> None:
+    """Print the active Walrus storage committee.
+
+    One line is printed per member. A member's leading index is its committee
+    position, which is what ``signers_bitmap`` indexes. Public keys are shown
+    truncated; they are 96 bytes on chain.
+
+    Args:
+        args (argparse.Namespace): Parsed `committee` subcommand arguments.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            walrus_committee = await client.committee()
+        except (RuntimeError, KeyError, TypeError, ValueError) as exc:
+            print(f"Cannot get Walrus committee: {exc}", file=sys.stderr)
+            sys.exit(1)
+    print(
+        f"epoch {walrus_committee.epoch}  "
+        f"shards {walrus_committee.n_shards}  "
+        f"members {walrus_committee.committee_size}"
+    )
+    for position, member in enumerate(walrus_committee.members):
+        public_key = member.public_key.hex()
+        print(
+            f"{position:>4}  "
+            f"{len(member.shard_indices):>4} shards  "
+            f"{member.node_id}  "
+            f"{public_key[:8]}..{public_key[-8:]}  "
+            f"{member.network_address}"
+        )
 
 
 async def exchange_for_wal(args: argparse.Namespace) -> None:
@@ -977,7 +1011,7 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         try:
-            current_epoch = await get_walrus_epoch(client)
+            current_epoch = await client.walrus_epoch()
         except RuntimeError as exc:
             print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -1066,8 +1100,7 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
                 spent = -int(wal_change.amount)
                 divisor = 10**decimals
                 print(
-                    f"WAL estimated cost: {spent} Frosts -> "
-                    f"{spent / divisor:.4f} WAL"
+                    f"WAL estimated cost: {spent} Frosts -> {spent / divisor:.4f} WAL"
                 )
 
 
@@ -1105,7 +1138,7 @@ async def delete_blob(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         try:
-            current_epoch = await get_walrus_epoch(client)
+            current_epoch = await client.walrus_epoch()
         except RuntimeError as exc:
             print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -1113,9 +1146,7 @@ async def delete_blob(args: argparse.Namespace) -> None:
         system_obj_id, walrus_pkg = await _walrus_package_id(client=client)
 
         if args.blobid:
-            blob_result = await client.execute(
-                command=GetObject(object_id=args.blobid)
-            )
+            blob_result = await client.execute(command=GetObject(object_id=args.blobid))
             if not blob_result.is_ok():
                 print(
                     f"Error fetching blob object: {blob_result.result_string}",
@@ -1235,9 +1266,7 @@ async def delete_blob(args: argparse.Namespace) -> None:
                         ),
                     )
                     storage_objects.append(storage)
-                await txn.transfer_objects(
-                    transfers=storage_objects, recipient=sender
-                )
+                await txn.transfer_objects(transfers=storage_objects, recipient=sender)
                 txdict = await txn.build_and_sign()
                 result = await _submit(client=client, txdict=txdict, mode=args.mode)
                 if not result.is_ok():
@@ -1248,8 +1277,7 @@ async def delete_blob(args: argparse.Namespace) -> None:
                     )
                     sys.exit(1)
                 print(
-                    f"Deleted batch {batch_num}/{total_batches} "
-                    f"({len(batch)} blob(s))."
+                    f"Deleted batch {batch_num}/{total_batches} ({len(batch)} blob(s))."
                 )
                 print(result.result_data.to_json(indent=2))
 
@@ -1294,7 +1322,7 @@ async def burn_blob(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         try:
-            current_epoch = await get_walrus_epoch(client)
+            current_epoch = await client.walrus_epoch()
         except RuntimeError as exc:
             print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -1364,9 +1392,7 @@ async def wal_coins(args: argparse.Namespace) -> None:
             )
         )
     if not coins_result.is_ok():
-        print(
-            f"Error listing WAL coins: {coins_result.result_string}", file=sys.stderr
-        )
+        print(f"Error listing WAL coins: {coins_result.result_string}", file=sys.stderr)
         sys.exit(1)
 
     divisor = 10**decimals

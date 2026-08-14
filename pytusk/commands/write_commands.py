@@ -38,7 +38,7 @@ class StoreBlob(WalrusCommand):
             is the only lever that controls persistence.
     """
 
-    _endpoint_role: ClassVar[str] = "publisher"
+    endpoint_role: ClassVar[str] = "publisher"
 
     data: bytes
     epochs: int
@@ -107,7 +107,7 @@ class StoreQuilt(WalrusCommand):
             StoreBlob's persistence semantics.
     """
 
-    _endpoint_role: ClassVar[str] = "publisher"
+    endpoint_role: ClassVar[str] = "publisher"
 
     files: dict[str, bytes]
     epochs: int

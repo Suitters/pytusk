@@ -22,6 +22,7 @@ _DISPATCH = {
     "blobs": tusky_cmds.blobs,
     "blob": tusky_cmds.blob,
     "epoch": tusky_cmds.epoch,
+    "committee": tusky_cmds.committee,
     "expiry_report": tusky_cmds.expiry_report,
     "wal_coins": tusky_cmds.wal_coins,
     "exchange_for_wal": tusky_cmds.exchange_for_wal,

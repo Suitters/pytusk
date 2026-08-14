@@ -204,6 +204,11 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_epoch = subparsers.add_parser("epoch", help="Show the current Walrus epoch.")
     _add_config_args(p_epoch)
 
+    p_committee = subparsers.add_parser(
+        "committee", help="Show the active Walrus storage committee."
+    )
+    _add_config_args(p_committee)
+
     p_expiry_report = subparsers.add_parser(
         "expiry_report",
         help=(
@@ -229,7 +234,8 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_config_args(p_read_blob)
 
     p_read_quilt = subparsers.add_parser(
-        "read_quilt", help="Read a single patch from a quilt via the Walrus HTTP aggregator."
+        "read_quilt",
+        help="Read a single patch from a quilt via the Walrus HTTP aggregator.",
     )
     p_read_quilt.add_argument(
         "--quilt-id",
@@ -315,8 +321,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         type=_key_value_pair,
         metavar="KEY=PATH",
         help=(
-            "Patch key and file path for a quilt member, in KEY=PATH form "
-            "(repeatable)."
+            "Patch key and file path for a quilt member, in KEY=PATH form (repeatable)."
         ),
     )
     p_store_quilt.add_argument(

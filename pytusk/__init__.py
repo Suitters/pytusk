@@ -18,6 +18,17 @@ from pytusk.config.tusk_config import (
 # Client
 from pytusk.client.walrus_client import WalrusClient, get_walrus_epoch
 
+# Committee
+from pytusk.client.committee import (
+    ChainReader,
+    WalrusCommittee,
+    WalrusCommitteeMember,
+    fetch_committee,
+    fetch_epoch,
+    pack_signers_bitmap,
+    unpack_signers_bitmap,
+)
+
 # Command base and response types
 from pytusk.commands.walrus_command import (
     WalrusCommand,
@@ -53,6 +64,14 @@ __all__ = [
     # Client
     "WalrusClient",
     "get_walrus_epoch",
+    # Committee
+    "ChainReader",
+    "WalrusCommittee",
+    "WalrusCommitteeMember",
+    "fetch_committee",
+    "fetch_epoch",
+    "pack_signers_bitmap",
+    "unpack_signers_bitmap",
     # Command base and response types
     "WalrusCommand",
     "BlobData",

@@ -11,13 +11,13 @@ from typing import Any, ClassVar, cast
 import httpx
 from pysui import (
     AsyncClientBase,
-    GetDynamicFields,
     PysuiClient,
     SuiCommand,
     SuiRpcResult,
     client_factory,
 )
 
+from pytusk.client.committee import WalrusCommittee, fetch_committee, fetch_epoch
 from pytusk.commands.walrus_command import WalrusCommand
 from pytusk.config.tusk_config import PytuskConfiguration
 
@@ -129,8 +129,54 @@ class WalrusClient(AsyncClientBase):
         """
         return await self._pysui_client.transaction(**kwargs)
 
+    async def walrus_epoch(self) -> int:
+        """Return the current Walrus epoch.
+
+        Supplies this client as the chain reader and the configured staking
+        object. A single on-chain read, materially cheaper than
+        :meth:`committee`.
+
+        Returns:
+            int: Current Walrus epoch.
+
+        Raises:
+            RuntimeError: If the on-chain read fails, the staking object
+                exposes no dynamic fields, or none carries the supported
+                staking inner type.
+            TypeError: If the decoded structure is not as expected.
+        """
+        return await fetch_epoch(
+            reader=self, staking_object=self.config.network.staking_object
+        )
+
+    async def committee(self) -> WalrusCommittee:
+        """Fetch the active Walrus storage committee.
+
+        Supplies this client as the chain reader and the configured staking
+        object, so callers need not know where on chain the committee lives.
+
+        Returns:
+            WalrusCommittee: The committee for the current epoch.
+
+        Raises:
+            KeyError: If a committee member has no entry in the pools table.
+            RuntimeError: If an on-chain read fails, or the pools table returns
+                a different number of entries than it declares.
+            TypeError: If the decoded structures are not as expected.
+            ValueError: If the shard assignment is not a complete cover.
+        """
+        return await fetch_committee(
+            reader=self, staking_object=self.config.network.staking_object
+        )
+
     async def __aenter__(self) -> "WalrusClient":
-        """Open the underlying httpx client."""
+        """Open the underlying httpx client.
+
+        A client instance is SINGLE USE. ``__aexit__`` closes both the httpx
+        and the pysui client and neither is rebuilt, so re-entering the same
+        instance yields closed transports. Build a new client per operation
+        scope.
+        """
         await self._httpx.__aenter__()
         return self
 
@@ -140,8 +186,9 @@ class WalrusClient(AsyncClientBase):
         exc_val: BaseException | None,
         exc_tb: types.TracebackType | None,
     ) -> None:
-        """Close the underlying httpx client."""
+        """Close the underlying httpx and pysui clients."""
         await self._httpx.__aexit__(exc_type, exc_val, exc_tb)
+        await self._pysui_client.close()
 
     # ------------------------------------------------------------------
     # Internal dispatch
@@ -157,7 +204,7 @@ class WalrusClient(AsyncClientBase):
         """Dispatch a WalrusCommand over HTTP.
 
         Requests are routed to the network's aggregator URL for reads or
-        publisher URL for writes, based on the command's _endpoint_role.
+        publisher URL for writes, based on the command's endpoint_role.
 
         Args:
             command (WalrusCommand): Command to dispatch.
@@ -173,7 +220,7 @@ class WalrusClient(AsyncClientBase):
         """
         method = command.http_method()
         network = self._pytusk_config.network
-        if command._endpoint_role == "publisher":
+        if command.endpoint_role == "publisher":
             base_url = network.walrus_publisher_url
             if not base_url:
                 raise ValueError(
@@ -223,8 +270,12 @@ class WalrusClient(AsyncClientBase):
         return command.parse_response(response)
 
 
-async def get_walrus_epoch(client: WalrusClient) -> int:
+async def get_walrus_epoch(*, client: WalrusClient) -> int:
     """Return the current Walrus epoch from the StakingInnerV1 dynamic field.
+
+    Retained as the exported free-function form. New code should prefer
+    :meth:`WalrusClient.walrus_epoch`, which this delegates to; both issue the
+    same single read.
 
     Args:
         client (WalrusClient): Active pytusk client.
@@ -233,19 +284,9 @@ async def get_walrus_epoch(client: WalrusClient) -> int:
         int: Current Walrus epoch.
 
     Raises:
-        RuntimeError: If the staking dynamic fields cannot be fetched.
+        RuntimeError: If the staking dynamic fields cannot be fetched, the
+            staking object exposes none, or no field carries the supported
+            staking inner type.
+        TypeError: If the decoded StakingInnerV1 does not have the expected shape.
     """
-    df_result = await client.execute(
-        command=GetDynamicFields(object_id=client.config.network.staking_object)
-    )
-    if not df_result.is_ok():
-        raise RuntimeError(
-            f"Cannot get staking dynamic fields: {df_result.result_string}"
-        )
-    dynamic_fields = df_result.result_data.dynamic_fields
-    if not dynamic_fields:
-        raise RuntimeError("Staking object has no dynamic fields")
-    return int(
-        dynamic_fields[0].field_object.json.struct_value.fields["value"]
-        .struct_value.fields["epoch"].number_value
-    )
+    return await client.walrus_epoch()

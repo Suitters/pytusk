@@ -52,7 +52,11 @@ async def _print_balances(client: WalrusClient, label: str = "") -> None:
 def _blob_id_from_u256(decimal_str: str) -> str:
     """Convert an on-chain u256 decimal blob_id to the base64url format used by the Walrus HTTP API."""
     n = int(decimal_str)
-    return base64.urlsafe_b64encode(n.to_bytes(32, byteorder="little")).rstrip(b"=").decode()
+    return (
+        base64.urlsafe_b64encode(n.to_bytes(32, byteorder="little"))
+        .rstrip(b"=")
+        .decode()
+    )
 
 
 def _end_epoch(obj) -> int:
@@ -103,7 +107,9 @@ async def _ensure_wal(client: WalrusClient) -> None:
         )
         if not sys_result.is_ok():
             raise RuntimeError(f"Cannot get System object: {sys_result.result_string}")
-        walrus_pkg = sys_result.result_data.json.struct_value.fields["package_id"].string_value
+        walrus_pkg = sys_result.result_data.json.struct_value.fields[
+            "package_id"
+        ].string_value
 
         txn: AsyncSuiTransaction = await client.transaction()
         split = await txn.split_coin(coin=txn.gas, amounts=[_MIN_SUI])
@@ -122,7 +128,9 @@ async def _ensure_wal(client: WalrusClient) -> None:
             raise RuntimeError(f"WAL exchange failed: {tx_result.result_string}")
         status = tx_result.result_data.effects.status
         if not (status and status.success):
-            desc = status.error.description if status and status.error else "unknown error"
+            desc = (
+                status.error.description if status and status.error else "unknown error"
+            )
             raise RuntimeError(f"WAL exchange transaction aborted: {desc}")
         gas = tx_result.result_data.effects.gas_used
         print(f"[ensure_wal] swap PTB OK — gas={gas}")
@@ -134,10 +142,12 @@ async def _ensure_wal(client: WalrusClient) -> None:
         )
 
 
-async def _cleanup_blobs(client: WalrusClient, session_blob_ids: list[str] | None = None) -> None:
+async def _cleanup_blobs(
+    client: WalrusClient, session_blob_ids: list[str] | None = None
+) -> None:
     """Delete active deletable blobs and burn expired blobs owned by the active address."""
     try:
-        current_epoch = await get_walrus_epoch(client)
+        current_epoch = await get_walrus_epoch(client=client)
     except RuntimeError as exc:
         print(f"\ncleanup: cannot get Walrus epoch — {exc}")
         return
@@ -169,7 +179,7 @@ async def _cleanup_blobs(client: WalrusClient, session_blob_ids: list[str] | Non
             if deletable_val and deletable_val.bool_value:
                 active_deletable.append(obj)
 
-    for obj_id in (session_blob_ids or []):
+    for obj_id in session_blob_ids or []:
         if not obj_id:
             continue
         obj_result = await client.execute(command=GetObject(object_id=obj_id))
@@ -177,7 +187,9 @@ async def _cleanup_blobs(client: WalrusClient, session_blob_ids: list[str] | Non
             _classify(obj_result.result_data)
 
     objects_result = await client.execute_for_all(
-        command=GetObjectsOwnedByAddress(owner=client.pysui_client.config.active_address)
+        command=GetObjectsOwnedByAddress(
+            owner=client.pysui_client.config.active_address
+        )
     )
     if objects_result.is_ok():
         for obj in objects_result.result_data.objects:
@@ -195,7 +207,9 @@ async def _cleanup_blobs(client: WalrusClient, session_blob_ids: list[str] | Non
     if not sys_result.is_ok():
         print(f"\ncleanup: cannot get System object — {sys_result.result_string}")
         return
-    walrus_pkg = sys_result.result_data.json.struct_value.fields["package_id"].string_value
+    walrus_pkg = sys_result.result_data.json.struct_value.fields[
+        "package_id"
+    ].string_value
 
     if active_deletable:
         try:
@@ -215,16 +229,20 @@ async def _cleanup_blobs(client: WalrusClient, session_blob_ids: list[str] | Non
             txdict = await txn.build_and_sign()
             result = await client.execute(command=ExecuteTransaction(**txdict))
             if result.is_ok():
-                print(f"\ncleanup: deleted {len(active_deletable)} active deletable blob(s)")
+                print(
+                    f"\ncleanup: deleted {len(active_deletable)} active deletable blob(s)"
+                )
                 await _print_balances(client, label="cleanup post-delete")
             else:
                 print(f"\ncleanup: delete failed — {result.result_string}")
         except Exception as exc:
-            print(f"\ncleanup: delete PTB failed (blobs will clean up next session) — {exc}")
+            print(
+                f"\ncleanup: delete PTB failed (blobs will clean up next session) — {exc}"
+            )
 
     if expired:
         for batch_start in range(0, len(expired), 100):
-            batch = expired[batch_start:batch_start + 100]
+            batch = expired[batch_start : batch_start + 100]
             try:
                 txn: AsyncSuiTransaction = await client.transaction()
                 for blob_obj in batch:
@@ -241,7 +259,9 @@ async def _cleanup_blobs(client: WalrusClient, session_blob_ids: list[str] | Non
                 else:
                     print(f"\ncleanup: burn failed — {result.result_string}")
             except Exception as exc:
-                print(f"\ncleanup: burn PTB failed (blobs will expire naturally) — {exc}")
+                print(
+                    f"\ncleanup: burn PTB failed (blobs will expire naturally) — {exc}"
+                )
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
@@ -258,8 +278,12 @@ async def walrus_client(pytusk_config: PytuskConfiguration):
         async def _tracking_execute(
             *, command, timeout: float | None = None, headers: dict | None = None
         ):
-            result = await _orig_execute(command=command, timeout=timeout, headers=headers)
-            if result.is_ok() and isinstance(result.result_data, (BlobReceipt, QuiltReceipt)):
+            result = await _orig_execute(
+                command=command, timeout=timeout, headers=headers
+            )
+            if result.is_ok() and isinstance(
+                result.result_data, (BlobReceipt, QuiltReceipt)
+            ):
                 oid = result.result_data.object_id
                 if oid:
                     _session_blob_ids.append(oid)
@@ -288,7 +312,7 @@ async def stored_blob(walrus_client: WalrusClient):
     found = False
 
     try:
-        current_epoch: int = await get_walrus_epoch(walrus_client)
+        current_epoch: int = await get_walrus_epoch(client=walrus_client)
     except RuntimeError:
         current_epoch = 0
 
