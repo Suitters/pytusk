@@ -48,7 +48,6 @@ from pytusk.core.certification import pack_signers_bitmap, unpack_signers_bitmap
 
 __all__ = [
     "ChainReader",
-    "DynamicFieldCountError",
     "WalrusCommittee",
     "WalrusCommitteeMember",
     "fetch_committee",
@@ -67,27 +66,7 @@ _UNCOMPRESSED_G1_LENGTH: int = 96
 _STAKING_INNER_TYPE_SUFFIX: str = "staking_inner::StakingInnerV1"
 """Move type suffix of the staking inner state this module can read."""
 
-# --- TEMPORARY GUARD ----------------------------------------------------
-# Until result "cleaners" de-duplicate redundant dynamic-field entries, an
-# implausibly large field count indicates a mid-flight checkpoint change
-# surfaced stale/duplicate node entries with newer version numbers. Halt
-# loudly rather than build a malformed committee from them.
-# ------------------------------------------------------------------------
-_MAX_EXPECTED_DYNAMIC_FIELDS: int = 150
-
 _logger = logging.getLogger(__name__)
-
-
-class DynamicFieldCountError(RuntimeError):
-    """Raised when ``GetDynamicFields`` returns an implausibly large count.
-
-    A checkpoint change occurring mid-flight can surface redundant node
-    entries carrying a newer version number, inflating the raw field count
-    returned by gRPC beyond what GraphQL would report for the same object.
-    Proper de-duplication ("cleaners") of these results is planned but not
-    yet implemented, so this halts loudly rather than let the inflated
-    count silently build a malformed committee.
-    """
 
 
 class ChainReader(Protocol):
@@ -685,10 +664,6 @@ async def fetch_staking_inner(
         ``epoch``, ``n_shards``, ``committee`` and ``pools``.
 
     Raises:
-        DynamicFieldCountError: If the raw dynamic-field count returned by
-            ``GetDynamicFields`` is at or above
-            :data:`_MAX_EXPECTED_DYNAMIC_FIELDS` -- see that constant's
-            comment for why.
         RuntimeError: If the dynamic fields cannot be fetched, the staking
             object exposes none, or no field carries the supported staking
             inner type.
@@ -706,14 +681,6 @@ async def fetch_staking_inner(
         staking_object,
         len(dynamic_fields),
     )
-    if len(dynamic_fields) >= _MAX_EXPECTED_DYNAMIC_FIELDS:
-        raise DynamicFieldCountError(
-            f"GetDynamicFields staking_object={staking_object} returned "
-            f"{len(dynamic_fields)} raw dynamic field(s), at or above the "
-            f"implausible threshold of {_MAX_EXPECTED_DYNAMIC_FIELDS}; "
-            "possible mid-flight checkpoint change surfacing redundant "
-            "node entries; result de-duplication is not yet implemented"
-        )
     if not dynamic_fields:
         raise RuntimeError(f"Staking object {staking_object} has no dynamic fields")
     matching = [
@@ -758,6 +725,11 @@ async def fetch_pools(
     as the committee itself.
 
     All pages are collected -- the table routinely exceeds a single page.
+    Raw entries are de-duplicated by ``field_object.object_id`` before
+    decoding, keeping the highest ``field_object.version`` on conflict -- a
+    checkpoint change occurring mid-pagination can otherwise surface the
+    same node's pool entry more than once without representing a real
+    committee change.
 
     Args:
         reader (ChainReader): Chain transport to read through.
@@ -773,10 +745,6 @@ async def fetch_pools(
         by storage node identifier.
 
     Raises:
-        DynamicFieldCountError: If the raw dynamic-field count returned by
-            ``GetDynamicFields`` is at or above
-            :data:`_MAX_EXPECTED_DYNAMIC_FIELDS` -- see that constant's
-            comment for why.
         RuntimeError: If the pools dynamic fields cannot be fetched, or the
             number fetched does not match ``expected_size``.
         TypeError: If a decoded pool is not as expected.
@@ -804,16 +772,25 @@ async def fetch_pools(
         len(raw_entries),
         expected_size,
     )
-    if len(raw_entries) >= _MAX_EXPECTED_DYNAMIC_FIELDS:
-        raise DynamicFieldCountError(
-            f"GetDynamicFields pools_table_id={pools_table_id} returned "
-            f"{len(raw_entries)} raw dynamic field(s), at or above the "
-            f"implausible threshold of {_MAX_EXPECTED_DYNAMIC_FIELDS}; "
-            "possible mid-flight checkpoint change surfacing redundant "
-            "node entries; result de-duplication is not yet implemented"
+    deduped_by_field_id = {}
+    for entry in raw_entries:
+        field_id = entry.field_object.object_id
+        version = int(entry.field_object.version)
+        existing = deduped_by_field_id.get(field_id)
+        if existing is None or version > int(existing.field_object.version):
+            deduped_by_field_id[field_id] = entry
+    if len(deduped_by_field_id) != len(raw_entries):
+        _logger.info(
+            "GetDynamicFields pools_table_id=%s: de-duplicated %d raw entries "
+            "down to %d unique field(s) by field_object.object_id (checkpoint "
+            "boundary crossed mid-pagination); keeping the highest version on "
+            "conflict",
+            pools_table_id,
+            len(raw_entries),
+            len(deduped_by_field_id),
         )
     pools: dict[str, dict[str, JsonValue]] = {}
-    for entry in raw_entries:
+    for entry in deduped_by_field_id.values():
         decoded = protobuf_json_to_python(value=entry.child_object.json)
         pool = _require_dict(node=decoded, path="staking pool")
         pools[pool_node_id(pool=pool)] = pool

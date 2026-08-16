@@ -15,6 +15,7 @@ import asyncio
 import base64
 import dataclasses
 import functools
+import io
 import json
 import logging
 import os
@@ -1717,7 +1718,7 @@ def _configure_native_upload_logging(
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
 
     if verbose:
-        if hasattr(sys.stdout, "reconfigure"):
+        if isinstance(sys.stdout, io.TextIOWrapper):
             sys.stdout.reconfigure(line_buffering=True)
         stream_handler = logging.StreamHandler(sys.stdout)
         stream_handler.setLevel(logging.INFO)
