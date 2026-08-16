@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from pytusk.commands.write_commands import StoreBlob, StoreQuilt
 from pytusk.commands.walrus_command import BlobReceipt, QuiltReceipt
+from pytusk.commands.write_commands import StoreBlob, StoreQuilt
 
 PUB = "https://publisher.example.com"
 RECIPIENT = "0xabc"

@@ -5,7 +5,6 @@
 
 """Unit tests for Sprint 1 read commands."""
 
-from typing import Any
 from unittest.mock import MagicMock
 
 import httpx

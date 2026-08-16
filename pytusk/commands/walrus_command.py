@@ -7,7 +7,6 @@
 
 import dataclasses
 from abc import ABC, abstractmethod
-
 from typing import Any, ClassVar
 
 import httpx
@@ -24,6 +23,21 @@ class WalrusCommand(ABC):
     """
 
     endpoint_role: ClassVar[str] = "aggregator"
+    """Selects which base URL the client resolves for this command.
+
+    Valid values:
+        "aggregator" (default): Resolved from the active network's
+            configured aggregator URL. Used by read commands.
+        "publisher": Resolved from the active network's configured
+            publisher URL. Used by write commands that go through the
+            publisher daemon.
+        "storage_node": NOT resolved from configuration. The target host
+            is per-call data derived from the committee (a specific
+            storage node's network address), not a fixed configured
+            endpoint, so callers MUST supply an explicit ``base_url`` to
+            :meth:`WalrusClient.execute`. Dispatch raises ``ValueError``
+            if one is not supplied.
+    """
 
     @abstractmethod
     def http_method(self) -> str:

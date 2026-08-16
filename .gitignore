@@ -23,6 +23,9 @@ __pycache__
 .mypy_cache
 .ruff_cache
 
+testdata*
+nativeupload_*.log
+
 # Sphinx auto-generated module stubs
 doc/source/modules.rst
 doc/source/pytusk*.rst

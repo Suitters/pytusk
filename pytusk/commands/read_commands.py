@@ -6,17 +6,16 @@
 """Walrus read commands (Sprint 1)."""
 
 import dataclasses
-
 from typing import Any
 
 import httpx
 from pysui import SuiRpcResult
 
 from pytusk.commands.walrus_command import (
-    WalrusCommand,
     BlobData,
     BlobSlice,
     QuiltPatch,
+    WalrusCommand,
 )
 
 

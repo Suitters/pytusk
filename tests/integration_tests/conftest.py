@@ -235,7 +235,7 @@ async def _cleanup_blobs(
                 await _print_balances(client, label="cleanup post-delete")
             else:
                 print(f"\ncleanup: delete failed — {result.result_string}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- best-effort fixture cleanup must not fail the test session
             print(
                 f"\ncleanup: delete PTB failed (blobs will clean up next session) — {exc}"
             )
@@ -258,7 +258,7 @@ async def _cleanup_blobs(
                     await _print_balances(client, label="cleanup post-burn")
                 else:
                     print(f"\ncleanup: burn failed — {result.result_string}")
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- best-effort fixture cleanup must not fail the test session
                 print(
                     f"\ncleanup: burn PTB failed (blobs will expire naturally) — {exc}"
                 )

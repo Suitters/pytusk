@@ -30,6 +30,8 @@ _DISPATCH = {
     "extend_blob_expiration": tusky_cmds.extend_blob_expiration,
     "delete_blob": tusky_cmds.delete_blob,
     "burn_blob": tusky_cmds.burn_blob,
+    "store_blob_native": tusky_cmds.store_blob_native,
+    "certify_blob": tusky_cmds.certify_blob,
 }
 
 

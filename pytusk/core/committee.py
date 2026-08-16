@@ -35,13 +35,20 @@ from __future__ import annotations
 import base64
 import dataclasses
 import functools
-from collections.abc import Iterable
+import logging
 from typing import Protocol, TypeAlias
 
 from pysui import GetDynamicFields, SuiCommand, SuiRpcResult
 
+# pack_signers_bitmap/unpack_signers_bitmap now live in certification.py (the
+# certify_blob wire-format module) and are re-exported here so Part 1's
+# published public surface (pytusk.core.committee.pack_signers_bitmap /
+# unpack_signers_bitmap) does not break.
+from pytusk.core.certification import pack_signers_bitmap, unpack_signers_bitmap
+
 __all__ = [
     "ChainReader",
+    "DynamicFieldCountError",
     "WalrusCommittee",
     "WalrusCommitteeMember",
     "fetch_committee",
@@ -59,6 +66,28 @@ _UNCOMPRESSED_G1_LENGTH: int = 96
 
 _STAKING_INNER_TYPE_SUFFIX: str = "staking_inner::StakingInnerV1"
 """Move type suffix of the staking inner state this module can read."""
+
+# --- TEMPORARY GUARD ----------------------------------------------------
+# Until result "cleaners" de-duplicate redundant dynamic-field entries, an
+# implausibly large field count indicates a mid-flight checkpoint change
+# surfaced stale/duplicate node entries with newer version numbers. Halt
+# loudly rather than build a malformed committee from them.
+# ------------------------------------------------------------------------
+_MAX_EXPECTED_DYNAMIC_FIELDS: int = 150
+
+_logger = logging.getLogger(__name__)
+
+
+class DynamicFieldCountError(RuntimeError):
+    """Raised when ``GetDynamicFields`` returns an implausibly large count.
+
+    A checkpoint change occurring mid-flight can surface redundant node
+    entries carrying a newer version number, inflating the raw field count
+    returned by gRPC beyond what GraphQL would report for the same object.
+    Proper de-duplication ("cleaners") of these results is planned but not
+    yet implemented, so this halts loudly rather than let the inflated
+    count silently build a malformed committee.
+    """
 
 
 class ChainReader(Protocol):
@@ -252,75 +281,6 @@ class WalrusCommittee:
             ValueError: If ``shard_index`` is outside ``range(n_shards)``.
         """
         return self.members[self.position_for_shard(shard_index=shard_index)]
-
-
-def pack_signers_bitmap(
-    *, signer_positions: Iterable[int], committee_size: int
-) -> bytes:
-    """Pack committee positions into a Walrus ``signers_bitmap``.
-
-    Allocates ``ceil(committee_size / 8)`` zero bytes, then sets bit
-    ``position % 8`` of byte ``position // 8`` for each signer, LSB-first within
-    each byte. This matches the on-chain encoding consumed by ``certify_blob``.
-
-    Args:
-        signer_positions (Iterable[int]): Zero-based POSITIONS WITHIN THE
-            COMMITTEE ORDERING of the nodes that signed. These are not node IDs
-            and not shard indices.
-        committee_size (int): Number of committee members. Determines the bitmap
-            length; ``n_shards`` is not a substitute.
-
-    Returns:
-        bytes: The packed bitmap.
-
-    Raises:
-        ValueError: If ``committee_size`` is negative, or a signer position
-            falls outside ``range(committee_size)``.
-    """
-    if committee_size < 0:
-        raise ValueError(f"committee_size must be non-negative, got {committee_size}")
-    bitmap = bytearray((committee_size + 7) // 8)
-    for position in signer_positions:
-        if position < 0 or position >= committee_size:
-            raise ValueError(
-                f"Signer position {position} outside committee of size {committee_size}"
-            )
-        bitmap[position // 8] |= 1 << (position % 8)
-    return bytes(bitmap)
-
-
-def unpack_signers_bitmap(*, bitmap: bytes, committee_size: int) -> tuple[int, ...]:
-    """Unpack a Walrus ``signers_bitmap`` into committee positions.
-
-    Inverse of :func:`pack_signers_bitmap`. Not required by the upload flow, but
-    it makes the round-trip property directly unit-testable and materially helps
-    when diagnosing a rejected certification.
-
-    Args:
-        bitmap (bytes): Packed bitmap as produced by ``pack_signers_bitmap``.
-        committee_size (int): Number of committee members. Bits at positions at
-            or beyond this value are padding and are ignored.
-
-    Returns:
-        tuple[int, ...]: Ascending signer positions.
-
-    Raises:
-        ValueError: If ``committee_size`` is negative, or ``bitmap`` is shorter
-            than ``committee_size`` requires.
-    """
-    if committee_size < 0:
-        raise ValueError(f"committee_size must be non-negative, got {committee_size}")
-    expected_length = (committee_size + 7) // 8
-    if len(bitmap) < expected_length:
-        raise ValueError(
-            f"Bitmap of {len(bitmap)} bytes too short for committee of size "
-            f"{committee_size} (expected at least {expected_length})"
-        )
-    return tuple(
-        position
-        for position in range(committee_size)
-        if bitmap[position // 8] & (1 << (position % 8))
-    )
 
 
 def protobuf_json_to_python(*, value: object) -> JsonValue:
@@ -725,21 +685,52 @@ async def fetch_staking_inner(
         ``epoch``, ``n_shards``, ``committee`` and ``pools``.
 
     Raises:
+        DynamicFieldCountError: If the raw dynamic-field count returned by
+            ``GetDynamicFields`` is at or above
+            :data:`_MAX_EXPECTED_DYNAMIC_FIELDS` -- see that constant's
+            comment for why.
         RuntimeError: If the dynamic fields cannot be fetched, the staking
             object exposes none, or no field carries the supported staking
             inner type.
         TypeError: If the decoded field is not as expected.
     """
-    result = await reader.execute(command=GetDynamicFields(object_id=staking_object))
+    result = await reader.execute_for_all(
+        command=GetDynamicFields(object_id=staking_object)
+    )
     if not result.is_ok():
         raise RuntimeError(f"Cannot get staking dynamic fields: {result.result_string}")
     dynamic_fields = result.result_data.dynamic_fields
+    _logger.info(
+        "GetDynamicFields staking_object=%s: fetched %d raw dynamic field(s) total "
+        "(all pages accumulated by pysui execute_for_all)",
+        staking_object,
+        len(dynamic_fields),
+    )
+    if len(dynamic_fields) >= _MAX_EXPECTED_DYNAMIC_FIELDS:
+        raise DynamicFieldCountError(
+            f"GetDynamicFields staking_object={staking_object} returned "
+            f"{len(dynamic_fields)} raw dynamic field(s), at or above the "
+            f"implausible threshold of {_MAX_EXPECTED_DYNAMIC_FIELDS}; "
+            "possible mid-flight checkpoint change surfacing redundant "
+            "node entries; result de-duplication is not yet implemented"
+        )
     if not dynamic_fields:
         raise RuntimeError(f"Staking object {staking_object} has no dynamic fields")
-    for candidate in dynamic_fields:
-        if (candidate.value_type or "").endswith(_STAKING_INNER_TYPE_SUFFIX):
-            selected = candidate
-            break
+    matching = [
+        candidate
+        for candidate in dynamic_fields
+        if (candidate.value_type or "").endswith(_STAKING_INNER_TYPE_SUFFIX)
+    ]
+    _logger.info(
+        "GetDynamicFields staking_object=%s: %d of %d raw entries match type "
+        "suffix %r",
+        staking_object,
+        len(matching),
+        len(dynamic_fields),
+        _STAKING_INNER_TYPE_SUFFIX,
+    )
+    if matching:
+        selected = matching[0]
     else:
         found = ", ".join(
             sorted({entry.value_type or "<unknown>" for entry in dynamic_fields})
@@ -782,20 +773,57 @@ async def fetch_pools(
         by storage node identifier.
 
     Raises:
+        DynamicFieldCountError: If the raw dynamic-field count returned by
+            ``GetDynamicFields`` is at or above
+            :data:`_MAX_EXPECTED_DYNAMIC_FIELDS` -- see that constant's
+            comment for why.
         RuntimeError: If the pools dynamic fields cannot be fetched, or the
             number fetched does not match ``expected_size``.
         TypeError: If a decoded pool is not as expected.
     """
+    # execute_for_all() loops over pages internally (pysui's
+    # AsyncClientBase.execute_for_all -- see that method's docstring): it
+    # keeps requesting the next page via the command's next_page_token
+    # until none remains, then returns a single SuiRpcResult with every
+    # page's entries already concatenated. That loop is NOT visible to this
+    # module -- there is no cursor / has_next_page loop here to instrument
+    # per page -- so only the final accumulated count below is loggable
+    # from this side; per-page counts and page-count are not available
+    # without bypassing execute_for_all and paging manually, which is out
+    # of scope here.
     result = await reader.execute_for_all(
         command=GetDynamicFields(object_id=pools_table_id)
     )
     if not result.is_ok():
         raise RuntimeError(f"Cannot get pools dynamic fields: {result.result_string}")
+    raw_entries = result.result_data.dynamic_fields
+    _logger.info(
+        "GetDynamicFields pools_table_id=%s: fetched %d raw entries total "
+        "(all pages accumulated by pysui execute_for_all; expected_size=%s)",
+        pools_table_id,
+        len(raw_entries),
+        expected_size,
+    )
+    if len(raw_entries) >= _MAX_EXPECTED_DYNAMIC_FIELDS:
+        raise DynamicFieldCountError(
+            f"GetDynamicFields pools_table_id={pools_table_id} returned "
+            f"{len(raw_entries)} raw dynamic field(s), at or above the "
+            f"implausible threshold of {_MAX_EXPECTED_DYNAMIC_FIELDS}; "
+            "possible mid-flight checkpoint change surfacing redundant "
+            "node entries; result de-duplication is not yet implemented"
+        )
     pools: dict[str, dict[str, JsonValue]] = {}
-    for entry in result.result_data.dynamic_fields:
+    for entry in raw_entries:
         decoded = protobuf_json_to_python(value=entry.child_object.json)
         pool = _require_dict(node=decoded, path="staking pool")
         pools[pool_node_id(pool=pool)] = pool
+    _logger.info(
+        "GetDynamicFields pools_table_id=%s: parsed %d pool entries from %d "
+        "raw entries",
+        pools_table_id,
+        len(pools),
+        len(raw_entries),
+    )
     if expected_size is not None and len(pools) != expected_size:
         raise RuntimeError(
             f"Pools table {pools_table_id} declares {expected_size} entries "

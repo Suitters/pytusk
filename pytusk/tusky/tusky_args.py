@@ -12,6 +12,15 @@ tusky_cmds.py and are bridged to this module's subcommands purely by the
 """
 
 import argparse
+from pathlib import Path
+
+from pysui.sui.sui_common.validators import (
+    ValidateAddress,
+    ValidateAlias,
+    ValidateFile,
+    ValidateObjectID,
+    ValidatePositive,
+)
 
 
 def _add_config_args(subp: argparse.ArgumentParser) -> None:
@@ -54,36 +63,17 @@ def _add_config_args(subp: argparse.ArgumentParser) -> None:
     addr_group.add_argument(
         "--pysui-address",
         dest="pysui_address",
+        action=ValidateAddress,
         default=None,
         help="Set the active Sui address for this session. Mutually exclusive with --pysui-alias.",
     )
     addr_group.add_argument(
         "--pysui-alias",
         dest="pysui_alias",
+        action=ValidateAlias,
         default=None,
         help="Set the active Sui address by alias for this session. Mutually exclusive with --pysui-address.",
     )
-
-
-def _positive_int(value: str) -> int:
-    """Parse a CLI argument as a positive (>0) integer.
-
-    Args:
-        value (str): Raw CLI argument text.
-
-    Returns:
-        int: The parsed positive integer.
-
-    Raises:
-        argparse.ArgumentTypeError: If the value isn't a positive integer.
-    """
-    try:
-        parsed = int(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from exc
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError(f"{value!r} must be greater than 0")
-    return parsed
 
 
 def _key_value_pair(value: str) -> tuple[str, str]:
@@ -114,6 +104,7 @@ def _add_blob_id_arg(
         "Sui object ID of the blob (0x-prefixed) — not the Walrus blob ID "
         "(content hash)."
     ),
+    validate_as_object_id: bool = True,
 ) -> None:
     """Add the -i/--blobid argument.
 
@@ -123,13 +114,22 @@ def _add_blob_id_arg(
         help_text (str): Help text for the argument. Defaults to describing
             a Sui object ID; override for commands that take a different
             identifier (e.g. read_blob's Walrus blob ID).
+        validate_as_object_id (bool): Whether to validate the argument as a
+            Sui object ID via ``ValidateObjectID``. Defaults to True.
+            read_blob's ``-i/--blobid`` is a Walrus content-hash blob ID
+            (URL-safe base64), NOT a Sui object ID, so its call site passes
+            False to avoid rejecting a well-formed Walrus blob ID.
     """
+    kwargs: dict = {}
+    if validate_as_object_id:
+        kwargs["action"] = ValidateObjectID
     subp.add_argument(
         "-i",
         "--blobid",
         dest="blobid",
         required=required,
         help=help_text,
+        **kwargs,
     )
 
 
@@ -230,6 +230,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_blob_id_arg(
         p_read_blob,
         help_text="Walrus blob ID (URL-safe base64, content hash) to read.",
+        validate_as_object_id=False,
     )
     _add_config_args(p_read_blob)
 
@@ -274,11 +275,12 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     content_group.add_argument(
         "--file",
+        action=ValidateFile,
         help="Path to a file whose raw bytes will be stored. Mutually exclusive with --content.",
     )
     p_store_blob.add_argument(
         "--epochs",
-        type=_positive_int,
+        action=ValidatePositive,
         required=True,
         help=(
             "Number of epochs to store the blob for, counted from now "
@@ -338,7 +340,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     p_store_quilt.add_argument(
         "--epochs",
-        type=_positive_int,
+        action=ValidatePositive,
         required=True,
         help=(
             "Number of epochs to store the quilt for, counted from now "
@@ -365,7 +367,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     p_exchange_for_wal.add_argument(
         "--amount",
-        type=_positive_int,
+        action=ValidatePositive,
         required=True,
         help="Amount of SUI to exchange, in MIST.",
     )
@@ -377,7 +379,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     p_exchange_for_sui.add_argument(
         "--amount",
-        type=_positive_int,
+        action=ValidatePositive,
         required=True,
         help="Amount of WAL to exchange, in FROST.",
     )
@@ -402,7 +404,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_blob_id_arg(p_extend_blob_expiration)
     p_extend_blob_expiration.add_argument(
         "--epochs",
-        type=_positive_int,
+        action=ValidatePositive,
         required=True,
         help=(
             "Number of epochs to extend the blob's storage by, counted "
@@ -429,6 +431,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         "-i",
         "--blobid",
         dest="blobid",
+        action=ValidateObjectID,
         help=(
             "Sui object ID of the blob to delete (0x-prefixed) — not the "
             "Walrus blob ID (content hash)."
@@ -468,5 +471,102 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     _add_signing_args(p_burn_blob)
     _add_config_args(p_burn_blob)
+
+    # --- Native upload commands (--mode + sender/sponsor apply) ---
+
+    p_store_blob_native = subparsers.add_parser(
+        "store_blob_native",
+        help=(
+            "Store a blob via the native Walrus upload pipeline "
+            "(reserve_space+register_blob, sliver fan-out, certify_blob)."
+        ),
+    )
+    native_content_group = p_store_blob_native.add_mutually_exclusive_group(
+        required=True
+    )
+    native_content_group.add_argument(
+        "--content",
+        help="Blob content (UTF-8 text). Mutually exclusive with --file.",
+    )
+    native_content_group.add_argument(
+        "--file",
+        action=ValidateFile,
+        help="Path to a file whose raw bytes will be stored. Mutually exclusive with --content.",
+    )
+    p_store_blob_native.add_argument(
+        "--epochs",
+        action=ValidatePositive,
+        required=True,
+        help=(
+            "Number of epochs to store the blob for, counted from now "
+            "(a duration, not an absolute epoch number)."
+        ),
+    )
+    p_store_blob_native.add_argument(
+        "--permanent",
+        action="store_true",
+        help="Store as a permanent blob (cannot be deleted before expiry).",
+    )
+    p_store_blob_native.add_argument(
+        "--recipient",
+        dest="recipient",
+        action=ValidateAddress,
+        default=None,
+        help="Sui address to receive the stored blob object (default: sender).",
+    )
+    p_store_blob_native.add_argument(
+        "--full-json",
+        dest="full_json",
+        action="store_true",
+        help=(
+            "Also print the complete raw simulate transaction result as "
+            "JSON, in addition to the concise cost summary (--mode simulate "
+            "only; default: off, since the raw result can run to thousands "
+            "of lines for a large blob)."
+        ),
+    )
+    p_store_blob_native.add_argument(
+        "--log-file",
+        dest="log_file",
+        type=Path,
+        default=None,
+        help=(
+            "Write an INFO-level log of this run's native upload progress "
+            "to the given path (default: no log file is written)."
+        ),
+    )
+    p_store_blob_native.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        help="Emit INFO-level native upload progress to stdout.",
+    )
+    _add_signing_args(p_store_blob_native)
+    _add_config_args(p_store_blob_native)
+
+    p_certify_blob = subparsers.add_parser(
+        "certify_blob",
+        help=(
+            "Recover the confirmation-collection and certify_blob stages for "
+            "a registered blob whose slivers have ALREADY been uploaded to "
+            "the storage nodes. Does NOT upload slivers: if the sliver "
+            "fan-out never ran, no storage node holds the data, none will "
+            "sign a confirmation, and this command cannot recover the blob."
+        ),
+        description=(
+            "Recover the confirmation-collection and certify_blob stages for "
+            "a registered blob whose slivers have ALREADY been uploaded to "
+            "the storage nodes. "
+            "This command does NOT upload slivers and has no source bytes to "
+            "do so -- it only collects confirmations and submits Tx2. If the "
+            "sliver fan-out never ran (for example, an upload that failed "
+            "during the register stage), no storage node holds the blob's "
+            "data, none will sign a confirmation, and this command cannot "
+            "recover the registration."
+        ),
+    )
+    _add_blob_id_arg(p_certify_blob)
+    _add_signing_args(p_certify_blob)
+    _add_config_args(p_certify_blob)
 
     return parser.parse_args(in_args)
