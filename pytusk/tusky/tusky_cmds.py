@@ -503,6 +503,36 @@ def _blob_deletable_and_end_epoch(obj: sui_prot.Object) -> tuple[bool, int]:
     return deletable, end_epoch
 
 
+def _blob_certified_epoch(*, obj: sui_prot.Object) -> int | None:
+    """Extract a Blob object's certified_epoch, if the blob has been certified.
+
+    Args:
+        obj (sui_prot.Object): A fetched object expected to be a Walrus Blob.
+
+    Returns:
+        int | None: The epoch the blob was certified in, or None if the
+            blob has been registered but not yet certified by storage nodes.
+
+    Raises:
+        ValueError: If the object's JSON view is missing the certified_epoch
+            field entirely (e.g. an incomplete RPC response). Distinct from
+            a normal uncertified blob, whose certified_epoch field is
+            present but null, and must not be silently treated the same.
+    """
+    if not (obj.json and obj.json.struct_value):
+        raise ValueError(
+            f"Object {obj.object_id} has no JSON view; cannot determine "
+            "certified_epoch."
+        )
+    certified_epoch_val = obj.json.struct_value.fields.get("certified_epoch")
+    if certified_epoch_val is None:
+        raise ValueError(
+            f"Object {obj.object_id} is missing its 'certified_epoch' field."
+        )
+    if certified_epoch_val.null_value is not None:
+        return None
+    return int(certified_epoch_val.number_value or 0)
+
 def _blob_id_bytes_from_object(obj: sui_prot.Object) -> bytes:
     """Extract a Blob object's raw 32-byte Walrus blob ID from its on-chain u256 field.
 
@@ -848,8 +878,10 @@ async def expiry_report(args: argparse.Namespace) -> None:
 
     Lists each blob's Sui object ID alongside its storage end_epoch, the
     current Walrus epoch, and the number of epochs remaining before
-    expiration. A blob's status is "expired" when remaining epochs is
-    negative, "expiring" when exactly zero, and "active" when positive.
+    expiration. A blob's status is "uncertified" if it has not yet been
+    certified by storage nodes (regardless of remaining epochs), otherwise
+    "expired" when remaining epochs is negative, "expiring" when exactly
+    zero, and "active" when positive.
 
     Args:
         args (argparse.Namespace): Parsed `expiry_report` subcommand
@@ -869,12 +901,13 @@ async def expiry_report(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    rows: list[tuple[str, int, int]] = []
+    rows: list[tuple[str, int, int, bool]] = []
     for obj in objects_result.result_data.objects:
         if not (obj.object_type and "::blob::Blob" in obj.object_type):
             continue
         _, end_epoch = _blob_deletable_and_end_epoch(obj)
-        rows.append((obj.object_id, end_epoch, end_epoch - current_epoch))
+        certified = _blob_certified_epoch(obj=obj) is not None
+        rows.append((obj.object_id, end_epoch, end_epoch - current_epoch, certified))
 
     if not rows:
         print("No blobs found.")
@@ -886,8 +919,10 @@ async def expiry_report(args: argparse.Namespace) -> None:
         f"{'OBJECT ID':<66}  {'END_EPOCH':>10}  {'CURRENT_EPOCH':>13}  "
         f"{'REMAINING':>9}  STATUS"
     )
-    for object_id, end_epoch, remaining in rows:
-        if remaining < 0:
+    for object_id, end_epoch, remaining, certified in rows:
+        if not certified:
+            status = "uncertified"
+        elif remaining < 0:
             status = "expired"
         elif remaining == 0:
             status = "expiring"
