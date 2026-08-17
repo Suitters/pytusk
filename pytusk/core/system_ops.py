@@ -113,6 +113,42 @@ _RESUME_HINT: str = (
     "upload. Re-run the upload from the start; the paid storage on this "
     "registration is stranded."
 )
+
+_RESUME_HINT_PENDING_READBACK: str = (
+    "Sliver fan-out has NOT yet run, so no storage node has confirmed "
+    "this blob and Tx2 (certify_blob) cannot be submitted yet -- but Tx1 "
+    "already succeeded and storage is already paid for, so reserve_space/"
+    "register_blob does NOT need to be re-run. Resume the pipeline from "
+    "sliver upload onward using this transaction's digest and object_id."
+)
+
+
+class RegistrationPendingError(RuntimeError):
+    """Tx1 succeeded on-chain but its readback is not available yet.
+
+    Raised when checkpoint finality or the subsequent object readback
+    has not caught up with an already-successful ``reserve_space``/
+    ``register_blob`` transaction. The condition is transient, not a
+    lost transaction: ``digest`` and ``object_id`` are valid and can be
+    used to resume the pipeline from sliver upload onward without
+    re-executing Tx1.
+    """
+
+    def __init__(self, *, digest: str, object_id: str, detail: str) -> None:
+        """Build the error with recovery attributes attached.
+
+        Args:
+            digest (str): Tx1's transaction digest.
+            object_id (str): The Blob object id created by Tx1.
+            detail (str): Description of the specific readback step that failed.
+        """
+        self.digest = digest
+        self.object_id = object_id
+        super().__init__(
+            f"{detail} Tx1 (digest {digest}) SUCCEEDED on-chain -- the "
+            f"blob is registered and storage is already paid for "
+            f"(object_id {object_id}). {_RESUME_HINT_PENDING_READBACK}"
+        )
 """Recovery guidance for a Tx1 read-back failure.
 
 Deliberately steers AWAY from ``tusky certify_blob``. That command resumes
@@ -679,7 +715,11 @@ async def wait_for_finality(
     delay = max_delay / 8
     for attempt in range(max_attempts):
         result = await client.execute(command=GetTransaction(digest=digest))
-        if result.is_ok() and result.result_data is not None:
+        if (
+            result.is_ok()
+            and result.result_data is not None
+            and result.result_data.checkpoint
+        ):
             return True
         if attempt + 1 < max_attempts:
             await asyncio.sleep(delay)
@@ -833,21 +873,28 @@ async def execute_reserve_and_register(
             f"transaction. {_RESUME_HINT}"
         ) from exc
 
-    await wait_for_finality(
+    finalized = await wait_for_finality(
         client=client,
         digest=result.result_data.digest,
         max_attempts=finality_max_attempts,
         max_delay=finality_max_delay,
     )
+    if not finalized:
+        raise RegistrationPendingError(
+            digest=result.result_data.digest,
+            object_id=object_id,
+            detail=(
+                "Checkpoint finality was not reached after "
+                f"{finality_max_attempts} attempts."
+            ),
+        )
 
     blob_result = await client.execute(command=GetObject(object_id=object_id))
     if not blob_result.is_ok():
-        raise RuntimeError(
-            f"Cannot fetch newly created Blob {object_id}: "
-            f"{blob_result.result_string} Tx1 (digest {result.result_data.digest}) "
-            "SUCCEEDED on-chain -- the blob is registered and storage is "
-            "already paid for, so this is only a read-back failure, not a "
-            f"lost transaction. {_RESUME_HINT}"
+        raise RegistrationPendingError(
+            digest=result.result_data.digest,
+            object_id=object_id,
+            detail=f"Cannot fetch newly created Blob: {blob_result.result_string}",
         )
     try:
         end_epoch, actual_deletable = _end_epoch_and_deletable(blob_result.result_data)

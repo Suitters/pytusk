@@ -36,6 +36,7 @@ mock" this module deliberately avoids.
 """
 
 import dataclasses
+import types
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 import pytest
@@ -452,10 +453,13 @@ class TestWaitForFinality:
         return sleep_calls
 
     async def test_visible_immediately(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A first poll that is already ok with non-None result_data returns
-        True after exactly one call, with no sleep taken."""
+        """A first poll that is already ok with non-None, checkpointed
+        result_data returns True after exactly one call, with no sleep
+        taken."""
         sleep_calls = self._patch_sleep(monkeypatch=monkeypatch)
-        client = _FakeFinalityClient(responses=[SuiRpcResult(True, "", object())])
+        client = _FakeFinalityClient(
+            responses=[SuiRpcResult(True, "", types.SimpleNamespace(checkpoint=42))]
+        )
 
         visible = await wait_for_finality(client=client, digest="0xdigest")  # type: ignore[arg-type]
 
@@ -465,20 +469,65 @@ class TestWaitForFinality:
 
     async def test_visible_after_polls(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Two not-visible polls -- one not-ok, one ok with result_data still
-        None (the real-world pre-checkpoint race) -- followed by a visible
-        third poll returns True after exactly three calls."""
+        None (the real-world pre-checkpoint race) -- followed by a visible,
+        checkpointed third poll returns True after exactly three calls."""
         sleep_calls = self._patch_sleep(monkeypatch=monkeypatch)
         client = _FakeFinalityClient(
             responses=[
                 SuiRpcResult(False, "not found", None),
                 SuiRpcResult(True, "", None),
-                SuiRpcResult(True, "", object()),
+                SuiRpcResult(True, "", types.SimpleNamespace(checkpoint=42)),
             ]
         )
 
         visible = await wait_for_finality(client=client, digest="0xdigest")  # type: ignore[arg-type]
 
         assert visible is True
+        assert len(client.calls) == 3
+        assert len(sleep_calls) == 2
+
+    async def test_found_but_checkpoint_pending(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A poll where the digest is found (result_data is not None) but
+        ``checkpoint`` is still falsy -- the transaction is visible by
+        digest lookup but has not yet landed in a checkpoint -- must NOT
+        be treated as finalized. A subsequent poll with a truthy
+        ``checkpoint`` returns True."""
+        sleep_calls = self._patch_sleep(monkeypatch=monkeypatch)
+        client = _FakeFinalityClient(
+            responses=[
+                SuiRpcResult(True, "", types.SimpleNamespace(checkpoint=None)),
+                SuiRpcResult(True, "", types.SimpleNamespace(checkpoint=42)),
+            ]
+        )
+
+        visible = await wait_for_finality(client=client, digest="0xdigest")  # type: ignore[arg-type]
+
+        assert visible is True
+        assert len(client.calls) == 2
+        assert len(sleep_calls) == 1
+
+    async def test_never_checkpointed_budget_exhausted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression test: a digest that is found on every poll (result_data
+        is never None) but never reaches ``checkpoint`` inclusion must
+        return False after ``max_attempts`` -- being found by digest alone
+        is not finality."""
+        sleep_calls = self._patch_sleep(monkeypatch=monkeypatch)
+        client = _FakeFinalityClient(
+            responses=[
+                SuiRpcResult(True, "", types.SimpleNamespace(checkpoint=None))
+            ]
+            * 3
+        )
+
+        visible = await wait_for_finality(
+            client=client, digest="0xdigest", max_attempts=3  # type: ignore[arg-type]
+        )
+
+        assert visible is False
         assert len(client.calls) == 3
         assert len(sleep_calls) == 2
 

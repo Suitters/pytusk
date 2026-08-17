@@ -548,24 +548,50 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         "certify_blob",
         help=(
             "Recover the confirmation-collection and certify_blob stages for "
-            "a registered blob whose slivers have ALREADY been uploaded to "
-            "the storage nodes. Does NOT upload slivers: if the sliver "
-            "fan-out never ran, no storage node holds the data, none will "
-            "sign a confirmation, and this command cannot recover the blob."
+            "a registered blob. By default assumes slivers were ALREADY "
+            "uploaded. With --recover and --content/--file, also re-uploads "
+            "slivers first, for a blob whose sliver fan-out never ran."
         ),
         description=(
             "Recover the confirmation-collection and certify_blob stages for "
-            "a registered blob whose slivers have ALREADY been uploaded to "
-            "the storage nodes. "
-            "This command does NOT upload slivers and has no source bytes to "
-            "do so -- it only collects confirmations and submits Tx2. If the "
-            "sliver fan-out never ran (for example, an upload that failed "
-            "during the register stage), no storage node holds the blob's "
-            "data, none will sign a confirmation, and this command cannot "
-            "recover the registration."
+            "a registered blob. By default, assumes slivers have ALREADY "
+            "been uploaded to the storage nodes and only collects "
+            "confirmations and submits Tx2. Pass --recover together with "
+            "--content or --file to also re-upload slivers first, for a "
+            "blob whose sliver fan-out never ran (for example, an upload "
+            "that failed during the register stage). The re-supplied bytes "
+            "must re-encode to the SAME blob_id already registered on-chain "
+            "for this object, or the command errors out rather than "
+            "uploading mismatched content."
         ),
     )
     _add_blob_id_arg(p_certify_blob)
+    p_certify_blob.add_argument(
+        "--recover",
+        action="store_true",
+        help=(
+            "Also re-upload slivers before collecting confirmations, for a "
+            "blob whose sliver fan-out never ran. Requires --content or "
+            "--file."
+        ),
+    )
+    recover_content_group = p_certify_blob.add_mutually_exclusive_group()
+    recover_content_group.add_argument(
+        "--content",
+        help=(
+            "Blob content (UTF-8 text) to re-encode and re-upload as "
+            "slivers. Requires --recover. Mutually exclusive with --file."
+        ),
+    )
+    recover_content_group.add_argument(
+        "--file",
+        action=ValidateFile,
+        help=(
+            "Path to a file whose raw bytes will be re-encoded and "
+            "re-uploaded as slivers. Requires --recover. Mutually "
+            "exclusive with --content."
+        ),
+    )
     _add_signing_args(p_certify_blob)
     _add_config_args(p_certify_blob)
 

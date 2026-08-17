@@ -60,6 +60,7 @@ from pytusk import (
     encode_blob,
     resolve_package_id,
     select_wal_payment_coin,
+    upload_slivers,
 )
 from pytusk import store_blob_native as _store_blob_native_pipeline
 
@@ -1928,11 +1929,15 @@ async def certify_blob(args: argparse.Namespace) -> None:
     (certify_blob): given only the blob's Sui object ID, it re-derives the
     real Walrus blob ID from the on-chain Blob object's `blob_id` u256 field
     (see :func:`_blob_id_bytes_from_object`), re-collects a fresh quorum of
-    storage-node confirmations, and certifies. It does NOT re-upload slivers
-    -- if the original sliver fan-out did not reach quorum, confirmation
-    collection here will also fail, and there is no `--file` recovery path
-    (nothing here reconstructs the original bytes to re-encode and re-upload
-    slivers).
+    storage-node confirmations, and certifies.
+
+    By default it does NOT re-upload slivers -- if the original sliver
+    fan-out did not reach quorum, confirmation collection here will also
+    fail. Passing ``--recover`` together with ``--content`` or ``--file``
+    re-encodes the given source bytes and re-uploads slivers first, for a
+    blob whose sliver fan-out never ran. The re-encoded ``blob_id`` must
+    match the blob_id already registered on-chain for this object, or the
+    command errors out before uploading anything.
 
     In simulate mode, confirmation collection is real (registration already
     exists on-chain) and only Tx2 itself is simulated -- unlike
@@ -1941,6 +1946,13 @@ async def certify_blob(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `certify_blob` subcommand arguments.
     """
+    if args.recover and not (args.content or args.file):
+        print("Error: --recover requires --content or --file.", file=sys.stderr)
+        sys.exit(1)
+    if not args.recover and (args.content or args.file):
+        print("Error: --content/--file require --recover.", file=sys.stderr)
+        sys.exit(1)
+
     config = _config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         pipeline_start = time.monotonic()
@@ -1978,6 +1990,45 @@ async def certify_blob(args: argparse.Namespace) -> None:
         except (RuntimeError, KeyError, TypeError, ValueError) as exc:
             print(f"Cannot get Walrus committee: {exc}", file=sys.stderr)
             sys.exit(1)
+
+        encode_duration: float | None = None
+        sliver_upload_duration: float | None = None
+        if args.recover:
+            if args.file:
+                try:
+                    data = await asyncio.to_thread(_read_file_bytes, args.file)
+                except OSError as exc:
+                    print(f"Error reading file {args.file}: {exc}", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                data = args.content.encode("utf-8")
+
+            encode_start = time.monotonic()
+            encoded = await asyncio.to_thread(
+                functools.partial(encode_blob, data=data, n_shards=committee.n_shards)
+            )
+            encode_duration = time.monotonic() - encode_start
+
+            if encoded.blob_id != blob_id_bytes:
+                print(
+                    "Error: the re-supplied content does not match the "
+                    f"blob_id already registered for {args.blobid}.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            sliver_upload_start = time.monotonic()
+            try:
+                await upload_slivers(
+                    client=client,
+                    committee=committee,
+                    encoded=encoded,
+                )
+            except NativeUploadError as exc:
+                print(f"Error in {exc.stage}: {exc}", file=sys.stderr)
+                sys.exit(1)
+            finally:
+                sliver_upload_duration = time.monotonic() - sliver_upload_start
 
         registration = Registration(
             object_id=args.blobid,
@@ -2017,9 +2068,9 @@ async def certify_blob(args: argparse.Namespace) -> None:
                     sender=sender,
                     sponsor=sponsor,
                     stage_timings=StageTimings(
-                        encode=None,
+                        encode=encode_duration,
                         register_tx1=None,
-                        sliver_upload=None,
+                        sliver_upload=sliver_upload_duration,
                         confirmations=confirmations_duration,
                         certify_tx2=None,
                         total=None,
@@ -2078,9 +2129,9 @@ async def certify_blob(args: argparse.Namespace) -> None:
             sys.exit(1)
         print(result.result_data.to_json(indent=2))
         timings = StageTimings(
-            encode=None,
+            encode=encode_duration,
             register_tx1=None,
-            sliver_upload=None,
+            sliver_upload=sliver_upload_duration,
             confirmations=confirmations_duration,
             certify_tx2=certify_tx2_duration,
             total=time.monotonic() - pipeline_start,
