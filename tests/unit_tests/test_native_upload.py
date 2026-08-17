@@ -14,8 +14,11 @@ real ``WalrusCommittee``/``EncodedBlob`` fixtures (via a genuine
 constructor.
 
 ``collect_confirmations`` is exercised for its happy path and its
-no-confirmations failure using the same real-BLS-keypair pattern as
-``test_certification.py`` -- genuine signatures, faked transport.
+no-confirmations failure using placeholder keypairs/signatures with
+``bls_aggregate``/``bls_aggregate_verify`` mocked (see
+``test_certification.py`` for why: only 3 real BLS keypairs are available
+to the test suite, and these tests need more simultaneous distinct
+signers than that) -- faked crypto, faked transport.
 ``certify`` and ``store_blob_native`` are NOT exercised end-to-end against
 real PTBs here: both submit real transactions via
 ``pytusk.core.system_ops.execute_certify`` / ``execute_reserve_and_register``,
@@ -36,10 +39,10 @@ exception-conversion or timing-threading logic under test.
 import asyncio
 import dataclasses
 from collections.abc import Coroutine
+from unittest.mock import patch
 
 import pytest
 from pysui import SuiRpcResult
-from pysui_fastcrypto import bls_keygen, bls_sign
 
 from pytusk.commands.node_commands import (
     GetStorageConfirmation,
@@ -83,6 +86,18 @@ _ROTATED_BLOB_DATA = b"hello world native upload test"
 def _public_key(seed: int) -> bytes:
     """A distinct, well-formed-length (96 byte) placeholder public key."""
     return bytes([seed % 256]) * 96
+
+
+def _signature(seed: int) -> bytes:
+    """A distinct, well-formed-length (96 byte) placeholder signature.
+
+    ``bls_aggregate``/``bls_aggregate_verify`` are mocked in every test that
+    consumes these placeholders (only 3 real BLS keypairs are available to
+    the test suite -- see ``test_certification.py`` -- and these tests need
+    up to 7 simultaneous distinct signers), so the bytes need only be
+    well-formed-length, not a genuine BLS signature.
+    """
+    return bytes([(seed + 1) % 256]) * 96
 
 
 def _one_shard_per_node_committee() -> WalrusCommittee:
@@ -805,41 +820,42 @@ def _registration(*, blob_id: bytes, deletable: bool = False) -> Registration:
 def _committee_with_signed_confirmations(
     *, committee: WalrusCommittee, blob_id: bytes
 ) -> tuple[WalrusCommittee, dict[str, SignedConfirmation], bytes]:
-    """Build genuine BLS keypairs/signatures for every member of
+    """Build placeholder keypairs/signatures for every member of
     ``committee`` over the expected confirmation message for ``blob_id``.
 
-    Factors out the real-BLS-keypair setup duplicated across
+    Factors out the placeholder-keypair setup duplicated across
     ``TestCollectConfirmations``/``TestCollectConfirmationsQueriesAll``/
     ``TestCollectConfirmationsTolerance`` above (kept as-is, unmodified) so
     new tests exercising the quorum early-exit path do not have to repeat
-    it a fourth+ time.
+    it a fourth+ time. ``bls_aggregate``/``bls_aggregate_verify`` are mocked
+    by every caller of this helper (only 3 real BLS keypairs are available
+    to the test suite -- see ``test_certification.py`` -- and these tests
+    need up to 7 simultaneous distinct signers), so the public keys and
+    signatures here are well-formed-length placeholders, not genuine BLS
+    material.
 
     Args:
         committee (WalrusCommittee): The committee to sign confirmations
-            for; NOT mutated -- a replacement committee carrying the real
-            public keys is returned instead.
+            for; NOT mutated -- a replacement committee carrying the
+            placeholder public keys is returned instead.
         blob_id (bytes): Raw 32-byte blob ID the confirmation message is
             built for (non-deletable/permanent blob message).
 
     Returns:
         tuple[WalrusCommittee, dict[str, SignedConfirmation], bytes]: A new
-        committee with real public keys swapped in (required for
-        ``build_certificate``'s verification step to succeed -- see
-        ``TestCollectConfirmations``), a ``base_url -> SignedConfirmation``
-        map covering every member, and the signed message itself. Callers
-        wanting a subset of nodes to hang, fail, or respond late simply
-        drop or override entries in the returned map before constructing
-        their fake client.
+        committee with placeholder public keys swapped in, a
+        ``base_url -> SignedConfirmation`` map covering every member, and
+        the signed message itself. Callers wanting a subset of nodes to
+        hang, fail, or respond late simply drop or override entries in the
+        returned map before constructing their fake client.
     """
     message = confirmation_message(epoch=committee.epoch, blob_id=blob_id)
     confirmations: dict[str, SignedConfirmation] = {}
     keys_by_node: dict[str, bytes] = {}
-    for member in committee.members:
-        public_key, private_key = bls_keygen()
-        keys_by_node[member.node_id] = public_key
-        signature = bls_sign(private_key, message)
+    for index, member in enumerate(committee.members):
+        keys_by_node[member.node_id] = _public_key(index)
         confirmations[member.base_url] = SignedConfirmation(
-            serialized_message=message, signature=signature
+            serialized_message=message, signature=_signature(index)
         )
     members_with_real_keys = tuple(
         dataclasses.replace(member, public_key=keys_by_node[member.node_id])
@@ -859,15 +875,12 @@ class TestCollectConfirmations:
         encoded = encode_blob(data=_BLOB_DATA, n_shards=committee.n_shards)
         registration = _registration(blob_id=encoded.blob_id)
         message = confirmation_message(epoch=committee.epoch, blob_id=encoded.blob_id)
-
         confirmations: dict[str, SignedConfirmation | None] = {}
         keys_by_node: dict[str, bytes] = {}
-        for member in committee.members:
-            public_key, private_key = bls_keygen()
-            keys_by_node[member.node_id] = public_key
-            signature = bls_sign(private_key, message)
+        for index, member in enumerate(committee.members):
+            keys_by_node[member.node_id] = _public_key(index)
             confirmations[member.base_url] = SignedConfirmation(
-                serialized_message=message, signature=signature
+                serialized_message=message, signature=_signature(index)
             )
         # Committee members must carry the SAME keys used to sign, or
         # build_certificate's verification step fails.
@@ -878,10 +891,15 @@ class TestCollectConfirmations:
         committee = dataclasses.replace(committee, members=members_with_real_keys)
 
         client = _FakeStorageClient(confirmations=confirmations)
-        certificate = await collect_confirmations(
-            client=client, committee=committee, blob_id=encoded.blob_id, registration=registration
-        )
-
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
+            ),
+        ):
+            certificate = await collect_confirmations(
+                client=client, committee=committee, blob_id=encoded.blob_id, registration=registration
+            )
         assert certificate.serialized_message == message
         assert certificate.weight == committee.n_shards
 
@@ -1302,15 +1320,12 @@ class TestCollectConfirmationsQueriesAll:
         encoded = encode_blob(data=_BLOB_DATA, n_shards=committee.n_shards)
         registration = _registration(blob_id=encoded.blob_id)
         message = confirmation_message(epoch=committee.epoch, blob_id=encoded.blob_id)
-
         confirmations: dict[str, SignedConfirmation | None] = {}
         keys_by_node: dict[str, bytes] = {}
-        for member in committee.members:
-            public_key, private_key = bls_keygen()
-            keys_by_node[member.node_id] = public_key
-            signature = bls_sign(private_key, message)
+        for index, member in enumerate(committee.members):
+            keys_by_node[member.node_id] = _public_key(index)
             confirmations[member.base_url] = SignedConfirmation(
-                serialized_message=message, signature=signature
+                serialized_message=message, signature=_signature(index)
             )
         members_with_real_keys = tuple(
             dataclasses.replace(member, public_key=keys_by_node[member.node_id])
@@ -1324,9 +1339,15 @@ class TestCollectConfirmationsQueriesAll:
         failed_upload_node = next(m for m in committee.members if m.node_id == "node3")
 
         client = _FakeStorageClient(confirmations=confirmations)
-        certificate = await collect_confirmations(
-            client=client, committee=committee, blob_id=encoded.blob_id, registration=registration
-        )
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
+            ),
+        ):
+            certificate = await collect_confirmations(
+                client=client, committee=committee, blob_id=encoded.blob_id, registration=registration
+            )
 
         confirmation_calls = [
             base_url
@@ -1347,19 +1368,16 @@ class TestCollectConfirmationsTolerance:
         encoded = encode_blob(data=_BLOB_DATA, n_shards=committee.n_shards)
         registration = _registration(blob_id=encoded.blob_id)
         message = confirmation_message(epoch=committee.epoch, blob_id=encoded.blob_id)
-
         confirmations: dict[str, SignedConfirmation | None] = {}
         keys_by_node: dict[str, bytes] = {}
-        for member in committee.members:
-            public_key, private_key = bls_keygen()
-            keys_by_node[member.node_id] = public_key
+        for index, member in enumerate(committee.members):
+            keys_by_node[member.node_id] = _public_key(index)
             if member.node_id == "node1":
                 # node1 (weight 1) never gets a confirmation entry, so the
                 # fake client reports "no confirmation configured" for it.
                 continue
-            signature = bls_sign(private_key, message)
             confirmations[member.base_url] = SignedConfirmation(
-                serialized_message=message, signature=signature
+                serialized_message=message, signature=_signature(index)
             )
         members_with_real_keys = tuple(
             dataclasses.replace(member, public_key=keys_by_node[member.node_id])
@@ -1368,9 +1386,15 @@ class TestCollectConfirmationsTolerance:
         committee = dataclasses.replace(committee, members=members_with_real_keys)
 
         client = _FakeStorageClient(confirmations=confirmations)
-        certificate = await collect_confirmations(
-            client=client, committee=committee, blob_id=encoded.blob_id, registration=registration
-        )
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
+            ),
+        ):
+            certificate = await collect_confirmations(
+                client=client, committee=committee, blob_id=encoded.blob_id, registration=registration
+            )
 
         # node0=3 + node2=1 + node3=2 = 6, meeting the required 5; node1's
         # weight (1) is excluded but does not prevent quorum.
@@ -1420,18 +1444,23 @@ class TestCollectConfirmationsQuorumEarlyExit:
         hanging_nodes = signed_committee.members[5:]
         hang_for = frozenset(member.base_url for member in hanging_nodes)
         client = _HangingConfirmationClient(confirmations=confirmations, hang_for=hang_for)
-
-        certificate = await asyncio.wait_for(
-            collect_confirmations(
-                client=client,
-                committee=signed_committee,
-                blob_id=encoded.blob_id,
-                registration=registration,
-                grace_base_seconds=0.05,
-                grace_factor=0.0,
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
             ),
-            timeout=5.0,
-        )
+        ):
+            certificate = await asyncio.wait_for(
+                collect_confirmations(
+                    client=client,
+                    committee=signed_committee,
+                    blob_id=encoded.blob_id,
+                    registration=registration,
+                    grace_base_seconds=0.05,
+                    grace_factor=0.0,
+                ),
+                timeout=5.0,
+            )
 
         required_weight = min_weight_for_quorum(n_shards=signed_committee.n_shards)
         assert certificate.serialized_message == message
@@ -1502,18 +1531,23 @@ class TestCollectConfirmationsNoOrphanedTasks:
         hang_for = frozenset(member.base_url for member in hanging_nodes)
         client = _HangingConfirmationClient(confirmations=confirmations, hang_for=hang_for)
         created = self._track_tasks(monkeypatch=monkeypatch)
-
-        certificate = await asyncio.wait_for(
-            collect_confirmations(
-                client=client,
-                committee=signed_committee,
-                blob_id=encoded.blob_id,
-                registration=registration,
-                grace_base_seconds=0.05,
-                grace_factor=0.0,
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
             ),
-            timeout=5.0,
-        )
+        ):
+            certificate = await asyncio.wait_for(
+                collect_confirmations(
+                    client=client,
+                    committee=signed_committee,
+                    blob_id=encoded.blob_id,
+                    registration=registration,
+                    grace_base_seconds=0.05,
+                    grace_factor=0.0,
+                ),
+                timeout=5.0,
+            )
 
         required_weight = min_weight_for_quorum(n_shards=signed_committee.n_shards)
         assert certificate.weight >= required_weight
@@ -1561,18 +1595,23 @@ class TestCollectConfirmationsGraceWindow:
             quorum_base_urls=quorum_base_urls,
             straggler_base_url=straggler.base_url,
         )
-
-        certificate = await asyncio.wait_for(
-            collect_confirmations(
-                client=client,
-                committee=signed_committee,
-                blob_id=encoded.blob_id,
-                registration=registration,
-                grace_base_seconds=0.2,
-                grace_factor=0.0,
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
             ),
-            timeout=5.0,
-        )
+        ):
+            certificate = await asyncio.wait_for(
+                collect_confirmations(
+                    client=client,
+                    committee=signed_committee,
+                    blob_id=encoded.blob_id,
+                    registration=registration,
+                    grace_base_seconds=0.2,
+                    grace_factor=0.0,
+                ),
+                timeout=5.0,
+            )
 
         assert certificate.serialized_message == message
         # All 7 members: the 6 quorum-group responders plus the straggler,
@@ -1615,8 +1654,13 @@ class TestCollectConfirmationsFailurePathUnchanged:
         del confirmations[node1.base_url]
 
         client = _FakeStorageClient(confirmations=confirmations)
-
-        with pytest.raises(ConfirmationCollectionError) as excinfo:
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
+            ),
+            pytest.raises(ConfirmationCollectionError) as excinfo,
+        ):
             await collect_confirmations(
                 client=client,
                 committee=signed_committee,

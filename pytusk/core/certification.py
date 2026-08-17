@@ -33,6 +33,7 @@ do not let a raw ``ValueError`` from the extension leak through either path.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from collections.abc import Iterable, Sequence
 
 from pysui_fastcrypto import (
@@ -41,6 +42,8 @@ from pysui_fastcrypto import (
     bls_confirmation_bytes,
     bls_verify,
 )
+
+_logger = logging.getLogger(__name__)
 
 __all__ = [
     "Certificate",
@@ -314,9 +317,15 @@ def verify_confirmation(
         return False
     try:
         return bls_verify(
-            confirmation.public_key, expected_message, confirmation.signature
+            confirmation.public_key, confirmation.signature, expected_message
         )
-    except ValueError:
+    except ValueError as exc:
+        _logger.warning(
+            "bls_verify rejected malformed input for node confirmation "
+            "(code=%s): %s",
+            exc.args[0] if exc.args else None,
+            exc,
+        )
         return False
 
 
@@ -395,10 +404,16 @@ def build_certificate(
         aggregate_verified = bls_aggregate_verify(
             aggregate_signature, public_keys, reference_message
         )
-    except ValueError:
+    except ValueError as exc:
         # Either the aggregate itself could not be built (a malformed
         # signature) or aggregate-verify could not parse an input. Either
         # way, fall through to the per-node loop below to name the culprit.
+        _logger.warning(
+            "bls_aggregate/bls_aggregate_verify rejected malformed input "
+            "(code=%s): %s",
+            exc.args[0] if exc.args else None,
+            exc,
+        )
         aggregate_verified = False
 
     if not aggregate_verified:
@@ -409,7 +424,7 @@ def build_certificate(
         for confirmation in confirmations:
             try:
                 verified = bls_verify(
-                    confirmation.public_key, reference_message, confirmation.signature
+                    confirmation.public_key, confirmation.signature, reference_message
                 )
             except ValueError as exc:
                 raise InvalidConfirmationError(
@@ -505,5 +520,11 @@ def verify_certificate(
             list(public_keys),
             certificate.serialized_message,
         )
-    except ValueError:
+    except ValueError as exc:
+        _logger.warning(
+            "bls_aggregate_verify rejected malformed input for certificate "
+            "(code=%s): %s",
+            exc.args[0] if exc.args else None,
+            exc,
+        )
         return False

@@ -9,9 +9,9 @@ aggregation."""
 
 import dataclasses
 import math
+from unittest.mock import patch
 
 import pytest
-from pysui_fastcrypto import bls_keygen, bls_sign
 
 import pytusk.core.committee as committee_module
 from pytusk.core.certification import (
@@ -35,42 +35,70 @@ _EPOCH = 5
 _BLOB_ID = bytes(range(32))
 _OBJECT_ID = bytes(range(32, 64))
 
+# Fixed BLS12-381 vector: three keypairs signing the same message, generated
+# once via `fastcrypto` directly (the same way `bls.rs`'s own Rust tests do)
+# and hardcoded here. This crate exposes no signing function to Python, so
+# these bytes are the only way the tests below can exercise a genuine
+# verify/aggregate round trip through the FFI boundary. Frozen data, not a
+# protocol vector -- it proves the FFI plumbing calls into `fastcrypto`
+# correctly, not anything about Walrus wire-format correctness.
+#
+# To regenerate: `cargo test --lib print_python_test_vector -- --ignored --nocapture`
+# (src/walrus/bls.rs), then paste the printed hex below.
+_BLS_MESSAGE = b"walrus storage confirmation"
+_BLS_PUBLIC_KEYS = [
+    bytes.fromhex(
+        "86fa236e1d74d7f4e0505833258d9cf8109d8c6d0d3f7fdeb5f07124771071ebce15dd95fd9945e421be2263d277f7c4"
+    ),
+    bytes.fromhex(
+        "ac91600470572da456a0c73ae1693cc3ee1add243fcaa19553f7efc42d5ede059afd3b6fde4da2fc7fd0b2829ac5456b"
+    ),
+    bytes.fromhex(
+        "8ea3b0269e27b3da4fdeedcfa4c6347d95d463c6b1f4a769babb84d61e5f60f7bbad98c372c20e1556190cc03938530c"
+    ),
+]
+_BLS_SIGNATURES = [
+    bytes.fromhex(
+        "a07435357105bd9eb10ff17eab5913362cd1fba0b7276d8fbe13cc6503e237ec525c6d002fdd6d554900426c82684e7c049987bb406dd552d7cead8b0222c06be9b2f4096406f9c49967d596ec8b8b17a0d1372d6246725fcd7fc2d6f04d7d61"
+    ),
+    bytes.fromhex(
+        "8f0b76e592185600ebb090a94f90e29a1f4587a7ea1e409037c66b1c3a6dae7c65597c01e587f77cde06b190235faf6c177f5f93c2ebb5c9d5ef33cf94398219b2954b02d82b6b80ba3730a705175977df727dce5da121fe062cc1c62c8877c9"
+    ),
+    bytes.fromhex(
+        "8ad418d76193ea319773ab6982d60792598bf6b300c99510ae755462aa9bed15388182423dee9ed6bd54fcb7a4206ec20ee0b7c46f2e367691442a28e01cfa036dfd59de571173da9c30004e62d970b2b171527dfb5df1e28fc88b48c62d1f3e"
+    ),
+]
 
-def _make_committee(
-    *, weights: list[int], epoch: int = _EPOCH, blob_id: bytes = _BLOB_ID
-) -> tuple[bytes, list[NodeConfirmation]]:
-    """Mint a synthetic committee of ``len(weights)`` real BLS keypairs.
 
-    Each returned confirmation carries a genuine signature over a real
-    ``confirmation_message(...)``, produced by the extension's test-only
-    ``bls_keygen``/``bls_sign`` helpers. ``weights[i]`` becomes the shard
-    weight of the node at committee position ``i``.
+def _make_committee(*, weights: list[int]) -> tuple[bytes, list[NodeConfirmation]]:
+    """Mint a synthetic committee of ``len(weights)`` confirmations.
+
+    Each returned confirmation carries a genuine signature over the fixed
+    ``_BLS_MESSAGE`` test vector, cycling through the 3 available real
+    keypairs by position. ``weights[i]`` becomes the shard weight of the
+    node at committee position ``i``.
 
     Args:
         weights (list[int]): Per-position shard weight.
-        epoch (int): Walrus epoch for the confirmation message.
-        blob_id (bytes): Raw 32-byte blob ID for the confirmation message.
 
     Returns:
         tuple[bytes, list[NodeConfirmation]]: The agreed message, and one
         valid confirmation per position.
     """
-    message = confirmation_message(epoch=epoch, blob_id=blob_id)
     confirmations = []
     for position, weight in enumerate(weights):
-        public_key, private_key = bls_keygen()
-        signature = bls_sign(private_key, message)
+        index = position % len(_BLS_PUBLIC_KEYS)
         confirmations.append(
             NodeConfirmation(
                 node_id=f"node-{position}",
                 position=position,
                 weight=weight,
-                public_key=public_key,
-                serialized_message=message,
-                signature=signature,
+                public_key=_BLS_PUBLIC_KEYS[index],
+                serialized_message=_BLS_MESSAGE,
+                signature=_BLS_SIGNATURES[index],
             )
         )
-    return message, confirmations
+    return _BLS_MESSAGE, confirmations
 
 
 def _replace(confirmation: NodeConfirmation, **changes: object) -> NodeConfirmation:
@@ -277,29 +305,42 @@ class TestBuildCertificateHappyPath:
     """Successful certificate construction and local verification."""
 
     def test_quorum_signers_build_and_verify(self) -> None:
-        """A committee where signers meet quorum builds a verifying certificate."""
+        """A committee where signers meet quorum builds a verifying certificate.
+
+        Only 3 real keypairs are available (see ``_BLS_PUBLIC_KEYS``), and
+        this test needs 7 distinct signers to reach quorum, so
+        ``bls_aggregate``/``bls_aggregate_verify`` are mocked here -- this
+        test is about quorum/certificate-construction logic, not crypto
+        correctness, which the fallback-loop tests below exercise for real.
+        """
         committee_size = 10
         n_shards = 10
         weights = [1] * committee_size
-        message, confirmations = _make_committee(weights=weights, blob_id=_BLOB_ID)
+        message, confirmations = _make_committee(weights=weights)
         required = min_weight_for_quorum(n_shards=n_shards)
         signers = confirmations[:required]
 
-        certificate = build_certificate(
-            confirmations=signers, committee_size=committee_size, n_shards=n_shards
-        )
-
-        assert isinstance(certificate, Certificate)
-        assert certificate.serialized_message == message
-        assert certificate.weight == required
-        assert certificate.signer_positions == tuple(range(required))
-        assert (
-            verify_certificate(
-                certificate=certificate,
-                public_keys=[c.public_key for c in signers],
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
+            ),
+        ):
+            certificate = build_certificate(
+                confirmations=signers, committee_size=committee_size, n_shards=n_shards
             )
-            is True
-        )
+
+            assert isinstance(certificate, Certificate)
+            assert certificate.serialized_message == message
+            assert certificate.weight == required
+            assert certificate.signer_positions == tuple(range(required))
+            assert (
+                verify_certificate(
+                    certificate=certificate,
+                    public_keys=[c.public_key for c in signers],
+                )
+                is True
+            )
 
     def test_signer_positions_sorted_even_when_supplied_out_of_order(self) -> None:
         """signer_positions is ascending regardless of confirmation order."""
@@ -311,9 +352,15 @@ class TestBuildCertificateHappyPath:
         signers = list(reversed(confirmations[:required]))
         assert [c.position for c in signers] != sorted(c.position for c in signers)
 
-        certificate = build_certificate(
-            confirmations=signers, committee_size=committee_size, n_shards=n_shards
-        )
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
+            ),
+        ):
+            certificate = build_certificate(
+                confirmations=signers, committee_size=committee_size, n_shards=n_shards
+            )
 
         assert certificate.signer_positions == tuple(sorted(range(required)))
 
@@ -384,26 +431,21 @@ class TestBuildCertificateErrors:
             )
 
     def test_wellformed_wrong_signature_raises_invalid_confirmation(self) -> None:
-        """A signature that is a genuine BLS signature -- just over the wrong
-        message -- parses correctly but fails verification. This exercises
-        the extension's RETURNS-False path (as opposed to its
+        """A signature that is a genuine BLS signature -- just from a
+        DIFFERENT keypair -- parses correctly but fails verification. This
+        exercises the extension's RETURNS-False path (as opposed to its
         raises-ValueError path), and must still surface as
         InvalidConfirmationError from build_certificate."""
         committee_size = 10
         n_shards = 10
         weights = [1] * committee_size
-        message, confirmations = _make_committee(weights=weights)
+        _, confirmations = _make_committee(weights=weights)
         required = min_weight_for_quorum(n_shards=n_shards)
         signers = list(confirmations[:required])
-        # Re-sign the SAME key over a DIFFERENT message: a well-formed,
-        # parseable signature that simply does not verify against `message`.
-        other_message = confirmation_message(epoch=_EPOCH + 1, blob_id=_BLOB_ID)
-        assert other_message != message
-        public_key, private_key = bls_keygen()
-        wrong_signature = bls_sign(private_key, other_message)
-        signers[0] = _replace(
-            signers[0], public_key=public_key, signature=wrong_signature
-        )
+        # signers[0] keeps its own public key but gets a DIFFERENT real
+        # signature: well-formed and parseable, but does not verify against
+        # its declared public key.
+        signers[0] = _replace(signers[0], signature=_BLS_SIGNATURES[1])
 
         with pytest.raises(InvalidConfirmationError):
             build_certificate(
@@ -418,8 +460,9 @@ class TestBuildCertificateErrors:
         _, confirmations = _make_committee(weights=weights)
         required = min_weight_for_quorum(n_shards=n_shards)
         signers = list(confirmations[:required])
-        wrong_public_key, _ = bls_keygen()
-        signers[0] = _replace(signers[0], public_key=wrong_public_key)
+        # signers[0] keeps its own signature but declares a DIFFERENT real
+        # public key: well-formed, but the pairing does not verify.
+        signers[0] = _replace(signers[0], public_key=_BLS_PUBLIC_KEYS[1])
 
         with pytest.raises(InvalidConfirmationError):
             build_certificate(
@@ -462,8 +505,11 @@ class TestBuildCertificateErrors:
         bad_index = 3
         bad_node_id = signers[bad_index].node_id
         other_node_ids = [c.node_id for i, c in enumerate(signers) if i != bad_index]
-        wrong_public_key, _ = bls_keygen()
-        signers[bad_index] = _replace(signers[bad_index], public_key=wrong_public_key)
+        # Keeps its own signature but declares a DIFFERENT real public key:
+        # well-formed, but the pairing does not verify.
+        signers[bad_index] = _replace(
+            signers[bad_index], public_key=_BLS_PUBLIC_KEYS[1]
+        )
 
         with pytest.raises(InvalidConfirmationError) as exc_info:
             build_certificate(
@@ -485,7 +531,13 @@ class TestBuildCertificateErrors:
         signers = list(confirmations[:required])
         signers.append(_replace(signers[0]))
 
-        with pytest.raises(ValueError):
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
+            ),
+            pytest.raises(ValueError),
+        ):
             build_certificate(
                 confirmations=signers, committee_size=committee_size, n_shards=n_shards
             )
@@ -499,7 +551,13 @@ class TestBuildCertificateErrors:
         required = min_weight_for_quorum(n_shards=n_shards)
         signers = confirmations[: required - 1]
 
-        with pytest.raises(QuorumNotReachedError):
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
+            ),
+            pytest.raises(QuorumNotReachedError),
+        ):
             build_certificate(
                 confirmations=signers, committee_size=committee_size, n_shards=n_shards
             )
@@ -513,9 +571,15 @@ class TestBuildCertificateErrors:
         required = min_weight_for_quorum(n_shards=n_shards)
         signers = confirmations[:required]
 
-        certificate = build_certificate(
-            confirmations=signers, committee_size=committee_size, n_shards=n_shards
-        )
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
+            ),
+        ):
+            certificate = build_certificate(
+                confirmations=signers, committee_size=committee_size, n_shards=n_shards
+            )
         assert certificate.weight == required
 
 
@@ -526,7 +590,13 @@ class TestVerifyCertificate:
         """An aggregate signature that cannot be parsed as a G2 point returns
         False -- the extension's raises-ValueError path is normalised to a
         plain boolean, since this function is a local predicate, not a
-        validator, and must not leak a raw ValueError."""
+        validator, and must not leak a raw ValueError.
+
+        The certificate is built via mocked aggregate calls (only 3 real
+        keypairs are available and this test needs 7), but the final
+        ``verify_certificate`` call below is UNMOCKED -- it must exercise
+        the real extension's ValueError-on-malformed-input path.
+        """
         committee_size = 10
         n_shards = 10
         weights = [1] * committee_size
@@ -534,9 +604,15 @@ class TestVerifyCertificate:
         required = min_weight_for_quorum(n_shards=n_shards)
         signers = confirmations[:required]
 
-        certificate = build_certificate(
-            confirmations=signers, committee_size=committee_size, n_shards=n_shards
-        )
+        with (
+            patch("pytusk.core.certification.bls_aggregate", return_value=b"\x00" * 96),
+            patch(
+                "pytusk.core.certification.bls_aggregate_verify", return_value=True
+            ),
+        ):
+            certificate = build_certificate(
+                confirmations=signers, committee_size=committee_size, n_shards=n_shards
+            )
         malformed_certificate = dataclasses.replace(
             certificate, aggregate_signature=b"\xff" * 96
         )
