@@ -179,7 +179,9 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     # --- Informational commands (no --mode; no transaction involved) ---
 
     p_blobs = subparsers.add_parser(
-        "blobs", help="List all blobs owned by the active address."
+        "blobs",
+        help="List all blobs owned by the active address.",
+        description="List all blobs owned by the active address.",
     )
     p_blobs.add_argument(
         "--deletable",
@@ -196,22 +198,31 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_config_args(p_blobs)
 
     p_blob = subparsers.add_parser(
-        "blob", help="Show full on-chain details for one blob."
+        "blob",
+        help="Show full on-chain details for one blob.",
+        description="Show full on-chain details for one blob.",
     )
     _add_blob_id_arg(p_blob)
     _add_config_args(p_blob)
 
-    p_epoch = subparsers.add_parser("epoch", help="Show the current Walrus epoch.")
+    p_epoch = subparsers.add_parser(
+        "epoch",
+        help="Show the current Walrus epoch.",
+        description="Show the current Walrus epoch.",
+    )
     _add_config_args(p_epoch)
 
     p_committee = subparsers.add_parser(
-        "committee", help="Show the active Walrus storage committee."
+        "committee",
+        help="Show the active Walrus storage committee.",
+        description="Show the active Walrus storage committee.",
     )
     _add_config_args(p_committee)
 
     p_expiry_report = subparsers.add_parser(
         "expiry_report",
-        help=(
+        help="Show owned blobs sorted soonest-to-expire first.",
+        description=(
             "Show an aging report of owned blobs (object ID, end_epoch, "
             "current epoch, remaining epochs), sorted soonest-to-expire first."
         ),
@@ -224,8 +235,23 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     _add_config_args(p_expiry_report)
 
+    p_wal_coins = subparsers.add_parser(
+        "wal_coins",
+        help="List WAL coin objects owned by an address.",
+        description="List WAL coin objects owned by an address.",
+    )
+    p_wal_coins.add_argument(
+        "--address",
+        dest="address",
+        default=None,
+        help="Sui address to list WAL coins for (default: active address).",
+    )
+    _add_config_args(p_wal_coins)
+
     p_read_blob = subparsers.add_parser(
-        "read_blob", help="Read blob content via the Walrus HTTP aggregator."
+        "read_blob",
+        help="Read blob content via the Walrus HTTP aggregator.",
+        description="Read blob content via the Walrus HTTP aggregator.",
     )
     _add_blob_id_arg(
         p_read_blob,
@@ -237,6 +263,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_read_quilt = subparsers.add_parser(
         "read_quilt",
         help="Read a single patch from a quilt via the Walrus HTTP aggregator.",
+        description="Read a single patch from a quilt via the Walrus HTTP aggregator.",
     )
     p_read_quilt.add_argument(
         "--quilt-id",
@@ -252,21 +279,12 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     _add_config_args(p_read_quilt)
 
-    p_wal_coins = subparsers.add_parser(
-        "wal_coins", help="List WAL coin objects owned by an address."
-    )
-    p_wal_coins.add_argument(
-        "--address",
-        dest="address",
-        default=None,
-        help="Sui address to list WAL coins for (default: active address).",
-    )
-    _add_config_args(p_wal_coins)
-
     # --- HTTP action command (no --mode; no transaction involved) ---
 
     p_store_blob = subparsers.add_parser(
-        "store_blob", help="Store a blob via the Walrus HTTP publisher."
+        "store_blob",
+        help="Store a blob via the Walrus HTTP publisher.",
+        description="Store a blob via the Walrus HTTP publisher.",
     )
     content_group = p_store_blob.add_mutually_exclusive_group(required=True)
     content_group.add_argument(
@@ -303,6 +321,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_store_quilt = subparsers.add_parser(
         "store_quilt",
         help="Store a quilt (batch of named files) via the Walrus HTTP publisher.",
+        description="Store a quilt (batch of named files) via the Walrus HTTP publisher.",
     )
     p_store_quilt.add_argument(
         "--paths",
@@ -360,123 +379,12 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     _add_config_args(p_store_quilt)
 
-    # --- PTB action commands (--mode + sender/sponsor apply) ---
-
-    p_exchange_for_wal = subparsers.add_parser(
-        "exchange_for_wal", help="Exchange SUI for WAL."
-    )
-    p_exchange_for_wal.add_argument(
-        "--amount",
-        action=ValidatePositive,
-        required=True,
-        help="Amount of SUI to exchange, in MIST.",
-    )
-    _add_signing_args(p_exchange_for_wal)
-    _add_config_args(p_exchange_for_wal)
-
-    p_exchange_for_sui = subparsers.add_parser(
-        "exchange_for_sui", help="Exchange WAL for SUI."
-    )
-    p_exchange_for_sui.add_argument(
-        "--amount",
-        action=ValidatePositive,
-        required=True,
-        help="Amount of WAL to exchange, in FROST.",
-    )
-    p_exchange_for_sui.add_argument(
-        "--merge",
-        action="store_true",
-        help=(
-            "Merge multiple owned WAL coins (largest-first) if no single "
-            "coin covers --amount."
-        ),
-    )
-    _add_signing_args(p_exchange_for_sui)
-    _add_config_args(p_exchange_for_sui)
-
-    p_extend_blob_expiration = subparsers.add_parser(
-        "extend_blob_expiration",
-        help=(
-            "Extend a blob's storage expiration (only the expiry epoch "
-            "changes; content and object ID are unaffected)."
-        ),
-    )
-    _add_blob_id_arg(p_extend_blob_expiration)
-    p_extend_blob_expiration.add_argument(
-        "--epochs",
-        action=ValidatePositive,
-        required=True,
-        help=(
-            "Number of epochs to extend the blob's storage by, counted "
-            "from its current end_epoch (a duration, not an absolute "
-            "epoch number)."
-        ),
-    )
-    p_extend_blob_expiration.add_argument(
-        "--merge",
-        action="store_true",
-        help=(
-            "Merge all owned WAL coins into one before extending, in case "
-            "no single coin covers the extension cost."
-        ),
-    )
-    _add_signing_args(p_extend_blob_expiration)
-    _add_config_args(p_extend_blob_expiration)
-
-    p_delete_blob = subparsers.add_parser(
-        "delete_blob", help="Delete one blob, or all active deletable blobs."
-    )
-    target_group = p_delete_blob.add_mutually_exclusive_group(required=True)
-    target_group.add_argument(
-        "-i",
-        "--blobid",
-        dest="blobid",
-        action=ValidateObjectID,
-        help=(
-            "Sui object ID of the blob to delete (0x-prefixed) — not the "
-            "Walrus blob ID (content hash)."
-        ),
-    )
-    target_group.add_argument(
-        "--all-blobs",
-        action="store_true",
-        help="Delete all active deletable blobs owned by the address.",
-    )
-    p_delete_blob.add_argument(
-        "--burn",
-        action="store_true",
-        help=(
-            "Fallback to burning instead of deleting: in -i mode, burns "
-            "this blob only if it isn't eligible for delete_blob (already "
-            "expired or not deletable); in --all-blobs mode, additionally "
-            "burns expired blobs in the same pass."
-        ),
-    )
-    _add_signing_args(p_delete_blob)
-    _add_config_args(p_delete_blob)
-
-    p_burn_blob = subparsers.add_parser(
-        "burn_blob", help="Burn one or more blob objects directly."
-    )
-    p_burn_blob.add_argument(
-        "-i",
-        "--blobid",
-        dest="blobid",
-        action="append",
-        required=True,
-        help=(
-            "Sui object ID of a blob to burn (0x-prefixed, repeatable) — "
-            "not the Walrus blob ID (content hash)."
-        ),
-    )
-    _add_signing_args(p_burn_blob)
-    _add_config_args(p_burn_blob)
-
     # --- Native upload commands (--mode + sender/sponsor apply) ---
 
     p_store_blob_native = subparsers.add_parser(
         "store_blob_native",
-        help=(
+        help="Store a blob directly via the native Walrus upload pipeline (no publisher).",
+        description=(
             "Store a blob via the native Walrus upload pipeline "
             "(reserve_space+register_blob, sliver fan-out, certify_blob)."
         ),
@@ -547,10 +455,8 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_certify_blob = subparsers.add_parser(
         "certify_blob",
         help=(
-            "Recover the confirmation-collection and certify_blob stages for "
-            "a registered blob. By default assumes slivers were ALREADY "
-            "uploaded. With --recover and --content/--file, also re-uploads "
-            "slivers first, for a blob whose sliver fan-out never ran."
+            "Recover a registered blob's confirmation-collection and "
+            "certify stages after an interrupted native upload."
         ),
         description=(
             "Recover the confirmation-collection and certify_blob stages for "
@@ -594,5 +500,137 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     _add_signing_args(p_certify_blob)
     _add_config_args(p_certify_blob)
+
+    # --- PTB action commands (--mode + sender/sponsor apply) ---
+
+    p_extend_blob_expiration = subparsers.add_parser(
+        "extend_blob_expiration",
+        help="Extend a blob's storage expiration epoch.",
+        description=(
+            "Extend a blob's storage expiration (only the expiry epoch "
+            "changes; content and object ID are unaffected)."
+        ),
+    )
+    _add_blob_id_arg(p_extend_blob_expiration)
+    p_extend_blob_expiration.add_argument(
+        "--epochs",
+        action=ValidatePositive,
+        required=True,
+        help=(
+            "Number of epochs to extend the blob's storage by, counted "
+            "from its current end_epoch (a duration, not an absolute "
+            "epoch number)."
+        ),
+    )
+    p_extend_blob_expiration.add_argument(
+        "--merge",
+        action="store_true",
+        help=(
+            "Merge all owned WAL coins into one before extending, in case "
+            "no single coin covers the extension cost."
+        ),
+    )
+    _add_signing_args(p_extend_blob_expiration)
+    _add_config_args(p_extend_blob_expiration)
+
+    p_delete_blob = subparsers.add_parser(
+        "delete_blob",
+        help="Delete one blob, or all active deletable blobs.",
+        description=(
+            "Delete a non-expired, deletable blob (or all such blobs), "
+            "reclaiming both the gas/storage rebate and the Storage "
+            "resource for reuse; requires deletable=true and an unexpired "
+            "end_epoch."
+        ),
+    )
+    target_group = p_delete_blob.add_mutually_exclusive_group(required=True)
+    target_group.add_argument(
+        "-i",
+        "--blobid",
+        dest="blobid",
+        action=ValidateObjectID,
+        help=(
+            "Sui object ID of the blob to delete (0x-prefixed) — not the "
+            "Walrus blob ID (content hash)."
+        ),
+    )
+    target_group.add_argument(
+        "--all-blobs",
+        action="store_true",
+        help="Delete all active deletable blobs owned by the address.",
+    )
+    p_delete_blob.add_argument(
+        "--burn",
+        action="store_true",
+        help=(
+            "Fallback to burning instead of deleting: in -i mode, burns "
+            "this blob only if it isn't eligible for delete_blob (already "
+            "expired or not deletable); in --all-blobs mode, additionally "
+            "burns expired blobs in the same pass."
+        ),
+    )
+    _add_signing_args(p_delete_blob)
+    _add_config_args(p_delete_blob)
+
+    p_burn_blob = subparsers.add_parser(
+        "burn_blob",
+        help="Burn one or more blob objects directly.",
+        description=(
+            "Burn one or more owned blob objects to reclaim gas — works "
+            "on any blob, expired or not, deletable or permanent, but the "
+            "underlying Storage resource is destroyed rather than "
+            "reusable; the required path for cleaning up expired blobs."
+        ),
+    )
+    p_burn_blob.add_argument(
+        "-i",
+        "--blobid",
+        dest="blobid",
+        action="append",
+        required=True,
+        help=(
+            "Sui object ID of a blob to burn (0x-prefixed) — not the "
+            "Walrus blob ID (content hash). Repeat -i/--blobid to burn "
+            "multiple blobs in one call."
+        ),
+    )
+    _add_signing_args(p_burn_blob)
+    _add_config_args(p_burn_blob)
+
+    p_exchange_for_wal = subparsers.add_parser(
+        "exchange_for_wal",
+        help="Exchange SUI for WAL.",
+        description="Exchange SUI for WAL.",
+    )
+    p_exchange_for_wal.add_argument(
+        "--amount",
+        action=ValidatePositive,
+        required=True,
+        help="Amount of SUI to exchange, in MIST.",
+    )
+    _add_signing_args(p_exchange_for_wal)
+    _add_config_args(p_exchange_for_wal)
+
+    p_exchange_for_sui = subparsers.add_parser(
+        "exchange_for_sui",
+        help="Exchange WAL for SUI.",
+        description="Exchange WAL for SUI.",
+    )
+    p_exchange_for_sui.add_argument(
+        "--amount",
+        action=ValidatePositive,
+        required=True,
+        help="Amount of WAL to exchange, in FROST.",
+    )
+    p_exchange_for_sui.add_argument(
+        "--merge",
+        action="store_true",
+        help=(
+            "Merge multiple owned WAL coins (largest-first) if no single "
+            "coin covers --amount."
+        ),
+    )
+    _add_signing_args(p_exchange_for_sui)
+    _add_config_args(p_exchange_for_sui)
 
     return parser.parse_args(in_args)
