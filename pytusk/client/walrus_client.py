@@ -7,7 +7,7 @@
 
 import ssl
 import types
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, TypedDict, cast
 
 import httpx
 from pysui import (
@@ -34,6 +34,17 @@ the same 5-minute ceiling to a 1-byte sliver and a multi-megabyte one).
 pool-checkout timeout); 60s is a generous bound so a request queued behind
 the connection pool under heavy fan-out is not aborted prematurely.
 """
+
+
+class _RequestKwargs(TypedDict, total=False):
+    """Optional keyword arguments forwarded to ``httpx.AsyncClient.request``.
+
+    Kept as a narrow TypedDict (rather than ``dict[str, object]``) so mypy
+    can verify the ``**request_kwargs`` unpacking against each ``request()``
+    overload's typed keyword parameters.
+    """
+
+    timeout: float | httpx.Timeout
 
 
 class WalrusClient(AsyncClientBase):
@@ -406,7 +417,7 @@ class WalrusClient(AsyncClientBase):
         # timeout is OMITTED from request_kwargs (rather than passed as
         # timeout=None) when the caller did not supply one, so the client's
         # own default timeout applies -- see the timeout Args entry above.
-        request_kwargs: dict[str, object] = {}
+        request_kwargs: _RequestKwargs = {}
         if timeout is not None:
             request_kwargs["timeout"] = timeout
 

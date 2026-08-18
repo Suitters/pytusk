@@ -344,11 +344,17 @@ def build_certificate(
     quorum with many signers, since one aggregate-verify call replaces one
     ``bls_verify`` call per confirmation. Only when the aggregate fails to
     verify (or cannot even be built, e.g. a malformed signature) does this
-    fall back to the original per-node ``bls_verify`` loop, so a failure
-    still names the specific offending node rather than degrading to a
-    generic error. Deduplicates by committee position and checks quorum
-    after the signatures are confirmed valid, so the first thing wrong with
-    an inbound confirmation set is still what gets reported.
+    fall back to the original per-node ``bls_verify`` loop. Confirmations
+    that fail this per-node check are EXCLUDED, not fatal on their own: the
+    remaining confirmations are then re-aggregated and quorum is rechecked
+    against just them, exactly as if the excluded nodes had never responded
+    -- one corrupted signature out of a large committee should not abort an
+    otherwise-valid certificate. Only when no confirmation can be excluded
+    (an aggregate failure with no individually-bad signature -- see
+    ``Raises`` below) or the surviving confirmations no longer reach quorum
+    does this actually fail. Deduplicates by committee position and checks
+    quorum after the signatures are confirmed valid, so the first thing
+    wrong with an inbound confirmation set is still what gets reported.
 
     Args:
         confirmations (Sequence[NodeConfirmation]): Per-node confirmations to
@@ -369,15 +375,15 @@ def build_certificate(
             confirmation shares the same committee ``position``.
         ConfirmationMismatchError: If any confirmation's
             ``serialized_message`` differs from the reference message.
-        InvalidConfirmationError: If any confirmation's signature fails to
-            verify against its declared public key, or if a public key or
-            signature is malformed and cannot be parsed as a valid BLS12-381
-            point (the extension raises ``ValueError`` for that case; this
-            function converts it into ``InvalidConfirmationError`` naming the
-            offending node rather than letting the raw ``ValueError``
-            propagate).
+        InvalidConfirmationError: If the aggregate fails to verify and every
+            individual confirmation still passes ``bls_verify`` (the
+            aggregate/per-node mismatch is unreachable in practice, but
+            guarded), or if every confirmation is excluded by the per-node
+            fallback (all signatures/public keys are malformed or fail
+            verification, leaving nothing to build a certificate from).
         QuorumNotReachedError: If the deduplicated signer weight does not
-            reach quorum for ``n_shards``.
+            reach quorum for ``n_shards`` -- including after invalid
+            confirmations have been excluded by the per-node fallback.
     """
     if not confirmations:
         raise ValueError("confirmations must not be empty")
@@ -399,6 +405,7 @@ def build_certificate(
     public_keys = [confirmation.public_key for confirmation in confirmations]
 
     aggregate_signature: bytes | None = None
+    bad_nodes: list[str] = []
     try:
         aggregate_signature = bls_aggregate(signatures)
         aggregate_verified = bls_aggregate_verify(
@@ -418,33 +425,58 @@ def build_certificate(
 
     if not aggregate_verified:
         # Aggregate-first failed or could not even be attempted -- fall back
-        # to verifying each confirmation individually so the error still
-        # names the specific bad node, exactly as the pre-restructure code
-        # did unconditionally.
+        # to verifying each confirmation individually. A bad confirmation is
+        # EXCLUDED rather than aborting the whole build -- one corrupted
+        # signature out of a large committee should not force complete
+        # failure when the remaining confirmations still reach quorum on
+        # their own. The shared dedup/weight/quorum check below then runs
+        # against the narrowed set exactly as it would for any other
+        # confirmation set.
+        good_confirmations: list[NodeConfirmation] = []
         for confirmation in confirmations:
             try:
                 verified = bls_verify(
                     confirmation.public_key, confirmation.signature, reference_message
                 )
             except ValueError as exc:
-                raise InvalidConfirmationError(
-                    f"Node {confirmation.node_id} confirmation could not be "
-                    f"parsed as a valid BLS public key/signature: {exc}"
-                ) from exc
-            if not verified:
-                raise InvalidConfirmationError(
-                    f"Node {confirmation.node_id} signature failed verification "
-                    f"against its committee public key"
+                _logger.warning(
+                    "Node %s confirmation could not be parsed as a valid "
+                    "BLS public key/signature (excluded): %s",
+                    confirmation.node_id,
+                    exc,
                 )
-        # Unreachable in practice: BLS aggregate-verify succeeds against a
-        # message/public-key set whenever every individual signature
-        # verifies against it, so reaching here means every confirmation
-        # passed bls_verify above yet the aggregate still did not. Guarded
-        # anyway so this can never silently return an unverified
-        # certificate.
-        raise InvalidConfirmationError(
-            "Aggregate signature failed verification even though every "
-            "individual confirmation verified"
+                bad_nodes.append(confirmation.node_id)
+                continue
+            if not verified:
+                _logger.warning(
+                    "Node %s signature failed verification against its "
+                    "committee public key (excluded)",
+                    confirmation.node_id,
+                )
+                bad_nodes.append(confirmation.node_id)
+                continue
+            good_confirmations.append(confirmation)
+
+        if not bad_nodes:
+            # Unreachable in practice: BLS aggregate-verify succeeds against
+            # a message/public-key set whenever every individual signature
+            # verifies against it, so reaching here means every confirmation
+            # passed bls_verify above yet the aggregate still did not.
+            # Guarded anyway so this can never silently return an
+            # unverified certificate.
+            raise InvalidConfirmationError(
+                "Aggregate signature failed verification even though every "
+                "individual confirmation verified"
+            )
+        if not good_confirmations:
+            raise InvalidConfirmationError(
+                f"All {len(bad_nodes)} confirmation(s) failed verification "
+                f"(nodes: {', '.join(bad_nodes)})"
+            )
+
+        confirmations = good_confirmations
+        aggregate_signature = bls_aggregate(
+            [confirmation.signature for confirmation in confirmations]
         )
 
     seen_positions: set[int] = set()
@@ -461,6 +493,13 @@ def build_certificate(
 
     if not is_quorum(weight=weight, n_shards=n_shards):
         required = min_weight_for_quorum(n_shards=n_shards)
+        if bad_nodes:
+            raise QuorumNotReachedError(
+                f"Signer weight {weight} does not reach quorum: requires at "
+                f"least {required} for n_shards={n_shards} (excluded "
+                f"{len(bad_nodes)} confirmation(s) that failed verification: "
+                f"{', '.join(bad_nodes)})"
+            )
         raise QuorumNotReachedError(
             f"Signer weight {weight} does not reach quorum: requires at "
             f"least {required} for n_shards={n_shards}"

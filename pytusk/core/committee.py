@@ -39,6 +39,7 @@ import logging
 from typing import Protocol, TypeAlias
 
 from pysui import GetDynamicFields, SuiCommand, SuiRpcResult
+from pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 import DynamicField
 
 # pack_signers_bitmap/unpack_signers_bitmap now live in certification.py (the
 # certify_blob wire-format module) and are re-exported here so Part 1's
@@ -772,12 +773,32 @@ async def fetch_pools(
         len(raw_entries),
         expected_size,
     )
-    deduped_by_field_id = {}
+    deduped_by_field_id: dict[str, DynamicField] = {}
     for entry in raw_entries:
         field_id = entry.field_object.object_id
-        version = int(entry.field_object.version)
+        version = entry.field_object.version
+        if version is None:
+            raise RuntimeError(
+                f"GetDynamicFields pools_table_id={pools_table_id}: dynamic "
+                f"field {field_id} has no version"
+            )
         existing = deduped_by_field_id.get(field_id)
-        if existing is None or version > int(existing.field_object.version):
+        if existing is None:
+            deduped_by_field_id[field_id] = entry
+            continue
+        existing_field_object = existing.field_object
+        if existing_field_object is None:
+            raise RuntimeError(
+                f"GetDynamicFields pools_table_id={pools_table_id}: dynamic "
+                f"field {field_id} has no field_object"
+            )
+        existing_version = existing_field_object.version
+        if existing_version is None:
+            raise RuntimeError(
+                f"GetDynamicFields pools_table_id={pools_table_id}: dynamic "
+                f"field {field_id} has no version"
+            )
+        if version > existing_version:
             deduped_by_field_id[field_id] = entry
     if len(deduped_by_field_id) != len(raw_entries):
         _logger.info(
@@ -791,6 +812,11 @@ async def fetch_pools(
         )
     pools: dict[str, dict[str, JsonValue]] = {}
     for entry in deduped_by_field_id.values():
+        if entry.child_object is None:
+            raise RuntimeError(
+                f"GetDynamicFields pools_table_id={pools_table_id}: dynamic "
+                "field entry has no child_object"
+            )
         decoded = protobuf_json_to_python(value=entry.child_object.json)
         pool = _require_dict(node=decoded, path="staking pool")
         pools[pool_node_id(pool=pool)] = pool

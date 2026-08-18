@@ -58,11 +58,14 @@ from pytusk.client.walrus_client import WalrusClient
 from pytusk.commands.node_commands import GetStorageConfirmation, PutMetadata, PutSliver
 from pytusk.core.certification import (
     Certificate,
+    ConfirmationMismatchError,
+    InvalidConfirmationError,
     NodeConfirmation,
     QuorumNotReachedError,
     build_certificate,
     confirmation_message,
     min_weight_for_quorum,
+    verify_certificate,
 )
 from pytusk.core.committee import (
     WalrusCommittee,
@@ -85,7 +88,6 @@ __all__ = [
     "FanoutReport",
     "NativeBlobReceipt",
     "NativeUploadError",
-    "NativeUploadState",
     "NodeUploadOutcome",
     "SliverUploadError",
     "StageTimings",
@@ -115,24 +117,52 @@ _logger = logging.getLogger(__name__)
 _HEARTBEAT_INTERVAL_SECONDS: float = 2.0
 _HEARTBEAT_SLOWEST_NODES: int = 5
 
-# --- One-shot first-failure WARNING logging -------------------------------
+# --- One-shot first-failure WARNING logging (atomic via dict.setdefault) ----
 # A live fan-out can produce thousands of near-identical failures (one per
 # rejected sliver across ~100 nodes); logging every one at full detail
-# would flood the log. This one-shot flag lets the FIRST failed sliver PUT
-# of a given upload_slivers() run log at WARNING with full, untruncated
-# detail, while every subsequent failure logs as before (INFO, via
-# _upload_node's existing per-node summary). Reset at the start of every
-# upload_slivers() call so each run gets its own "first failure" sample.
+# would flood the log. A one-shot logging registry lets the FIRST failed
+# sliver PUT of a given upload_slivers() run log at WARNING with full,
+# untruncated detail, while every subsequent failure logs as before (INFO,
+# via _upload_node's existing per-node summary).
 #
-# _first_metadata_failure_logged is the same one-shot pattern applied to
-# the metadata PUT stage: when EVERY node fails at PutMetadata (see
-# _put_metadata), no sliver PUT is ever attempted, so
-# _first_put_failure_logged above never fires and a run can produce zero
-# WARNING lines despite total failure. This flag guarantees the first
-# metadata failure of a run is also logged at WARNING with full detail.
+# When EVERY node fails at the metadata PUT stage (see _put_metadata) before
+# any sliver PUT is attempted, a separate one-shot flag guarantees the first
+# metadata failure of a run is also logged at WARNING with full detail (since
+# _put_sliver's one-shot never fires when no slivers are PUT at all).
+#
+# Test-and-set is performed via dict.setdefault on module-level _logged_once,
+# which is atomic (a single GIL-protected C-level operation with no
+# bytecode-level suspension point); this prevents duplicate WARNING lines
+# when concurrent asyncio tasks hit a hard failure at nearly the same instant.
 # ---------------------------------------------------------------------------
-_first_put_failure_logged: bool = False
-_first_metadata_failure_logged: bool = False
+_logged_once: dict[str, object] = {}
+"""Backing store for :func:`_log_once` -- a one-shot logging flag registry
+shared across every :func:`upload_slivers` call in this process. Guards
+against duplicate WARNING-level "first failure" log lines when concurrent
+uploads hit a hard PUT failure at nearly the same instant.
+"""
+
+
+def _log_once(*, key: str) -> bool:
+    """Atomically test-and-set a one-shot logging flag.
+
+    Returns True the first time a given ``key`` is passed, and False on
+    every call after -- including from concurrent asyncio tasks or, in
+    principle, real OS threads. ``dict.setdefault`` on a ``str``-keyed dict
+    is a single, GIL-protected C-level operation in CPython with no
+    bytecode-level suspension point, so this is genuinely atomic; a plain
+    ``if key not in d: d[key] = True`` pair is two separate operations and
+    can race between the check and the set.
+
+    Args:
+        key (str): Identifies which one-shot flag to test-and-set (e.g.
+            ``"put_failure"``, ``"metadata_failure"``).
+
+    Returns:
+        bool: True if this is the first call for ``key``, False otherwise.
+    """
+    sentinel = object()
+    return _logged_once.setdefault(key, sentinel) is sentinel
 
 
 def object_id_to_raw_bytes(*, object_id: str) -> bytes:
@@ -303,32 +333,6 @@ class NativeBlobReceipt:
     timings: StageTimings
 
 
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class NativeUploadState:
-    """A recoverable checkpoint a caller can persist across processes.
-
-    Holding a ``NativeUploadState`` is sufficient to resume the native
-    upload flow at the confirmation-collection stage without re-encoding
-    the blob or re-paying for storage/registration -- the expensive,
-    WAL-spending work (encoding and Tx1) is already captured in
-    ``encoded`` and ``registration``. ``certificate`` is ``None`` until
-    :func:`collect_confirmations` has produced one; a caller resuming
-    before that point re-runs :func:`collect_confirmations` and
-    :func:`certify`, a caller resuming after it can skip straight to
-    :func:`certify`.
-
-    Attributes:
-        encoded (EncodedBlob): The RedStuff-encoded blob.
-        registration (Registration): Tx1's result.
-        certificate (Certificate | None): A previously built quorum
-            certificate, if confirmation collection already completed.
-    """
-
-    encoded: EncodedBlob
-    registration: Registration
-    certificate: Certificate | None
-
-
 class NativeUploadError(RuntimeError):
     """Base error for a failed stage of the native upload pipeline.
 
@@ -350,7 +354,7 @@ class NativeUploadError(RuntimeError):
     duration: float | None
 
     def __init__(
-        self, message: str, *, stage: str, duration: float | None = None
+        self, *, message: str, stage: str, duration: float | None = None
     ) -> None:
         """Initialise with a human-readable message, the failing stage, and
         an optional stage duration.
@@ -372,8 +376,15 @@ class SliverUploadError(NativeUploadError):
 
 
 class ConfirmationCollectionError(NativeUploadError):
-    """Raised when a quorum of storage-node confirmations could not be
-    gathered."""
+    """Raised when the confirmation-collection stage fails.
+
+    Covers a quorum of storage-node confirmations not being gathered, and
+    also wraps :class:`~pytusk.core.certification.ConfirmationMismatchError`
+    and :class:`~pytusk.core.certification.InvalidConfirmationError` when
+    :func:`~pytusk.core.certification.build_certificate` rejects the
+    collected confirmations -- see :func:`collect_confirmations`'s
+    docstring.
+    """
 
 
 class EpochMismatchError(NativeUploadError):
@@ -383,7 +394,9 @@ class EpochMismatchError(NativeUploadError):
 
 class CertifyTransactionError(NativeUploadError):
     """Raised when Tx2 (``certify_blob``) fails to submit, aborts on-chain,
-    or fails pysui's pre-submission gas-estimation dry run.
+    fails pysui's pre-submission gas-estimation dry run, or when local
+    certificate verification rejects the certificate before Tx2 is even
+    attempted.
 
     Wraps TWO different bare exception types that
     :func:`~pytusk.core.system_ops.execute_certify` (and the pysui
@@ -446,10 +459,12 @@ async def assert_certificate_epoch_current(
     current_epoch = await fetch_epoch(reader=client, staking_object=staking_object)
     if current_epoch != committee.epoch:
         raise EpochMismatchError(
-            f"On-chain epoch {current_epoch} differs from the committee "
-            f"epoch {committee.epoch}; a certificate built against the "
-            "latter's signer-bitmap ordering is no longer valid for "
-            "certify_blob.",
+            message=(
+                f"On-chain epoch {current_epoch} differs from the committee "
+                f"epoch {committee.epoch}; a certificate built against the "
+                "latter's signer-bitmap ordering is no longer valid for "
+                "certify_blob."
+            ),
             stage="certify",
         )
 
@@ -775,13 +790,11 @@ async def _put_metadata(
         if attempt >= max_retries:
             # Log the first hard metadata-PUT failure of this run at
             # WARNING with full, untruncated detail -- see
-            # the module-level comment near _first_metadata_failure_logged.
-            # When every node fails at this stage, _first_put_failure_logged
-            # in _put_sliver never fires (no sliver PUT is ever attempted),
+            # the module-level comment near _log_once.
+            # When every node fails at this stage, the sliver PUT one-shot
+            # never fires (no sliver PUT is ever attempted),
             # so this is the only WARNING-level signal such a run produces.
-            global _first_metadata_failure_logged
-            if not _first_metadata_failure_logged:
-                _first_metadata_failure_logged = True
+            if _log_once(key="metadata_failure"):
                 _logger.warning(
                     "first metadata PUT failure this run: node_id=%s "
                     "base_url=%s blob_id=%s attempts=%d reason=%s",
@@ -842,6 +855,21 @@ async def _put_sliver(
     write permits or byte budget between attempts. Acquisition order
     matches upstream's nesting: the global write permit is acquired FIRST,
     then the per-node permit, then the attempt itself runs.
+
+    KNOWN TRADE-OFF: because ``bytes_throttle.acquire()`` is awaited WHILE
+    already holding both semaphores, a task blocked waiting for byte budget
+    keeps its global and per-node permits reserved the whole time it waits
+    -- narrowing effective write concurrency below what the semaphore
+    counts alone would suggest, whenever the byte budget rather than the
+    permit counts is the binding constraint. This is a performance
+    characteristic, not a deadlock risk (the byte throttle's own EDGE CASE
+    handling -- see :class:`_BytesInFlightThrottle` -- guarantees forward
+    progress even when the whole budget is consumed by one oversized
+    sliver). Acquiring ``bytes_throttle`` before the semaphores instead
+    would only move the same coupling to a different resource (byte budget
+    reserved for a PUT not yet permitted to run), not remove it, so the
+    ordering is left matching upstream rather than swapped for a marginal,
+    unproven gain.
 
     Args:
         client (WalrusClient): Client used to dispatch the PUT.
@@ -906,12 +934,10 @@ async def _put_sliver(
         if attempt >= max_retries:
             # Log the first hard sliver-PUT failure of this run at
             # WARNING with full, untruncated detail -- see the
-            # module-level comment near _first_put_failure_logged. Every
+            # module-level comment near _log_once. Every
             # later failure is left to the existing per-node INFO log in
             # _upload_node, unchanged.
-            global _first_put_failure_logged
-            if not _first_put_failure_logged:
-                _first_put_failure_logged = True
+            if _log_once(key="put_failure"):
                 _logger.warning(
                     "first sliver PUT failure this run: node_id=%s "
                     "base_url=%s blob_id=%s sliver_pair_index=%d "
@@ -1361,10 +1387,9 @@ async def upload_slivers(
     """
     # Reset the one-shot first-failure flags so every run of
     # upload_slivers() gets its own verbose "first failure" sample -- see
-    # the module-level comment near _first_put_failure_logged.
-    global _first_put_failure_logged, _first_metadata_failure_logged
-    _first_put_failure_logged = False
-    _first_metadata_failure_logged = False
+    # the module-level comment near _log_once.
+    _logged_once.pop("put_failure", None)
+    _logged_once.pop("metadata_failure", None)
 
     bytes_throttle = _BytesInFlightThrottle(max_bytes=max_bytes_in_flight)
 
@@ -1556,9 +1581,11 @@ async def upload_slivers(
             f"{reason}={count}" for reason, count in sorted(failures_by_reason.items())
         )
         raise SliverUploadError(
-            f"Sliver fan-out reached weight {weight_succeeded}, requires "
-            f"{required_weight} for n_shards={committee.n_shards}; failures by "
-            f"reason: {failure_summary or 'none'}",
+            message=(
+                f"Sliver fan-out reached weight {weight_succeeded}, requires "
+                f"{required_weight} for n_shards={committee.n_shards}; failures "
+                f"by reason: {failure_summary or 'none'}"
+            ),
             stage="upload_slivers",
         )
 
@@ -1710,6 +1737,55 @@ async def _confirm_node(
     )
 
 
+def _confirmation_outcome_from_task(
+    *,
+    task: asyncio.Task[tuple[NodeConfirmation | None, str | None]],
+    member: WalrusCommitteeMember,
+    confirm_progress: _ConfirmProgress,
+) -> tuple[NodeConfirmation | None, str | None]:
+    """Resolve a finished confirmation task into its outcome.
+
+    :func:`_confirm_node` returns its ``(confirmation, reason)`` outcome on
+    every path it controls, but on the rare path where its task raises or
+    is cancelled instead, this converts that into a synthesized failed
+    outcome (``reason`` carrying the exception's type and message) rather
+    than letting ``task.result()`` re-raise it into
+    :func:`collect_confirmations` and abort the whole confirmation stage --
+    mirrors :func:`_outcome_from_task`'s guard around ``upload_slivers``'s
+    own per-node tasks. Because ``_confirm_node`` never reached its own
+    ``confirm_progress.finished()`` call on this path, this function calls
+    it here instead, so every node is counted exactly once regardless of
+    which path it finished on.
+
+    Args:
+        task (asyncio.Task[tuple[NodeConfirmation | None, str | None]]):
+            The finished confirmation task to resolve.
+        member (WalrusCommitteeMember): The committee member the task was
+            querying, used for weight/logging on the synthesized-failure
+            path.
+        confirm_progress (_ConfirmProgress): progress tracker feeding the
+            heartbeat monitor, updated with a synthesized failure when this
+            function has to build one itself.
+
+    Returns:
+        tuple[NodeConfirmation | None, str | None]: The task's own outcome
+        on the normal path, or ``(None, reason)`` if the task raised or was
+        cancelled.
+    """
+    try:
+        return task.result()
+    except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 - node task exception must not abort confirmation collection
+        reason = f"{type(exc).__name__}: {exc}"
+        confirm_progress.finished(ok=False, weight=len(member.shard_indices))
+        _logger.info(
+            "confirmation for node %s failed (task raised %s): reason=%s",
+            member.node_id,
+            type(exc).__name__,
+            reason,
+        )
+        return None, reason
+
+
 async def collect_confirmations(
     *,
     client: WalrusClient,
@@ -1808,15 +1884,16 @@ async def collect_confirmations(
 
     Raises:
         ConfirmationCollectionError: If no node returned a usable
-            confirmation, or the collected confirmations do not reach
-            quorum. A minority of tolerated per-node failures does NOT
-            raise this on its own, so long as the remaining confirmations
-            still reach quorum.
-        ConfirmationMismatchError: Propagated from
-            :func:`~pytusk.core.certification.build_certificate` if nodes
-            disagree on the confirmation message.
-        InvalidConfirmationError: Propagated from ``build_certificate`` if a
-            confirmation's signature fails to verify.
+            confirmation, the collected confirmations do not reach quorum,
+            or :func:`~pytusk.core.certification.build_certificate` raises
+            :class:`ConfirmationMismatchError` (nodes disagree on the
+            confirmation message) or :class:`InvalidConfirmationError` (a
+            confirmation's signature fails verification) -- both are
+            wrapped into this single exception type so every
+            confirmation-stage failure reaches the same
+            :class:`NativeUploadError` recovery path. A minority of
+            tolerated per-node failures does NOT raise this on its own, so
+            long as the remaining confirmations still reach quorum.
         ValueError: Propagated from ``build_certificate`` for a malformed
             confirmation set (e.g. duplicate committee positions).
     """
@@ -1897,7 +1974,9 @@ async def collect_confirmations(
             )
             for task in done:
                 member = task_members[task]
-                confirmation, reason = task.result()
+                confirmation, reason = _confirmation_outcome_from_task(
+                    task=task, member=member, confirm_progress=confirm_progress
+                )
                 if confirmation is None:
                     _logger.warning(
                         "Storage node %s (%s) returned no usable confirmation "
@@ -1942,7 +2021,9 @@ async def collect_confirmations(
             done, still_pending = await asyncio.wait(pending, timeout=extra_time)
             for task in done:
                 member = task_members[task]
-                confirmation, reason = task.result()
+                confirmation, reason = _confirmation_outcome_from_task(
+                    task=task, member=member, confirm_progress=confirm_progress
+                )
                 if confirmation is None:
                     _logger.warning(
                         "Storage node %s (%s) returned no usable confirmation "
@@ -1999,8 +2080,10 @@ async def collect_confirmations(
 
     if not confirmations:
         raise ConfirmationCollectionError(
-            f"No storage node returned a usable confirmation out of "
-            f"{len(candidates)} candidates queried",
+            message=(
+                f"No storage node returned a usable confirmation out of "
+                f"{len(candidates)} candidates queried"
+            ),
             stage="collect_confirmations",
         )
 
@@ -2014,9 +2097,13 @@ async def collect_confirmations(
                 expected_message=expected_message,
             )
         )
-    except QuorumNotReachedError as exc:
+    except (
+        QuorumNotReachedError,
+        ConfirmationMismatchError,
+        InvalidConfirmationError,
+    ) as exc:
         raise ConfirmationCollectionError(
-            str(exc), stage="collect_confirmations"
+            message=str(exc), stage="collect_confirmations"
         ) from exc
 
 
@@ -2108,7 +2195,13 @@ async def certify(
             cannot itself raise one -- ``system_ops`` deliberately has no
             dependency on ``native_upload`` (see that module's docstring) --
             so this ``except`` clause cannot double-wrap an
-            already-wrapped ``NativeUploadError``.
+            already-wrapped ``NativeUploadError``. Also raised, with
+            ``duration=None`` (Tx2 timing has not started yet), if
+            :func:`~pytusk.core.certification.verify_certificate` finds the
+            certificate's aggregate signature does not verify against the
+            committee's public keys for its signer positions -- this local
+            check runs before Tx2 is ever attempted, so a bad certificate
+            fails for free instead of spending gas on-chain.
     """
     incoming_timings = stage_timings or StageTimings(
         encode=None,
@@ -2129,9 +2222,11 @@ async def certify(
             break
         if attempts >= max_attempts:
             raise EpochMismatchError(
-                f"On-chain epoch {current_epoch} still differs from the "
-                f"committee epoch {current_committee.epoch} after {attempts} "
-                "attempt(s); giving up.",
+                message=(
+                    f"On-chain epoch {current_epoch} still differs from the "
+                    f"committee epoch {current_committee.epoch} after "
+                    f"{attempts} attempt(s); giving up."
+                ),
                 stage="certify",
             )
         current_committee = await fetch_committee(
@@ -2142,6 +2237,22 @@ async def certify(
             committee=current_committee,
             blob_id=blob_id,
             registration=registration,
+        )
+
+    signer_public_keys = [
+        current_committee.members[position].public_key
+        for position in current_certificate.signer_positions
+    ]
+    if not verify_certificate(
+        certificate=current_certificate, public_keys=signer_public_keys
+    ):
+        raise CertifyTransactionError(
+            message=(
+                "Local certificate verification failed -- the aggregate "
+                "signature does not verify against the committee public "
+                "keys for its signer positions; refusing to submit Tx2"
+            ),
+            stage="certify",
         )
 
     certify_tx2_start = time.monotonic()
@@ -2158,7 +2269,9 @@ async def certify(
         )
     except (RuntimeError, ValueError) as exc:
         raise CertifyTransactionError(
-            str(exc), stage="certify", duration=time.monotonic() - certify_tx2_start
+            message=str(exc),
+            stage="certify",
+            duration=time.monotonic() - certify_tx2_start,
         ) from exc
     finally:
         certify_tx2_duration = time.monotonic() - certify_tx2_start

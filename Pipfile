@@ -5,8 +5,7 @@ name = "pypi"
 
 [packages]
 pytusk = {file = ".", editable = true}
-pysui-fastcrypto = {path = "../../frankc01/pysui-fastcrypto/target/wheels/pysui_fastcrypto-0.7.6-cp310-abi3-macosx_11_0_arm64.whl"}
-pysui = {path = "../../frankc01/pysui/dist/pysui-1.4.0-py3-none-any.whl"}
+pysui = ">=1.4.0"
 
 [dev-packages]
 setuptools-scm = "*"

@@ -309,6 +309,35 @@ Print the current Walrus epoch as a single integer.
 
    tusky epoch
 
+committee
+~~~~~~~~~
+
+Show the active Walrus storage committee for the configured network.
+
+.. code-block:: console
+
+   tusky committee
+
+Prints one summary line (current epoch, total shard count, and committee
+size), followed by one line per member: its position in the on-chain
+ordering, its shard count, node ID, a truncated public key, and its
+storage-node network address. A member's position is the index that
+``signers_bitmap`` refers to when the native upload pipeline aggregates
+confirmation signatures — see :doc:`logging` and the ``store_blob_native``
+/ ``certify_blob`` commands below.
+
+.. code-block:: console
+
+   $ tusky committee
+   epoch 485  shards 1000  members 101
+      0     4 shards  0x2c91e0e719574046515477754ad9a0750ca470f27890b2ae71339ac9dddfb113  a1b2c3d4..e5f6a7b8  storage.example.io:9185
+      1    12 shards  0xf44ca6660cc41df51531915fc1c7543fdbabc11a9acbeb10db2dc7eeb3dbe532  b2c3d4e5..f6a7b8c9  storage2.example.io:9185
+
+No transaction is involved — this is a read-only on-chain query. The
+committee is always resolved live, never cached: a stale committee
+carried across an epoch boundary would send slivers or confirmation
+requests to the wrong storage nodes.
+
 expiry_report
 ~~~~~~~~~~~~~~
 
@@ -329,9 +358,13 @@ A blob's status is ``expired`` when remaining epochs is negative,
 
    $ tusky expiry_report
    OBJECT ID                                                            END_EPOCH  CURRENT_EPOCH  REMAINING  STATUS
-   0x1ba8360de6ab4222211670f09fe12427b059d4272364d4f75d9eebb8328ead24         486            485          1  active
-   0x3e163d3b14bef322b3d7eea360dc4a15c2a8f1cb488a2be9de980b3268d08b66         486            485          1  active
-   0x9726699cf5440c3bb6e62568becefc4b1f519b3d3c70442d20007074f5dde627         496            485         11  active
+   0x1382979ea8716a95a02b2cb8266916cc4c4ed525b997bcad52c5ac6d2512ee99         492            493         -1  expired
+   0x4821c4d9418ccf763d550c6159f38e23d7052437916e1ab0d247d7feef24687e         492            493         -1  expired
+   0x5b0727fd1b2710e80d132d66a21c034a10924670ed9af67b4f2ac98d86f12682         492            493         -1  expired
+   0x7938b7368131b0ee5748acd5bd6c02cfe58dc6ac03f57270b6c7554f8e14229f         492            493         -1  expired
+   0x848710717e47e4695b4e9a6757ba9a3de3e58c33db40f45af682f5287136e7f3         492            493         -1  expired
+   0x4280c2303826e9bec80eac1e43edc596563bf69b1b516d181b1a69c1b96aaef7         498            493          5  active
+   0xa126a389363413c4b1dae9d9a42fab9cdae2afaaf4ce73ea0a3d3a7f33a99a55         498            493          5  active
 
 wal_coins
 ~~~~~~~~~
@@ -514,3 +547,141 @@ batched, same as ``delete_blob --all-blobs``.
    blobs, or blobs you're willing to destroy outright without the
    eligibility check. Both are irreversible for what they consume; only
    ``delete_blob`` returns anything back.
+
+Native Upload (pysui PTB + Storage Nodes)
+--------------------------------------------
+
+These two commands implement pytusk's native Walrus write path: talking
+directly to the storage-node committee and Sui, with no dependency on a
+third-party HTTP publisher. This is a fuller-featured, higher-effort
+alternative to ``store_blob`` above.
+
+store_blob_native
+~~~~~~~~~~~~~~~~~~
+
+Store a blob via the full native upload pipeline: ``reserve_space`` +
+``register_blob`` (Tx1), sliver fan-out to the storage-node committee,
+confirmation-signature collection, and ``certify_blob`` (Tx2).
+
+.. code-block:: console
+
+   tusky store_blob_native (--content TEXT | --file PATH) --epochs N
+                            [--permanent] [--recipient ADDRESS]
+                            [--full-json] [--log-file PATH] [--verbose]
+                            [--sender ADDRESS] [--sponsor ADDRESS]
+                            [--mode simulate|execute]
+
+``--content`` / ``--file``
+   Mutually exclusive, one required. Same semantics as ``store_blob``.
+
+``--epochs``
+   Number of epochs to store the blob for, counted from now (a duration,
+   not an absolute epoch number).
+
+``--permanent``
+   Store as a permanent blob (cannot be deleted before expiry).
+
+``--recipient``
+   Sui address to receive the stored blob object (default: sender).
+   Unlike ``store_blob``, transfer to a non-sender recipient happens in
+   Tx2 (``certify_blob``), not Tx1.
+
+``--mode``
+   ``simulate`` (default) or ``execute``. **Simulate mode only dry-runs
+   Tx1** (``reserve_space`` + ``register_blob``) — sliver fan-out and Tx2
+   are skipped entirely, because simulation never registers the blob
+   on-chain, so storage nodes would reject sliver uploads and there would
+   be nothing yet to certify. Simulate mode prints a concise JSON cost
+   summary (blob size, encoded storage amount, SUI/WAL cost, stage
+   timings) rather than the full raw simulate result, since the latter
+   can run to thousands of lines; pass ``--full-json`` to also print the
+   complete raw result.
+
+``--log-file`` / ``--verbose``
+   Opt-in progress logging for the pipeline. Neither is enabled by
+   default — see :doc:`logging`.
+
+Example — execute mode, full pipeline:
+
+.. code-block:: console
+
+   $ tusky store_blob_native --file testdata_1mb.bin --epochs 5 --mode execute
+   {
+     "blob_id": "bY4GUMK5eCHB3KBjsDN2wSzdlIY4IzQAHjzd7UHHkvw",
+     "object_id": "0x4280c2303826e9bec80eac1e43edc596563bf69b1b516d181b1a69c1b96aaef7",
+     "certified": true,
+     "end_epoch": 498,
+     "failed_stage": null,
+     "timings": {
+       "encode": 0.33,
+       "register_tx1": 3.22,
+       "sliver_upload": 5.07,
+       "confirmations": 1.06,
+       "certify_tx2": 0.72,
+       "total": 11.91
+     }
+   }
+
+If any stage after Tx1 fails, the same receipt shape is printed with
+``certified: false`` and ``failed_stage`` naming the stage that broke —
+the blob is registered on-chain but not yet certified. Use
+``certify_blob`` below to resume from that point.
+
+certify_blob
+~~~~~~~~~~~~
+
+Recover the confirmation-collection and ``certify_blob`` (Tx2) stages for
+a blob that is already registered on-chain (Tx1 succeeded) but not yet
+certified — the recovery counterpart to a partial ``store_blob_native``
+failure.
+
+.. code-block:: console
+
+   tusky certify_blob -i OBJECT_ID [--recover (--content TEXT | --file PATH)]
+                       [--sender ADDRESS] [--sponsor ADDRESS]
+                       [--mode simulate|execute]
+
+``-i`` / ``--blobid``
+   Sui object ID of the already-registered ``Blob``.
+
+``--recover``
+   Also re-upload slivers before collecting confirmations, for a blob
+   whose sliver fan-out never ran (for example, an upload that failed
+   during the register stage). Requires ``--content`` or ``--file``. By
+   default (no ``--recover``), the command assumes slivers were already
+   uploaded and only collects confirmations and submits Tx2 — if the
+   original fan-out never reached quorum, confirmation collection here
+   will also fail.
+
+``--content`` / ``--file``
+   The original blob content, required with ``--recover``. Re-encoded and
+   checked: the resulting ``blob_id`` must match what's already
+   registered on-chain for ``-i``, or the command errors out before
+   uploading anything mismatched.
+
+``--mode``
+   ``simulate`` (default) or ``execute``. Unlike ``store_blob_native``,
+   simulate mode here is a fully honest simulation — confirmation
+   collection is real (the blob is already registered), only Tx2 itself
+   is simulated.
+
+Example — resuming a blob whose sliver fan-out never ran:
+
+.. code-block:: console
+
+   $ tusky certify_blob -i 0x4280c2303826e9bec80eac1e43edc596563bf69b1b516d181b1a69c1b96aaef7 --recover --file testdata_1mb.bin --mode execute
+   {
+     "blob_id": "bY4GUMK5eCHB3KBjsDN2wSzdlIY4IzQAHjzd7UHHkvw",
+     "object_id": "0x4280c2303826e9bec80eac1e43edc596563bf69b1b516d181b1a69c1b96aaef7",
+     "certified": true,
+     "end_epoch": 498,
+     "failed_stage": null,
+     "timings": {
+       "encode": 0.31,
+       "register_tx1": null,
+       "sliver_upload": 4.88,
+       "confirmations": 1.02,
+       "certify_tx2": 0.70,
+       "total": null
+     }
+   }

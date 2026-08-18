@@ -49,6 +49,7 @@ from pytusk import (
     ReadBlob,
     ReadQuiltPatch,
     Registration,
+    RegistrationPendingError,
     StageTimings,
     StoreBlob,
     StoreQuilt,
@@ -1809,6 +1810,16 @@ async def store_blob_native(args: argparse.Namespace) -> None:
             except NativeUploadError as exc:
                 print(f"Error in {exc.stage}: {exc}", file=sys.stderr)
                 sys.exit(1)
+            except RegistrationPendingError as exc:
+                # Tx1 SUCCEEDED on-chain and storage is already paid for --
+                # this is transient (checkpoint finality/read-back lag), not
+                # a lost transaction. exc's own message already carries the
+                # object_id/resume guidance (see RegistrationPendingError's
+                # docstring); deliberately NOT printed with the generic
+                # "Error in register (Tx1)" prefix used below, since that
+                # would mislabel a successful Tx1 as a failure.
+                print(str(exc), file=sys.stderr)
+                sys.exit(1)
             except (RuntimeError, KeyError, TypeError, ValueError) as exc:
                 # Everything before registration (committee/epoch reads,
                 # package-ID resolution, WAL coin selection, and Tx1 itself)
@@ -2087,9 +2098,6 @@ async def certify_blob(args: argparse.Namespace) -> None:
                 sys.exit(1)
             except NativeUploadError as exc:
                 print(f"Error in {exc.stage}: {exc}", file=sys.stderr)
-                sys.exit(1)
-            except RuntimeError as exc:
-                print(f"Error in certify (Tx2): {exc}", file=sys.stderr)
                 sys.exit(1)
 
             receipt = dataclasses.replace(

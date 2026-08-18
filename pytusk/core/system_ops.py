@@ -57,6 +57,8 @@ separate here:
   behaviour and does not need to compose Tx1/Tx2 by hand.
 """
 
+from __future__ import annotations
+
 import asyncio
 import dataclasses
 from typing import cast
@@ -81,6 +83,7 @@ __all__ = [
     "DEFAULT_FINALITY_MAX_DELAY",
     "CertifyResult",
     "Registration",
+    "RegistrationPendingError",
     "add_certify",
     "add_reserve_and_register",
     "execute_certify",
@@ -815,24 +818,32 @@ async def execute_reserve_and_register(
 
     Raises:
         RuntimeError: If WAL coin selection, transaction submission, or
-            on-chain execution fails. If Tx1 SUCCEEDS on-chain but
-            :func:`find_created_object_id` cannot locate the created
-            ``Blob`` in the effects (an assumption UNVERIFIED against a
-            live node -- see that function's docstring), the error is
-            re-raised (chained via ``from``) with Tx1's transaction digest
-            and :data:`_RESUME_HINT` appended. If Tx1 SUCCEEDS and the
-            created ``Blob``'s object ID IS found, but the subsequent
-            convenience read-back fails -- either :class:`GetObject`
-            returns not-ok, or :func:`_end_epoch_and_deletable` raises
-            ``ValueError`` on a malformed/unexpected JSON view (the latter
-            chained via ``from``) -- the error carries Tx1's transaction
+            on-chain execution fails (no digest available in this case --
+            the transaction never produced usable effects). If Tx1
+            SUCCEEDS on-chain but :func:`find_created_object_id` cannot
+            locate the created ``Blob`` in the effects (an assumption
+            UNVERIFIED against a live node -- see that function's
+            docstring), the error is re-raised (chained via ``from``) with
+            Tx1's transaction digest and :data:`_RESUME_HINT` appended. If
+            Tx1 SUCCEEDS, the created ``Blob``'s object ID IS found, and
+            checkpoint finality and the ``GetObject`` read-back both
+            succeed, but :func:`_end_epoch_and_deletable` then raises
+            ``ValueError`` on a malformed/unexpected JSON view, the error
+            is re-raised (chained via ``from``) with Tx1's transaction
             digest and the same hint.
 
-            The read-back is preceded by :func:`wait_for_finality`, so a
-            failure here is a genuine anomaly rather than the pre-checkpoint
-            race that previously produced a stub ``Object`` with no
-            ``object_id``. Note that NONE of these failures are recoverable
-            with ``tusky certify_blob`` -- see :data:`_RESUME_HINT`.
+            Note that NONE of these ``RuntimeError`` cases are recoverable
+            with ``tusky certify_blob`` -- see :data:`_RESUME_HINT`. This is
+            unlike :class:`RegistrationPendingError` below, which IS
+            recoverable.
+        RegistrationPendingError: If Tx1 succeeds on-chain but checkpoint
+            finality is not reached within ``finality_max_attempts``, or the
+            immediate read-back of the newly created ``Blob`` via
+            :class:`GetObject` fails. Unlike the ``RuntimeError`` cases
+            above, this IS transient and recoverable: ``digest`` and
+            ``object_id`` are valid and the pipeline can be resumed from
+            sliver upload onward without re-executing Tx1 -- see this
+            exception class's own docstring.
     """
     resolved_sender = sender or client.pysui_client.config.active_address
     resolved_payment_coin = payment_coin or await select_wal_payment_coin(

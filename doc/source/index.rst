@@ -31,6 +31,7 @@ pytusk
    :caption: CLI
 
    tusky
+   logging
 
 .. toctree::
    :maxdepth: 1

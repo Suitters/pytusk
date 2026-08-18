@@ -39,6 +39,7 @@ exception-conversion or timing-threading logic under test.
 import asyncio
 import dataclasses
 from collections.abc import Coroutine
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -1762,6 +1763,9 @@ class TestCertifyTx2Failure:
 
         monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
         monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(
+            native_upload, "verify_certificate", lambda **kwargs: True
+        )
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
@@ -1769,7 +1773,7 @@ class TestCertifyTx2Failure:
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
-                certificate=object(),
+                certificate=SimpleNamespace(signer_positions=()),
                 package_id="0xpkg",
                 system_object="0xsystem",
                 staking_object="0xstaking",
@@ -1808,6 +1812,9 @@ class TestCertifyTx2Failure:
 
         monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
         monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(
+            native_upload, "verify_certificate", lambda **kwargs: True
+        )
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
@@ -1815,7 +1822,7 @@ class TestCertifyTx2Failure:
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
-                certificate=object(),
+                certificate=SimpleNamespace(signer_positions=()),
                 package_id="0xpkg",
                 system_object="0xsystem",
                 staking_object="0xstaking",
@@ -1860,7 +1867,7 @@ class TestCertifyTx2Failure:
             )
 
         async def fake_collect_confirmations(**kwargs: object) -> object:
-            return object()
+            return SimpleNamespace(signer_positions=())
 
         monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
         monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
@@ -1870,6 +1877,9 @@ class TestCertifyTx2Failure:
         )
         monkeypatch.setattr(native_upload, "upload_slivers", fake_upload_slivers)
         monkeypatch.setattr(native_upload, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(
+            native_upload, "verify_certificate", lambda **kwargs: True
+        )
 
         client = _FakeCertifyClient(
             committee=committee, system_object="0xsystem", staking_object="0xstaking"
@@ -1923,7 +1933,7 @@ class TestCertifyTx2Failure:
             )
 
         async def fake_collect_confirmations(**kwargs: object) -> object:
-            return object()
+            return SimpleNamespace(signer_positions=())
 
         monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
         monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
@@ -1933,6 +1943,9 @@ class TestCertifyTx2Failure:
         )
         monkeypatch.setattr(native_upload, "upload_slivers", fake_upload_slivers)
         monkeypatch.setattr(native_upload, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(
+            native_upload, "verify_certificate", lambda **kwargs: True
+        )
 
         client = _FakeCertifyClient(
             committee=committee, system_object="0xsystem", staking_object="0xstaking"

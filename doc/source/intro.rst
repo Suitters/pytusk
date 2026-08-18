@@ -42,6 +42,62 @@ exposing one method per operation.
   constructing custom Move calls — see :doc:`transactions` for the
   Walrus-specific PTBs ``pytusk`` builds internally.
 
+Publisher/Aggregator vs. Native Upload
+----------------------------------------
+
+``pytusk`` offers two distinct ways to write and read Walrus blobs.
+Both are fully supported; which to use is a per-application choice.
+
+**Publisher/Aggregator (HTTP)** — :py:class:`~pytusk.StoreBlob`,
+:py:class:`~pytusk.ReadBlob`, and the other :py:class:`~pytusk.WalrusCommand`
+subclasses talk to a third-party Walrus publisher/aggregator over plain
+HTTP. A store is one HTTP request; the publisher handles committee
+resolution, sliver encoding/fan-out, and confirmation collection on your
+behalf. This is the simpler, lower-latency path, and it's how
+``tusky store_blob``/``read_blob`` work.
+
+**Native Upload** — :py:func:`~pytusk.store_blob_native` (and the
+``tusky store_blob_native``/``certify_blob`` CLI commands) talk directly
+to the Sui chain and the storage-node committee: reserve/register on
+Sui, encode and fan out slivers to storage nodes yourself, collect their
+signed confirmations, and certify on Sui. No publisher is involved at
+any point. See :doc:`transactions` for the underlying PTBs and
+:doc:`tusky` for the CLI commands.
+
+Reasons to choose Publisher/Aggregator:
+
+- Simplicity and speed — one HTTP call, no committee resolution or
+  cryptographic work on the client.
+- Testnet has a public, unauthenticated publisher/aggregator pair ready
+  to use with no setup.
+
+Reasons to choose Native Upload:
+
+- **No third-party trust or availability dependency** — a publisher can
+  rate-limit, add a tip on top of the protocol fee, go down, or reject
+  requests; native upload uses only Sui RPC and the storage-node network,
+  the same trust assumptions as the rest of the chain.
+- **The default pytusk configuration ships with no Mainnet
+  publisher/aggregator** — unlike testnet, ``PytuskConfiguration``'s
+  built-in Mainnet network entry has an empty ``walrus_publisher_url``.
+  The user can point it at a self-hosted publisher via
+  ``set_walrus_publisher_url()``/``set_walrus_aggregator_url()`` (see
+  :doc:`configuration`'s "Update Existing" section), or use native
+  upload, which needs neither.
+- **Cost transparency** — public publishers commonly add a markup/tip on
+  top of the protocol's write price; native upload pays only the actual
+  protocol cost.
+- Predictable SLAs, custom retry/parallelism, and auditability of
+  exactly whose signature certified the data — none of which is
+  practical to build on top of a black-box third-party publisher.
+
+The trade-off is real: native upload takes two Sui transactions instead
+of one HTTP call, is correspondingly slower, and — because it can fail
+*between* those two transactions (Blob registered, not yet certified) —
+exposes a partial-failure state that Publisher/Aggregator's single HTTP
+call does not. ``tusky certify_blob`` (and the library's ``certify_blob``
+entry points) exist specifically to recover from that state.
+
 Next Steps
 -----------
 

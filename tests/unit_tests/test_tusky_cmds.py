@@ -107,7 +107,7 @@ class _FakeWalrusClient:
         self.config = _FakePytuskConfig()
         self.pysui_client = _FakePysuiClient()
 
-    async def __aenter__(self) -> "_FakeWalrusClient":
+    async def __aenter__(self) -> "_FakeWalrusClient":  # noqa: PYI034 -- typing.Self is 3.11+ only (project targets >=3.10.6); typing_extensions.Self would add an undeclared dependency, and a bound TypeVar here immediately trips PYI019 instead
         """Enter the fake client's async context, returning itself."""
         return self
 

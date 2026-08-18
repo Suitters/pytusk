@@ -390,11 +390,13 @@ class TestBuildCertificateErrors:
                 confirmations=signers, committee_size=committee_size, n_shards=n_shards
             )
 
-    def test_unparseable_signature_raises_invalid_confirmation(self) -> None:
+    def test_unparseable_signature_excluded_drops_below_quorum(self) -> None:
         """A signature that is not a valid G2 point encoding cannot even be
         parsed -- this exercises the extension's RAISES-ValueError path (as
-        opposed to its returns-False path), and must still surface as
-        InvalidConfirmationError, not a raw ValueError, from build_certificate."""
+        opposed to its returns-False path). The bad confirmation is
+        EXCLUDED rather than failing immediately; since this fixture is
+        exactly at quorum, excluding it drops weight below quorum and
+        QuorumNotReachedError is raised."""
         committee_size = 10
         n_shards = 10
         weights = [1] * committee_size
@@ -406,15 +408,18 @@ class TestBuildCertificateErrors:
         # this input rather than returning False.
         signers[0] = _replace(signers[0], signature=b"\xff" * 96)
 
-        with pytest.raises(InvalidConfirmationError):
+        with pytest.raises(QuorumNotReachedError):
             build_certificate(
                 confirmations=signers, committee_size=committee_size, n_shards=n_shards
             )
 
-    def test_flipped_byte_signature_raises_invalid_confirmation(self) -> None:
+    def test_flipped_byte_signature_excluded_drops_below_quorum(self) -> None:
         """A signature with one flipped byte is also expected to become an
         unparseable point encoding, exercising the same RAISES-ValueError
-        path as the all-0xFF case via a more realistic corruption."""
+        path as the all-0xFF case via a more realistic corruption. The bad
+        confirmation is EXCLUDED rather than failing immediately; since this
+        fixture is exactly at quorum, excluding it drops weight below
+        quorum and QuorumNotReachedError is raised."""
         committee_size = 10
         n_shards = 10
         weights = [1] * committee_size
@@ -425,17 +430,19 @@ class TestBuildCertificateErrors:
         corrupted_signature[0] ^= 0xFF
         signers[0] = _replace(signers[0], signature=bytes(corrupted_signature))
 
-        with pytest.raises(InvalidConfirmationError):
+        with pytest.raises(QuorumNotReachedError):
             build_certificate(
                 confirmations=signers, committee_size=committee_size, n_shards=n_shards
             )
 
-    def test_wellformed_wrong_signature_raises_invalid_confirmation(self) -> None:
+    def test_wellformed_wrong_signature_excluded_drops_below_quorum(self) -> None:
         """A signature that is a genuine BLS signature -- just from a
         DIFFERENT keypair -- parses correctly but fails verification. This
         exercises the extension's RETURNS-False path (as opposed to its
-        raises-ValueError path), and must still surface as
-        InvalidConfirmationError from build_certificate."""
+        raises-ValueError path). The bad confirmation is EXCLUDED rather
+        than failing immediately; since this fixture is exactly at quorum,
+        excluding it drops weight below quorum and QuorumNotReachedError is
+        raised."""
         committee_size = 10
         n_shards = 10
         weights = [1] * committee_size
@@ -447,13 +454,16 @@ class TestBuildCertificateErrors:
         # its declared public key.
         signers[0] = _replace(signers[0], signature=_BLS_SIGNATURES[1])
 
-        with pytest.raises(InvalidConfirmationError):
+        with pytest.raises(QuorumNotReachedError):
             build_certificate(
                 confirmations=signers, committee_size=committee_size, n_shards=n_shards
             )
 
-    def test_signature_from_wrong_key_raises_invalid_confirmation(self) -> None:
-        """A valid signature paired with the wrong declared public_key fails."""
+    def test_signature_from_wrong_key_excluded_drops_below_quorum(self) -> None:
+        """A valid signature paired with the wrong declared public_key fails.
+        The bad confirmation is EXCLUDED rather than failing immediately;
+        since this fixture is exactly at quorum, excluding it drops weight
+        below quorum and QuorumNotReachedError is raised."""
         committee_size = 10
         n_shards = 10
         weights = [1] * committee_size
@@ -464,16 +474,17 @@ class TestBuildCertificateErrors:
         # public key: well-formed, but the pairing does not verify.
         signers[0] = _replace(signers[0], public_key=_BLS_PUBLIC_KEYS[1])
 
-        with pytest.raises(InvalidConfirmationError):
+        with pytest.raises(QuorumNotReachedError):
             build_certificate(
                 confirmations=signers, committee_size=committee_size, n_shards=n_shards
             )
 
-    def test_malformed_public_key_raises_invalid_confirmation(self) -> None:
+    def test_malformed_public_key_excluded_drops_below_quorum(self) -> None:
         """A public key that is not a valid G1/G2 point encoding cannot even
-        be parsed -- bls_verify raises ValueError for this input, and it must
-        surface as InvalidConfirmationError, not a raw ValueError, from
-        build_certificate."""
+        be parsed -- bls_verify raises ValueError for this input. The bad
+        confirmation is EXCLUDED rather than failing immediately; since this
+        fixture is exactly at quorum, excluding it drops weight below
+        quorum and QuorumNotReachedError is raised."""
         committee_size = 10
         n_shards = 10
         weights = [1] * committee_size
@@ -484,17 +495,21 @@ class TestBuildCertificateErrors:
         # uncompressed encoding accepted for a committee public key.
         signers[0] = _replace(signers[0], public_key=b"\x00" * 10)
 
-        with pytest.raises(InvalidConfirmationError):
+        with pytest.raises(QuorumNotReachedError):
             build_certificate(
                 confirmations=signers, committee_size=committee_size, n_shards=n_shards
             )
 
     def test_aggregate_first_still_names_the_specific_bad_signer(self) -> None:
         """The aggregate-first restructure must still identify WHICH signer
-        is bad on failure, not merely that the aggregate failed. Corrupts a
-        signer in the MIDDLE of a larger set (not position 0) so a
-        fallback loop that stopped at the first confirmation, or an error
-        that only ever names the first confirmation, would fail this test."""
+        is bad, not merely that the aggregate failed. Corrupts a signer in
+        the MIDDLE of a larger set (not position 0) so a fallback loop that
+        stopped at the first confirmation, or an error that only ever names
+        the first confirmation, would fail this test. The bad confirmation
+        is EXCLUDED rather than failing immediately; since this fixture is
+        exactly at quorum, excluding it drops weight below quorum and
+        QuorumNotReachedError is raised -- its message still names the
+        excluded node."""
         committee_size = 10
         n_shards = 10
         weights = [1] * committee_size
@@ -511,7 +526,7 @@ class TestBuildCertificateErrors:
             signers[bad_index], public_key=_BLS_PUBLIC_KEYS[1]
         )
 
-        with pytest.raises(InvalidConfirmationError) as exc_info:
+        with pytest.raises(QuorumNotReachedError) as exc_info:
             build_certificate(
                 confirmations=signers, committee_size=committee_size, n_shards=n_shards
             )
@@ -520,6 +535,53 @@ class TestBuildCertificateErrors:
         assert bad_node_id in message
         for other_node_id in other_node_ids:
             assert other_node_id not in message
+
+    def test_bad_signature_excluded_when_quorum_still_reached(self) -> None:
+        """A single corrupted signature among a SURPLUS of signers is
+        excluded, and quorum is rechecked against the rest -- this is the
+        whole point of the exclude-and-recheck fallback: a bad confirmation
+        must not abort an otherwise-valid certificate when enough good
+        weight remains after excluding it."""
+        committee_size = 10
+        n_shards = 10
+        weights = [1] * committee_size
+        _, confirmations = _make_committee(weights=weights)
+        required = min_weight_for_quorum(n_shards=n_shards)
+        # One extra signer beyond quorum, so excluding the bad one still
+        # leaves exactly `required` good weight.
+        signers = list(confirmations[: required + 1])
+        # signers[0] keeps its own signature but declares a DIFFERENT real
+        # public key: well-formed, but the pairing does not verify.
+        signers[0] = _replace(signers[0], public_key=_BLS_PUBLIC_KEYS[1])
+
+        certificate = build_certificate(
+            confirmations=signers, committee_size=committee_size, n_shards=n_shards
+        )
+
+        assert certificate.weight == required
+        assert certificate.signer_positions == tuple(range(1, required + 1))
+
+    def test_all_signatures_invalid_raises_invalid_confirmation(self) -> None:
+        """When EVERY confirmation fails per-node verification, there is
+        nothing left to exclude down to -- this must still raise
+        InvalidConfirmationError rather than silently returning an empty or
+        unverified certificate, or a misleading QuorumNotReachedError."""
+        committee_size = 10
+        n_shards = 10
+        weights = [1] * committee_size
+        _, confirmations = _make_committee(weights=weights)
+        required = min_weight_for_quorum(n_shards=n_shards)
+        signers = [
+            _replace(
+                c, public_key=_BLS_PUBLIC_KEYS[(i + 1) % len(_BLS_PUBLIC_KEYS)]
+            )
+            for i, c in enumerate(confirmations[:required])
+        ]
+
+        with pytest.raises(InvalidConfirmationError):
+            build_certificate(
+                confirmations=signers, committee_size=committee_size, n_shards=n_shards
+            )
 
     def test_duplicate_position_raises_value_error(self) -> None:
         """Two confirmations at the same committee position raise ValueError."""

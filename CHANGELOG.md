@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added native store blobs enabled
+
 ### Fixed
 
 - Documentation generation fix
@@ -16,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - pyproject.toml licensing fix.
+- `tusky committee` — Show the active Walrus storage committee.
+- `tusky store_blob_native` — Store a blob via the native Walrus upload pipeline (reserve_space+register_blob, sliver fan-out, certify_blob).
+- `tusky certify_blob` — Recover the confirmation-collection and certify_blob stages for a registered blob (optionally re-upload slivers first with --recover).
 
 ### Removed
 

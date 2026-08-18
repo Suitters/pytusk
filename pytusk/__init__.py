@@ -92,8 +92,10 @@ from pytusk.core.encoding import (
     blob_id_to_url_base64,
     decode_standard_base64,
     encode_blob,
+    encoded_blob_length,
     max_blob_size,
     max_n_faulty,
+    metadata_length,
     min_n_correct,
     root_hash_to_u256,
     source_symbol_counts,
@@ -109,7 +111,6 @@ from pytusk.core.native_upload import (
     FanoutReport,
     NativeBlobReceipt,
     NativeUploadError,
-    NativeUploadState,
     NodeUploadOutcome,
     SliverUploadError,
     StageTimings,
@@ -125,8 +126,11 @@ from pytusk.core.native_upload import (
 # PTB composition; the caller owns the transaction lifecycle -- see
 # pytusk.core.system_ops's module docstring)
 from pytusk.core.system_ops import (
+    DEFAULT_FINALITY_MAX_ATTEMPTS,
+    DEFAULT_FINALITY_MAX_DELAY,
     CertifyResult,
     Registration,
+    RegistrationPendingError,
     add_certify,
     add_reserve_and_register,
     execute_certify,
@@ -134,6 +138,7 @@ from pytusk.core.system_ops import (
     find_created_object_id,
     resolve_package_id,
     select_wal_payment_coin,
+    wait_for_finality,
 )
 from pytusk.version import __version__
 
@@ -204,8 +209,10 @@ __all__ = [  # noqa: RUF022
     "blob_id_to_url_base64",
     "decode_standard_base64",
     "encode_blob",
+    "encoded_blob_length",
     "max_blob_size",
     "max_n_faulty",
+    "metadata_length",
     "min_n_correct",
     "root_hash_to_u256",
     "source_symbol_counts",
@@ -223,8 +230,11 @@ __all__ = [  # noqa: RUF022
     "verify_certificate",
     "verify_confirmation",
     # System operations
+    "DEFAULT_FINALITY_MAX_ATTEMPTS",
+    "DEFAULT_FINALITY_MAX_DELAY",
     "CertifyResult",
     "Registration",
+    "RegistrationPendingError",
     "add_certify",
     "add_reserve_and_register",
     "execute_certify",
@@ -232,6 +242,7 @@ __all__ = [  # noqa: RUF022
     "find_created_object_id",
     "resolve_package_id",
     "select_wal_payment_coin",
+    "wait_for_finality",
     # Native upload orchestration
     "CertifyTransactionError",
     "ConfirmationCollectionError",
@@ -239,7 +250,6 @@ __all__ = [  # noqa: RUF022
     "FanoutReport",
     "NativeBlobReceipt",
     "NativeUploadError",
-    "NativeUploadState",
     "NodeUploadOutcome",
     "SliverUploadError",
     "StageTimings",

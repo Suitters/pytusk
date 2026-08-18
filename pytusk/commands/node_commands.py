@@ -13,9 +13,10 @@ MUST resolve the node's network address from the committee and pass it as
 an explicit ``base_url`` to :meth:`~pytusk.client.walrus_client.WalrusClient.execute`.
 """
 
+import binascii
 import dataclasses
 import json
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import httpx
 from pysui import SuiRpcResult
@@ -138,7 +139,7 @@ class SliverAck:
 
     Used by: PutSliver.
 
-    Args:
+    Attributes:
         blob_id (str): Blob ID the sliver belongs to, URL-safe base64.
         sliver_pair_index (int): Sliver-pair index the sliver was stored at.
         sliver_type (str): ``"primary"`` or ``"secondary"``.
@@ -155,7 +156,7 @@ class MetadataAck:
 
     Used by: PutMetadata.
 
-    Args:
+    Attributes:
         blob_id (str): Blob ID the metadata belongs to, URL-safe base64.
     """
 
@@ -171,7 +172,7 @@ class SignedConfirmation:
     ``serialized_message`` is passed VERBATIM into ``certify_blob``; the
     client never reconstructs it.
 
-    Args:
+    Attributes:
         serialized_message (bytes): The BCS-encoded message the node signed.
         signature (bytes): The node's signature over ``serialized_message``.
     """
@@ -352,8 +353,8 @@ class GetStorageConfirmation(WalrusCommand):
             f"{base_url}/v1/blobs/{blob_id_b64}/confirmation/deletable/{self.object_id}"
         )
 
-    def query_params(self) -> dict[str, Any]:
-        params: dict[str, Any] = {
+    def query_params(self) -> dict[str, str | int]:
+        params: dict[str, str | int] = {
             "wait_for_registration": str(self.wait_for_registration).lower()
         }
         if self.wait_millis is not None:
@@ -370,7 +371,12 @@ class GetStorageConfirmation(WalrusCommand):
                 False, _http_failure_message(response=response, context=context)
             )
 
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as exc:
+            return SuiRpcResult(
+                False, f"Malformed confirmation response body: {exc}"
+            )
         success = data.get("success") if isinstance(data, dict) else None
         if not isinstance(success, dict):
             return SuiRpcResult(False, f"Unexpected confirmation response: {data}")
@@ -398,11 +404,24 @@ class GetStorageConfirmation(WalrusCommand):
         # Standard PADDED base64 here -- deliberately different from the
         # URL-safe unpadded alphabet used for blob_id in the request path.
         # See pytusk.core.encoding for the split.
-        return SuiRpcResult(
-            True,
-            "",
-            SignedConfirmation(
-                serialized_message=decode_standard_base64(value=serialized_message_b64),
-                signature=decode_standard_base64(value=signature_b64),
-            ),
-        )
+        try:
+            return SuiRpcResult(
+                True,
+                "",
+                SignedConfirmation(
+                    serialized_message=decode_standard_base64(
+                        value=serialized_message_b64
+                    ),
+                    signature=decode_standard_base64(value=signature_b64),
+                ),
+            )
+        except (binascii.Error, ValueError) as exc:
+            # base64.b64decode raises binascii.Error (a ValueError
+            # subclass) on malformed input -- caught explicitly here since
+            # one bad node response must not raise out of parse_response
+            # and abort the whole confirmation fan-out (see
+            # collect_confirmations / _confirm_node).
+            return SuiRpcResult(
+                False,
+                f"Malformed confirmation response signature encoding: {exc}",
+            )

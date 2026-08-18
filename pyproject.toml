@@ -31,7 +31,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "pysui>=1.3.0"
+    "pysui>=1.4.0"
 ]
 
 dynamic = ["version", "readme"]
@@ -64,3 +64,14 @@ repository = "https://github.com/Suitters/pytusk"
 
 [tool.pyright]
 reportMissingTypeStubs = false
+
+[tool.mypy]
+
+[[tool.mypy.overrides]]
+module = [
+    "pysui",
+    "pysui.sui.sui_common.validators",
+    "pysui.sui.sui_bcs",
+    "pysui.sui.sui_common.async_txn",
+]
+ignore_missing_imports = true
