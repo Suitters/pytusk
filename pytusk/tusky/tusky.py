@@ -36,7 +36,7 @@ _DISPATCH = {
     "split_storage": tusky_cmds.split_storage,
     "fuse_storage": tusky_cmds.fuse_storage,
     "reclaim_storage": tusky_cmds.reclaim_storage,
-    "extend_blob_with_resource": tusky_cmds.extend_blob_with_resource,
+    "extend_blob_with_storage": tusky_cmds.extend_blob_with_storage,
 }
 
 

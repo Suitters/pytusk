@@ -67,12 +67,13 @@ from typing import cast
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 from dataclasses_json import DataClassJsonMixin
-from pysui import ExecuteTransaction, GetObjectsForType
+from pysui import ExecuteTransaction, GetObjectsForType, GetObjectsOwnedByAddress
 from pysui.sui.sui_bcs import bcs
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 from pysui.sui.sui_grpc.suimsgs.google import protobuf as pb
 
 from pytusk.client.walrus_client import WalrusClient
+from pytusk.config.tusk_config import NetworkType
 from pytusk.core.utils import find_created_object_id, require_success
 
 __all__ = [
@@ -162,9 +163,7 @@ class StorageObject(DataClassJsonMixin):
     storage_size: int = dataclasses.field(default=0)
 
 
-def fuse_incompatibility(
-    *, first: StorageObject, second: StorageObject
-) -> str | None:
+def fuse_incompatibility(*, first: StorageObject, second: StorageObject) -> str | None:
     """Return why ``first`` and ``second`` cannot fuse, or ``None`` if they can.
 
     PURE -- no network calls, no transaction. This is the client-side
@@ -244,10 +243,7 @@ def fuse_periods_incompatibility(
             f"{second.storage_size}); fusing across epoch periods requires "
             "equal sizes (Move abort: EIncompatibleAmount)."
         )
-    if (
-        first.end_epoch != second.start_epoch
-        and first.start_epoch != second.end_epoch
-    ):
+    if first.end_epoch != second.start_epoch and first.start_epoch != second.end_epoch:
         return (
             f"Storage ranges [{first.start_epoch}, {first.end_epoch}) and "
             f"[{second.start_epoch}, {second.end_epoch}) are not adjacent; "
@@ -549,17 +545,11 @@ async def execute_split_by_epoch(
 
     result = await client.execute(command=ExecuteTransaction(**txdict))
     if not result.is_ok():
-        raise RuntimeError(
-            f"split_by_epoch transaction failed: {result.result_string}"
-        )
-    effects = require_success(
-        result_data=result.result_data, label="split_by_epoch"
-    )
+        raise RuntimeError(f"split_by_epoch transaction failed: {result.result_string}")
+    effects = require_success(result_data=result.result_data, label="split_by_epoch")
     return SplitResult(
         object_id=storage_object_id,
-        new_object_id=find_created_object_id(
-            effects=effects, owner=resolved_recipient
-        ),
+        new_object_id=find_created_object_id(effects=effects, owner=resolved_recipient),
         digest=result.result_data.digest,
     )
 
@@ -627,17 +617,11 @@ async def execute_split_by_size(
 
     result = await client.execute(command=ExecuteTransaction(**txdict))
     if not result.is_ok():
-        raise RuntimeError(
-            f"split_by_size transaction failed: {result.result_string}"
-        )
-    effects = require_success(
-        result_data=result.result_data, label="split_by_size"
-    )
+        raise RuntimeError(f"split_by_size transaction failed: {result.result_string}")
+    effects = require_success(result_data=result.result_data, label="split_by_size")
     return SplitResult(
         object_id=storage_object_id,
-        new_object_id=find_created_object_id(
-            effects=effects, owner=resolved_recipient
-        ),
+        new_object_id=find_created_object_id(effects=effects, owner=resolved_recipient),
         digest=result.result_data.digest,
     )
 
@@ -704,9 +688,7 @@ async def execute_fuse(
     if not result.is_ok():
         raise RuntimeError(f"fuse transaction failed: {result.result_string}")
     require_success(result_data=result.result_data, label="fuse")
-    return StorageOpResult(
-        object_id=first_storage_id, digest=result.result_data.digest
-    )
+    return StorageOpResult(object_id=first_storage_id, digest=result.result_data.digest)
 
 
 async def execute_destroy_storage(
@@ -776,15 +758,34 @@ async def list_storage_objects(
     """List the standalone ``Storage`` objects owned by ``owner``.
 
     Neither an ``add_*`` nor an ``execute_*``: this composes no PTB and
-    submits nothing. It is a read helper, served by ``GetObjectsForType``
-    so the node filters by type rather than this function paging every
-    owned object and discarding non-matches client-side.
+    submits nothing. It is a read helper.
+
+    On a PRODUCTION network (mainnet) the Walrus package address is
+    stable, so this filters SERVER-SIDE via ``GetObjectsForType`` on
+    ``package_id`` -- the node does the filtering, not this function.
+
+    On any other network (e.g. testnet, whose Walrus contracts are
+    periodically redeployed under a NEW package address) this instead
+    lists EVERY owned object via ``GetObjectsOwnedByAddress`` and filters
+    CLIENT-SIDE on the ``::storage_resource::Storage`` suffix of
+    ``object_type``. Move type tags are fixed at mint time and never
+    change when a package is upgraded, so a ``Storage`` minted under a
+    PRIOR package version keeps that version's address in its type tag
+    forever. Filtering server-side by the CURRENT ``package_id`` would
+    silently miss it -- confirmed live against testnet: ``package_id``
+    resolved from ``System.package_id`` reflects the CURRENT package, but
+    existing ``Storage``/``Blob`` objects can carry an OLDER package
+    address in their type tag, so a ``GetObjectsForType`` filter on the
+    current address then matches nothing even though the objects exist.
+    The suffix filter is package-address agnostic, so it finds a
+    ``Storage`` regardless of which package version minted it.
 
     ``package_id`` is taken as a parameter rather than resolved here from
-    the System object. A caller composing storage operations already holds
-    it (every ``add_*``/``execute_*`` in this module requires it), and
-    resolving it internally would add a hidden network round trip. Callers
-    that do not have it can obtain one via
+    the System object, so it is only actually used on the PRODUCTION path
+    above -- ignored otherwise. A caller composing storage operations
+    already holds it (every ``add_*``/``execute_*`` in this module
+    requires it), and resolving it internally would add a hidden network
+    round trip. Callers that do not have it can obtain one via
     :func:`~pytusk.core.utils.resolve_package_id`.
 
     Only UNWRAPPED storage is returned. A ``Storage`` still embedded in a
@@ -801,8 +802,10 @@ async def list_storage_objects(
     Args:
         client (WalrusClient): Client used to query owned objects.
         owner (str): Address whose ``Storage`` objects are listed.
-        package_id (str): Current Walrus package ID, used to build the
-            ``<package_id>::storage_resource::Storage`` type filter.
+        package_id (str): Current Walrus package ID. Used to build the
+            ``<package_id>::storage_resource::Storage`` type filter on a
+            PRODUCTION network; ignored on any other network, where every
+            owned object is scanned instead.
 
     Returns:
         list[StorageObject]: Every owned ``Storage``, in the order the node
@@ -811,19 +814,35 @@ async def list_storage_objects(
     Raises:
         RuntimeError: If the objects cannot be listed.
     """
-    result = await client.execute_for_all(
-        command=GetObjectsForType(
-            owner=owner,
-            object_type=f"{package_id}::storage_resource::Storage",
+    if client.config.network.network_type == NetworkType.PRODUCTION:
+        result = await client.execute_for_all(
+            command=GetObjectsForType(
+                owner=owner,
+                object_type=f"{package_id}::storage_resource::Storage",
+            )
         )
-    )
-    if not result.is_ok():
-        raise RuntimeError(
-            f"Cannot list Storage objects for {owner}: {result.result_string}"
+        if not result.is_ok():
+            raise RuntimeError(
+                f"Cannot list Storage objects for {owner}: {result.result_string}"
+            )
+        candidates = result.result_data.objects
+    else:
+        result = await client.execute_for_all(
+            command=GetObjectsOwnedByAddress(owner=owner)
         )
+        if not result.is_ok():
+            raise RuntimeError(
+                f"Cannot list Storage objects for {owner}: {result.result_string}"
+            )
+        candidates = [
+            obj
+            for obj in result.result_data.objects
+            if obj.object_type
+            and obj.object_type.endswith("::storage_resource::Storage")
+        ]
 
     storages: list[StorageObject] = []
-    for obj in result.result_data.objects:
+    for obj in candidates:
         try:
             storages.append(storage_from_object(obj=obj))
         except ValueError:
@@ -911,9 +930,7 @@ def storage_from_blob(*, obj: sui_prot.Object) -> StorageObject:
             f"Object {obj.object_id or '(unknown)'} has no 'storage' "
             "field; it may not be a Walrus Blob."
         )
-    return _storage_from_field_map(
-        fields=storage_val.struct_value.fields, object_id=""
-    )
+    return _storage_from_field_map(fields=storage_val.struct_value.fields, object_id="")
 
 
 def _storage_from_field_map(

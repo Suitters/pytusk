@@ -653,6 +653,17 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
             "gate."
         ),
     )
+    p_list_storage.add_argument(
+        "--details",
+        action="store_true",
+        help=(
+            "Show which storage-related operations apply to each object "
+            "instead of the plain listing: split_storage, fuse_storage (as "
+            "compatible pairs), reclaim_storage, and "
+            "extend_blob_with_storage (this makes one extra network call "
+            "to fetch owned blobs)."
+        ),
+    )
     _add_config_args(p_list_storage)
 
     p_split_storage = subparsers.add_parser(
@@ -706,32 +717,80 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
 
     p_fuse_storage = subparsers.add_parser(
         "fuse_storage",
-        help="Fuse two compatible Storage objects into one.",
+        help="Fuse compatible Storage objects into one.",
         description=(
-            "Fuse two standalone Storage objects. They must either share an "
-            "identical epoch range (fusing capacity) or be adjacent in time "
-            "with equal size (fusing periods). --second is consumed by the "
-            "fuse; --first absorbs it and survives."
+            "Fuse Storage objects together. Three mutually exclusive modes: "
+            "explicit (--fuse-to/--fuse-from name the objects), --fuse-amount "
+            "(bulk-fuses every object sharing one epoch-range group, no "
+            "object IDs needed), and --fuse-periods (bulk-fuses every object "
+            "reachable from one hub via adjacent-and-equal-size steps, no "
+            "object IDs needed for the spokes). Run 'list_storage --details' "
+            "to preview the fuse_amount groups and fuse_periods clusters "
+            "before choosing."
         ),
     )
     p_fuse_storage.add_argument(
-        "--first",
-        dest="first",
+        "--fuse-to",
+        dest="fuse_to",
         action=ValidateObjectID,
-        required=True,
+        default=None,
         help=(
-            "Sui object ID of the Storage that absorbs the other "
-            "(0x-prefixed). This one survives."
+            "Sui object ID of the Storage that survives and absorbs the "
+            "other(s) (0x-prefixed). Required for explicit mode; optional "
+            "for --fuse-periods, where it names which cluster's hub to "
+            "consolidate around when more than one is owned."
         ),
     )
     p_fuse_storage.add_argument(
-        "--second",
-        dest="second",
+        "--fuse-from",
+        dest="fuse_from",
+        nargs="+",
         action=ValidateObjectID,
-        required=True,
+        default=None,
         help=(
-            "Sui object ID of the Storage to be consumed (0x-prefixed). "
-            "This one is destroyed by the fuse."
+            "One or more Sui object IDs to fold into --fuse-to, in order "
+            "(0x-prefixed); each is consumed by its fuse. Explicit mode "
+            "only."
+        ),
+    )
+    fuse_bulk_group = p_fuse_storage.add_mutually_exclusive_group()
+    fuse_bulk_group.add_argument(
+        "--fuse-amount",
+        action="store_true",
+        help=(
+            "Bulk-fuse every owned Storage object sharing one identical "
+            "epoch-range group -- no object IDs needed. If more than one "
+            "such group is owned, --start-epoch/--end-epoch name which one."
+        ),
+    )
+    fuse_bulk_group.add_argument(
+        "--fuse-periods",
+        action="store_true",
+        help=(
+            "Bulk-fuse every owned Storage object reachable, via "
+            "equal-size adjacent-range steps, from one hub -- no object "
+            "IDs needed for the spokes. If more than one disjoint cluster "
+            "is owned, --fuse-to names the hub to consolidate around."
+        ),
+    )
+    p_fuse_storage.add_argument(
+        "--start-epoch",
+        dest="start_epoch",
+        action=ValidatePositive,
+        default=None,
+        help=(
+            "With --fuse-amount: the epoch-range group's start_epoch, "
+            "required only when more than one group is owned."
+        ),
+    )
+    p_fuse_storage.add_argument(
+        "--end-epoch",
+        dest="end_epoch",
+        action=ValidatePositive,
+        default=None,
+        help=(
+            "With --fuse-amount: the epoch-range group's end_epoch, "
+            "required only when more than one group is owned."
         ),
     )
     _add_signing_args(p_fuse_storage)
@@ -739,26 +798,36 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
 
     p_reclaim_storage = subparsers.add_parser(
         "reclaim_storage",
-        help="Destroy a Storage object, reclaiming its Sui storage rebate.",
+        help="Destroy one or more Storage objects, reclaiming their Sui storage rebate.",
         description=(
-            "Destroy a standalone Storage object. This does NOT refund the "
-            "WAL paid to reserve the capacity -- only the Sui storage "
-            "rebate for the object itself is returned. Irreversible."
+            "Destroy one or more standalone Storage objects. This does NOT "
+            "refund the WAL paid to reserve the capacity -- only the Sui "
+            "storage rebate for each object is returned. Irreversible."
         ),
     )
-    p_reclaim_storage.add_argument(
+    reclaim_group = p_reclaim_storage.add_mutually_exclusive_group(required=True)
+    reclaim_group.add_argument(
         "-i",
         "--storageid",
         dest="storageid",
+        nargs="+",
         action=ValidateObjectID,
-        required=True,
-        help="Sui object ID of the Storage object to destroy (0x-prefixed).",
+        default=None,
+        help="One or more Sui object IDs of Storage objects to destroy (0x-prefixed).",
+    )
+    reclaim_group.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Destroy every currently owned unwrapped Storage object -- no "
+            "object IDs needed."
+        ),
     )
     _add_signing_args(p_reclaim_storage)
     _add_config_args(p_reclaim_storage)
 
-    p_extend_blob_with_resource = subparsers.add_parser(
-        "extend_blob_with_resource",
+    p_extend_blob_with_storage = subparsers.add_parser(
+        "extend_blob_with_storage",
         help="Extend a blob's expiration using an owned Storage object.",
         description=(
             "Extend a blob's storage expiration by consuming a standalone "
@@ -767,8 +836,8 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
             "compatible with the blob's existing storage."
         ),
     )
-    _add_blob_id_arg(p_extend_blob_with_resource)
-    p_extend_blob_with_resource.add_argument(
+    _add_blob_id_arg(p_extend_blob_with_storage)
+    p_extend_blob_with_storage.add_argument(
         "--storageid",
         dest="storageid",
         action=ValidateObjectID,
@@ -778,7 +847,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
             "It is consumed by the extension and ceases to exist."
         ),
     )
-    _add_signing_args(p_extend_blob_with_resource)
-    _add_config_args(p_extend_blob_with_resource)
+    _add_signing_args(p_extend_blob_with_storage)
+    _add_config_args(p_extend_blob_with_storage)
 
     return parser.parse_args(in_args)
