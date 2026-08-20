@@ -122,12 +122,33 @@ from pytusk.core.native_upload import (
     upload_slivers,
 )
 
+# Storage-object lifecycle (split, fuse, reclaim, listing; same
+# caller-owns-the-transaction model -- see pytusk.core.storage_ops's
+# module docstring)
+from pytusk.core.storage_ops import (
+    SplitResult,
+    StorageObject,
+    StorageOpResult,
+    add_destroy_storage,
+    add_fuse,
+    add_split_by_epoch,
+    add_split_by_size,
+    execute_destroy_storage,
+    execute_fuse,
+    execute_split_by_epoch,
+    execute_split_by_size,
+    fuse_incompatibility,
+    fuse_periods_incompatibility,
+    list_storage_objects,
+    storage_from_blob,
+    storage_from_object,
+    validate_fuse_pair,
+)
+
 # System operations (Tx1 reserve_space+register_blob and Tx2 certify_blob
 # PTB composition; the caller owns the transaction lifecycle -- see
 # pytusk.core.system_ops's module docstring)
 from pytusk.core.system_ops import (
-    DEFAULT_FINALITY_MAX_ATTEMPTS,
-    DEFAULT_FINALITY_MAX_DELAY,
     CertifyResult,
     Registration,
     RegistrationPendingError,
@@ -135,7 +156,12 @@ from pytusk.core.system_ops import (
     add_reserve_and_register,
     execute_certify,
     execute_reserve_and_register,
+)
+from pytusk.core.utils import (
+    DEFAULT_FINALITY_MAX_ATTEMPTS,
+    DEFAULT_FINALITY_MAX_DELAY,
     find_created_object_id,
+    require_success,
     resolve_package_id,
     select_wal_payment_coin,
     wait_for_finality,
@@ -229,9 +255,25 @@ __all__ = [  # noqa: RUF022
     "min_weight_for_quorum",
     "verify_certificate",
     "verify_confirmation",
+    # Storage-object operations
+    "SplitResult",
+    "StorageObject",
+    "StorageOpResult",
+    "add_destroy_storage",
+    "add_fuse",
+    "add_split_by_epoch",
+    "add_split_by_size",
+    "execute_destroy_storage",
+    "execute_fuse",
+    "execute_split_by_epoch",
+    "execute_split_by_size",
+    "fuse_incompatibility",
+    "fuse_periods_incompatibility",
+    "list_storage_objects",
+    "storage_from_blob",
+    "storage_from_object",
+    "validate_fuse_pair",
     # System operations
-    "DEFAULT_FINALITY_MAX_ATTEMPTS",
-    "DEFAULT_FINALITY_MAX_DELAY",
     "CertifyResult",
     "Registration",
     "RegistrationPendingError",
@@ -239,7 +281,11 @@ __all__ = [  # noqa: RUF022
     "add_reserve_and_register",
     "execute_certify",
     "execute_reserve_and_register",
+    # Shared helpers (pytusk.core.utils)
+    "DEFAULT_FINALITY_MAX_ATTEMPTS",
+    "DEFAULT_FINALITY_MAX_DELAY",
     "find_created_object_id",
+    "require_success",
     "resolve_package_id",
     "select_wal_payment_coin",
     "wait_for_finality",

@@ -32,6 +32,11 @@ _DISPATCH = {
     "burn_blob": tusky_cmds.burn_blob,
     "store_blob_native": tusky_cmds.store_blob_native,
     "certify_blob": tusky_cmds.certify_blob,
+    "list_storage": tusky_cmds.list_storage,
+    "split_storage": tusky_cmds.split_storage,
+    "fuse_storage": tusky_cmds.fuse_storage,
+    "reclaim_storage": tusky_cmds.reclaim_storage,
+    "extend_blob_with_resource": tusky_cmds.extend_blob_with_resource,
 }
 
 

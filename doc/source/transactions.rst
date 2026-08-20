@@ -290,7 +290,7 @@ instead, following this flow:
    execution if it is not transferred or fed into a further move_call.
 4. Simulate or execute, as you choose.
 5. Observe the outcome and collect what Tx2 needs: the created ``Blob``'s
-   object ID (via :py:func:`~pytusk.core.system_ops.find_created_object_id`,
+   object ID (via :py:func:`~pytusk.core.utils.find_created_object_id`,
    reading directly off the ``TransactionEffects`` you already hold — no
    extra round trip) and its ``storage.end_epoch``/``deletable`` (read back
    via ``GetObject``, the same JSON shape ``tusky blob`` prints — see

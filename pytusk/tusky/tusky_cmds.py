@@ -55,12 +55,21 @@ from pytusk import (
     StoreQuilt,
     WalrusClient,
     add_certify,
+    add_destroy_storage,
+    add_fuse,
     add_reserve_and_register,
+    add_split_by_epoch,
+    add_split_by_size,
     certify,
     collect_confirmations,
     encode_blob,
+    fuse_incompatibility,
+    fuse_periods_incompatibility,
+    list_storage_objects,
     resolve_package_id,
     select_wal_payment_coin,
+    storage_from_blob,
+    storage_from_object,
     upload_slivers,
 )
 from pytusk import store_blob_native as _store_blob_native_pipeline
@@ -70,6 +79,12 @@ from pytusk import store_blob_native as _store_blob_native_pipeline
 # already performs (see its _encoded_storage_amount), not a new public
 # surface, so it is kept out of pytusk.__all__.
 from pytusk.core.encoding import encoded_blob_length
+
+# Same rationale as above: a private helper reused across modules rather
+# than duplicated. tusky_cmds carried its own copy of this until the
+# duplication was consolidated -- the one-way dependency rule forbids core
+# importing tusky, not tusky importing core.
+from pytusk.core.utils import _matches_wal_coin_type
 
 
 def _config_from_args(args: argparse.Namespace) -> PytuskConfiguration:
@@ -255,27 +270,6 @@ async def _wal_balance_and_decimals(
 _MAX_BLOB_OPS_PER_PTB = 100
 
 
-def _matches_wal_coin_type(*, coin_type: str, wal_coin_type: str) -> bool:
-    """Check whether a coin_type string identifies the WAL coin.
-
-    Uses an exact match against `wal_coin_type` when the active network has
-    a pinned value (currently mainnet only); falls back to a substring
-    match when unpinned (e.g. testnet, whose contracts are redeployed and
-    don't have a stable package address to pin against).
-
-    Args:
-        coin_type (str): The coin_type string to check.
-        wal_coin_type (str): The active network's pinned WAL coin type, or
-            "" if unpinned.
-
-    Returns:
-        bool: True if coin_type identifies the WAL coin.
-    """
-    if wal_coin_type:
-        return coin_type == wal_coin_type
-    return "::wal::WAL" in coin_type
-
-
 def _format_token_amount(*, raw: int, decimals: int) -> str:
     """Render a raw integer token amount as an exact decimal string.
 
@@ -313,7 +307,7 @@ async def _simulate_cost_from_balance_changes(
     SUI's coin_type is matched by substring (``"::sui::SUI"``) since the
     simulate response reports it in normalized long-address form (e.g.
     ``0x000...0002::sui::SUI``), not the short ``0x2::sui::SUI`` form. WAL's
-    coin_type is matched via :func:`_matches_wal_coin_type`, the same
+    coin_type is matched via ``_matches_wal_coin_type``, the same
     pinned-exact/substring-fallback logic used everywhere else in this
     module (e.g. :func:`_wal_balance_and_decimals`), rather than a third
     variant of that logic.
@@ -440,7 +434,7 @@ async def _simulate_cost_from_balance_changes(
 async def _walrus_package_id(*, client: WalrusClient) -> tuple[str, str]:
     """Fetch the System object ID and the current Walrus package ID.
 
-    Delegates to :func:`~pytusk.core.system_ops.resolve_package_id`, which
+    Delegates to :func:`~pytusk.core.utils.resolve_package_id`, which
     reads the package ID from System.package_id rather than assuming it from
     a Blob's type-tag address (the type-tag address can go stale after a
     package upgrade) -- the same lookup this function used to perform
@@ -2145,3 +2139,394 @@ async def certify_blob(args: argparse.Namespace) -> None:
             total=time.monotonic() - pipeline_start,
         )
         print(json.dumps({"timings": dataclasses.asdict(timings)}, indent=2))
+
+
+async def list_storage(args: argparse.Namespace) -> None:
+    """List standalone Storage objects owned by the active address.
+
+    Only UNWRAPPED storage appears. A Storage still embedded in a Blob is a
+    wrapped object with no independent owner record, so it is invisible to
+    an owned-object query -- use `blob`/`blobs` to see those.
+
+    --status compares end_epoch against the current Walrus epoch, the same
+    rule `blobs` uses. Expired storage remains splittable, fusable and
+    reclaimable, so the filter is a display convenience, not a capability
+    gate.
+
+    Args:
+        args (argparse.Namespace): Parsed `list_storage` subcommand
+            arguments, carrying the `status` filter.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        owner = client.pysui_client.config.active_address
+        try:
+            current_epoch = await client.walrus_epoch()
+        except RuntimeError as exc:
+            print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
+            sys.exit(1)
+        _, walrus_pkg = await _walrus_package_id(client=client)
+        try:
+            storages = await list_storage_objects(
+                client=client, owner=owner, package_id=walrus_pkg
+            )
+        except RuntimeError as exc:
+            print(f"Error listing Storage objects: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    found = False
+    for storage in storages:
+        status = "expired" if storage.end_epoch <= current_epoch else "active"
+        if args.status != "any" and status != args.status:
+            continue
+        found = True
+        print(
+            f"{storage.object_id}  start_epoch={storage.start_epoch}  "
+            f"end_epoch={storage.end_epoch}  size={storage.storage_size}  "
+            f"status={status}"
+        )
+
+    if not found:
+        print("No storage objects found matching the given filters.")
+
+
+async def split_storage(args: argparse.Namespace) -> None:
+    """Split a standalone Storage object by epoch or by size.
+
+    ``split_by_epoch``/``split_by_size`` mutate the original in place and
+    RETURN a new Storage. Storage has no ``drop`` ability, so that return
+    value must be consumed within the same PTB -- it is transferred to
+    --recipient (defaulting to the sender) rather than left dangling,
+    which would abort the transaction.
+
+    No epoch gate applies: ``storage_resource`` cannot see the current
+    epoch, so an already-expired Storage splits just as happily as a live
+    one.
+
+    Args:
+        args (argparse.Namespace): Parsed `split_storage` subcommand
+            arguments.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = _resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = _resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        recipient = args.recipient or sender
+        _, walrus_pkg = await _walrus_package_id(client=client)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        if args.by_epoch is not None:
+            storage = await add_split_by_epoch(
+                txn=txn,
+                package_id=walrus_pkg,
+                storage_object_id=args.storageid,
+                split_epoch=args.by_epoch,
+            )
+            detail = f"at epoch {args.by_epoch}"
+        else:
+            storage = await add_split_by_size(
+                txn=txn,
+                package_id=walrus_pkg,
+                storage_object_id=args.storageid,
+                split_size=args.by_size,
+            )
+            detail = f"off {args.by_size} bytes"
+        await txn.transfer_objects(transfers=[storage], recipient=recipient)
+
+        txdict = await txn.build_and_sign()
+        result = await _submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in split_storage: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Split {args.storageid} {detail}; new Storage sent to {recipient}.")
+        print(result.result_data.to_json(indent=2))
+
+
+async def fuse_storage(args: argparse.Namespace) -> None:
+    """Fuse two standalone Storage objects into one.
+
+    The client-side compatibility check runs first. ``fuse`` dispatches on
+    whether the two share a start_epoch, and each route carries its own
+    requirement -- an identical epoch range when fusing capacity, equal
+    size plus adjacency when fusing periods. Checking here turns what
+    would be an opaque Move abort into a message naming the actual
+    mismatch.
+
+    --second is consumed by the fuse; --first absorbs it and survives.
+
+    Args:
+        args (argparse.Namespace): Parsed `fuse_storage` subcommand
+            arguments.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = _resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = _resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        pair = []
+        for label, object_id in (("--first", args.first), ("--second", args.second)):
+            fetched = await client.execute(command=GetObject(object_id=object_id))
+            if not fetched.is_ok():
+                print(
+                    f"Error fetching {label} object {object_id}: "
+                    f"{fetched.result_string}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            obj = fetched.result_data
+            if not (
+                obj.object_type and "::storage_resource::Storage" in obj.object_type
+            ):
+                print(
+                    f"{object_id} ({label}) is not a Walrus Storage object.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            try:
+                pair.append(storage_from_object(obj=obj))
+            except ValueError as exc:
+                print(f"Error reading {label} {object_id}: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+        reason = fuse_incompatibility(first=pair[0], second=pair[1])
+        if reason is not None:
+            print(f"Cannot fuse: {reason}", file=sys.stderr)
+            sys.exit(1)
+
+        _, walrus_pkg = await _walrus_package_id(client=client)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        await add_fuse(
+            txn=txn,
+            package_id=walrus_pkg,
+            first_storage_id=args.first,
+            second_storage_id=args.second,
+        )
+        txdict = await txn.build_and_sign()
+        result = await _submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in fuse_storage: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Fused {args.second} into {args.first}.")
+        print(result.result_data.to_json(indent=2))
+
+
+async def reclaim_storage(args: argparse.Namespace) -> None:
+    """Destroy a standalone Storage object.
+
+    ``storage_resource::destroy`` consumes the object and returns its Sui
+    storage rebate to the sender. It does NOT refund the WAL originally
+    paid to reserve the capacity -- that is spent regardless. There is no
+    epoch gate either, so an unexpired Storage can be destroyed, throwing
+    away capacity that was paid for. Irreversible.
+
+    Args:
+        args (argparse.Namespace): Parsed `reclaim_storage` subcommand
+            arguments.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = _resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = _resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        _, walrus_pkg = await _walrus_package_id(client=client)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        await add_destroy_storage(
+            txn=txn,
+            package_id=walrus_pkg,
+            storage_object_id=args.storageid,
+        )
+        txdict = await txn.build_and_sign()
+        result = await _submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in reclaim_storage: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Destroyed {args.storageid}.")
+        print(result.result_data.to_json(indent=2))
+
+
+async def extend_blob_with_resource(args: argparse.Namespace) -> None:
+    """Extend a blob's expiration by consuming an owned Storage object.
+
+    ``system::extend_blob_with_resource`` pays for the extension with a
+    Storage object instead of WAL. It bottoms out in
+    ``blob::extend_with_resource``, which imposes four requirements -- all
+    pre-flighted here so a violation reports the offending values instead
+    of surfacing as an opaque Move abort:
+
+    - the blob must be CERTIFIED (ENotCertified);
+    - the blob must not already be expired (EResourceBounds);
+    - the extension must end strictly LATER than the blob's current
+      end_epoch (EResourceBounds);
+    - the extension must satisfy ``fuse_periods`` against the blob's
+      existing storage -- equal size (EIncompatibleAmount) and adjacency
+      (EIncompatibleEpochs).
+
+    That last check uses :func:`~pytusk.fuse_periods_incompatibility`, NOT
+    :func:`~pytusk.fuse_incompatibility`: ``extend_with_resource`` calls
+    ``fuse_periods`` outright rather than going through ``fuse``'s
+    start_epoch dispatch, so the two disagree on a pair that happens to
+    share a start_epoch.
+
+    The Storage is consumed by the call and ceases to exist.
+
+    Args:
+        args (argparse.Namespace): Parsed `extend_blob_with_resource`
+            subcommand arguments.
+    """
+    config = _config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = _resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = _resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        blob_result = await client.execute(command=GetObject(object_id=args.blobid))
+        if not blob_result.is_ok():
+            print(
+                f"Error fetching blob object: {blob_result.result_string}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        blob_obj = blob_result.result_data
+        if not (blob_obj.object_type and "::blob::Blob" in blob_obj.object_type):
+            print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
+            sys.exit(1)
+        try:
+            blob_storage = storage_from_blob(obj=blob_obj)
+        except ValueError as exc:
+            print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        blob_end_epoch = blob_storage.end_epoch
+
+        try:
+            certified_epoch = _blob_certified_epoch(obj=blob_obj)
+        except ValueError as exc:
+            print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if certified_epoch is None:
+            print(
+                f"{args.blobid} is not certified; only certified blobs can "
+                "be extended (Move abort: ENotCertified).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        try:
+            current_epoch = await client.walrus_epoch()
+        except RuntimeError as exc:
+            print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if blob_end_epoch <= current_epoch:
+            print(
+                f"{args.blobid} is expired (end_epoch={blob_end_epoch}, "
+                f"current_epoch={current_epoch}); expired blobs cannot be "
+                "extended.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        storage_result = await client.execute(
+            command=GetObject(object_id=args.storageid)
+        )
+        if not storage_result.is_ok():
+            print(
+                f"Error fetching Storage object: {storage_result.result_string}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        storage_obj = storage_result.result_data
+        if not (
+            storage_obj.object_type
+            and "::storage_resource::Storage" in storage_obj.object_type
+        ):
+            print(
+                f"{args.storageid} is not a Walrus Storage object.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            extension = storage_from_object(obj=storage_obj)
+        except ValueError as exc:
+            print(f"Error reading Storage {args.storageid}: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        if extension.end_epoch <= blob_end_epoch:
+            print(
+                f"Storage {args.storageid} ends at epoch "
+                f"{extension.end_epoch}, which is not later than blob "
+                f"{args.blobid}'s current end_epoch {blob_end_epoch}; the "
+                "extension would not extend anything (Move abort: "
+                "EResourceBounds).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        reason = fuse_periods_incompatibility(
+            first=blob_storage, second=extension
+        )
+        if reason is not None:
+            print(f"Cannot extend: {reason}", file=sys.stderr)
+            sys.exit(1)
+
+        system_obj_id, walrus_pkg = await _walrus_package_id(client=client)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        await txn.move_call(
+            target=f"{walrus_pkg}::system::extend_blob_with_resource",
+            arguments=[system_obj_id, args.blobid, args.storageid],
+            type_arguments=[],
+        )
+        txdict = await txn.build_and_sign()
+        result = await _submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(
+                f"Error in extend_blob_with_resource: {result.result_string}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(
+            f"Extended {args.blobid} from epoch {blob_end_epoch} to "
+            f"{extension.end_epoch} using Storage {args.storageid}."
+        )
+        print(result.result_data.to_json(indent=2))

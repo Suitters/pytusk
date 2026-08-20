@@ -78,8 +78,8 @@ from pytusk.core.system_ops import (
     Registration,
     execute_certify,
     execute_reserve_and_register,
-    resolve_package_id,
 )
+from pytusk.core.utils import resolve_package_id
 
 __all__ = [
     "CertifyTransactionError",

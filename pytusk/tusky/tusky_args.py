@@ -633,4 +633,152 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_signing_args(p_exchange_for_sui)
     _add_config_args(p_exchange_for_sui)
 
+    p_list_storage = subparsers.add_parser(
+        "list_storage",
+        help="List standalone Storage objects owned by the active address.",
+        description=(
+            "List standalone (unwrapped) Storage objects owned by the "
+            "active address. Storage still embedded in a Blob is a wrapped "
+            "object and does not appear here."
+        ),
+    )
+    p_list_storage.add_argument(
+        "--status",
+        choices=["any", "active", "expired"],
+        default="any",
+        help=(
+            "Filter by expiry status relative to the current Walrus epoch "
+            "(default: any). Expired storage is still splittable, fusable "
+            "and reclaimable, so this is a display filter, not a capability "
+            "gate."
+        ),
+    )
+    _add_config_args(p_list_storage)
+
+    p_split_storage = subparsers.add_parser(
+        "split_storage",
+        help="Split a Storage object by epoch or by size.",
+        description=(
+            "Split a standalone Storage object in two, either at an epoch "
+            "boundary or by byte capacity. The original is modified in "
+            "place; the newly created Storage is transferred to --recipient."
+        ),
+    )
+    p_split_storage.add_argument(
+        "-i",
+        "--storageid",
+        dest="storageid",
+        action=ValidateObjectID,
+        required=True,
+        help="Sui object ID of the Storage object to split (0x-prefixed).",
+    )
+    split_group = p_split_storage.add_mutually_exclusive_group(required=True)
+    split_group.add_argument(
+        "--by-epoch",
+        dest="by_epoch",
+        action=ValidatePositive,
+        help=(
+            "Absolute epoch to split at: the original keeps "
+            "[start_epoch, split_epoch) and the new Storage takes "
+            "[split_epoch, end_epoch)."
+        ),
+    )
+    split_group.add_argument(
+        "--by-size",
+        dest="by_size",
+        action=ValidatePositive,
+        help=(
+            "Byte capacity to peel off into the new Storage; the original "
+            "keeps the remainder over the same epoch range."
+        ),
+    )
+    p_split_storage.add_argument(
+        "--recipient",
+        dest="recipient",
+        default=None,
+        help=(
+            "Address to receive the newly created Storage object; defaults "
+            "to the sender."
+        ),
+    )
+    _add_signing_args(p_split_storage)
+    _add_config_args(p_split_storage)
+
+    p_fuse_storage = subparsers.add_parser(
+        "fuse_storage",
+        help="Fuse two compatible Storage objects into one.",
+        description=(
+            "Fuse two standalone Storage objects. They must either share an "
+            "identical epoch range (fusing capacity) or be adjacent in time "
+            "with equal size (fusing periods). --second is consumed by the "
+            "fuse; --first absorbs it and survives."
+        ),
+    )
+    p_fuse_storage.add_argument(
+        "--first",
+        dest="first",
+        action=ValidateObjectID,
+        required=True,
+        help=(
+            "Sui object ID of the Storage that absorbs the other "
+            "(0x-prefixed). This one survives."
+        ),
+    )
+    p_fuse_storage.add_argument(
+        "--second",
+        dest="second",
+        action=ValidateObjectID,
+        required=True,
+        help=(
+            "Sui object ID of the Storage to be consumed (0x-prefixed). "
+            "This one is destroyed by the fuse."
+        ),
+    )
+    _add_signing_args(p_fuse_storage)
+    _add_config_args(p_fuse_storage)
+
+    p_reclaim_storage = subparsers.add_parser(
+        "reclaim_storage",
+        help="Destroy a Storage object, reclaiming its Sui storage rebate.",
+        description=(
+            "Destroy a standalone Storage object. This does NOT refund the "
+            "WAL paid to reserve the capacity -- only the Sui storage "
+            "rebate for the object itself is returned. Irreversible."
+        ),
+    )
+    p_reclaim_storage.add_argument(
+        "-i",
+        "--storageid",
+        dest="storageid",
+        action=ValidateObjectID,
+        required=True,
+        help="Sui object ID of the Storage object to destroy (0x-prefixed).",
+    )
+    _add_signing_args(p_reclaim_storage)
+    _add_config_args(p_reclaim_storage)
+
+    p_extend_blob_with_resource = subparsers.add_parser(
+        "extend_blob_with_resource",
+        help="Extend a blob's expiration using an owned Storage object.",
+        description=(
+            "Extend a blob's storage expiration by consuming a standalone "
+            "Storage object instead of paying WAL. The Storage must end "
+            "strictly later than the blob's current end_epoch, and must be "
+            "compatible with the blob's existing storage."
+        ),
+    )
+    _add_blob_id_arg(p_extend_blob_with_resource)
+    p_extend_blob_with_resource.add_argument(
+        "--storageid",
+        dest="storageid",
+        action=ValidateObjectID,
+        required=True,
+        help=(
+            "Sui object ID of the Storage object to consume (0x-prefixed). "
+            "It is consumed by the extension and ceases to exist."
+        ),
+    )
+    _add_signing_args(p_extend_blob_with_resource)
+    _add_config_args(p_extend_blob_with_resource)
+
     return parser.parse_args(in_args)
