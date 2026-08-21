@@ -32,4 +32,4 @@ autodoc_default_options = {
     "undoc-members": True,
     "exclude-members": "__weakref__",
 }
-html_static_path = []
+html_static_path: list[str] = []

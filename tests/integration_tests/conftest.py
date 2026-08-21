@@ -244,14 +244,14 @@ async def _cleanup_blobs(
         for batch_start in range(0, len(expired), 100):
             batch = expired[batch_start : batch_start + 100]
             try:
-                txn: AsyncSuiTransaction = await client.transaction()
+                burn_txn: AsyncSuiTransaction = await client.transaction()
                 for blob_obj in batch:
-                    await txn.move_call(
+                    await burn_txn.move_call(
                         target=f"{walrus_pkg}::blob::burn",
                         arguments=[blob_obj.object_id],
                         type_arguments=[],
                     )
-                txdict = await txn.build_and_sign()
+                txdict = await burn_txn.build_and_sign()
                 result = await client.execute(command=ExecuteTransaction(**txdict))
                 if result.is_ok():
                     print(f"\ncleanup: burned {len(batch)} expired blob(s)")
@@ -276,10 +276,14 @@ async def walrus_client(pytusk_config: PytuskConfiguration):
         _orig_execute = client.execute
 
         async def _tracking_execute(
-            *, command, timeout: float | None = None, headers: dict | None = None
+            *,
+            command,
+            timeout: float | None = None,
+            headers: dict | None = None,
+            base_url: str | None = None,
         ):
             result = await _orig_execute(
-                command=command, timeout=timeout, headers=headers
+                command=command, timeout=timeout, headers=headers, base_url=base_url
             )
             if result.is_ok() and isinstance(
                 result.result_data, (BlobReceipt, QuiltReceipt)
@@ -289,7 +293,7 @@ async def walrus_client(pytusk_config: PytuskConfiguration):
                     _session_blob_ids.append(oid)
             return result
 
-        client.execute = _tracking_execute  # type: ignore[method-assign]
+        client.execute = _tracking_execute  # type: ignore[method-assign, assignment]
 
         await _ensure_wal(client)
         yield client
@@ -345,7 +349,9 @@ async def stored_blob(walrus_client: WalrusClient):
     if not found:
         store_result = await walrus_client.execute(
             command=StoreBlob(
-                data=_STORED_BLOB_DATA, epochs=_STORED_BLOB_EPOCHS, deletable=True
+                data=_STORED_BLOB_DATA,
+                epochs=_STORED_BLOB_EPOCHS,
+                send_object_to=walrus_client.pysui_client.config.active_address,
             )
         )
         if not store_result.is_ok():
@@ -363,7 +369,9 @@ async def stored_blob_2(walrus_client: WalrusClient):
     """Store a second distinct blob for tests requiring two different blobs."""
     store_result = await walrus_client.execute(
         command=StoreBlob(
-            data=_STORED_BLOB_DATA_2, epochs=_STORED_BLOB_EPOCHS, deletable=True
+            data=_STORED_BLOB_DATA_2,
+            epochs=_STORED_BLOB_EPOCHS,
+            send_object_to=walrus_client.pysui_client.config.active_address,
         )
     )
     if not store_result.is_ok():

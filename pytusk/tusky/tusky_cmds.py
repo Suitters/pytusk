@@ -676,6 +676,14 @@ async def _destroy_storage_batches(
     there is no compatibility or ordering concern here -- only the
     gas/PTB-size ceiling matters.
 
+    In ``execute`` mode, each batch's response already carries the
+    per-object Sui storage rebate for every destroyed Storage object
+    (``result.objects.objects``, keyed by ``object_id``), so the MIST
+    redeemed for each object is printed alongside the batch's JSON
+    receipt at no extra network cost, with a running total printed once
+    all batches complete. ``simulate`` mode's response does not expose
+    this data, so the rebate summary is skipped entirely in that mode.
+
     Args:
         client (WalrusClient): Client used to build and submit transactions.
         walrus_pkg (str): Walrus package ID (from System.package_id).
@@ -693,6 +701,7 @@ async def _destroy_storage_batches(
     results: list[
         sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse
     ] = []
+    total_rebate = 0
     total_batches = (
         len(storage_ids) + _MAX_STORAGE_OPS_PER_PTB - 1
     ) // _MAX_STORAGE_OPS_PER_PTB
@@ -727,7 +736,15 @@ async def _destroy_storage_batches(
             sys.exit(1)
         print(f"{label} {batch_num}/{total_batches} ({len(batch)} storage object(s)).")
         print(result.result_data.to_json(indent=2))
+        batch_ids = set(batch)
+        if mode == "execute" and result.result_data.objects is not None:
+            for obj in result.result_data.objects.objects:
+                if obj.object_id in batch_ids and obj.storage_rebate is not None:
+                    print(f"  {obj.object_id}: {obj.storage_rebate} MIST redeemed")
+                    total_rebate += obj.storage_rebate
         results.append(result.result_data)
+    if total_rebate:
+        print(f"Total storage rebate redeemed: {total_rebate} MIST.")
     return results
 
 
@@ -2224,25 +2241,37 @@ async def certify_blob(args: argparse.Namespace) -> None:
         print(json.dumps({"timings": dataclasses.asdict(timings)}, indent=2))
 
 
-def _split_applicable(*, storage: StorageObject) -> bool:
-    """Whether ``storage`` has at least one valid split point.
+def _split_by_epoch_applicable(*, storage: StorageObject) -> bool:
+    """Whether ``storage`` has a valid ``--by-epoch`` split point.
 
     ``split_by_epoch`` needs an interior epoch (Move asserts
     ``start_epoch < split_epoch < end_epoch``), which only exists when the
-    range spans at least two epochs. ``split_by_size`` needs a
-    ``split_size`` that leaves a non-zero remainder, which only exists
-    when ``storage_size`` is at least 2 bytes. Either condition alone is
-    enough to make the object splittable by SOME variant.
+    range spans at least two epochs.
 
     Args:
         storage (StorageObject): The storage object to check.
 
     Returns:
-        bool: True if either split variant has a valid split point.
+        bool: True if the epoch range has an interior split point.
     """
-    epoch_splittable = (storage.end_epoch - storage.start_epoch) >= 2
-    size_splittable = storage.storage_size >= 2
-    return epoch_splittable or size_splittable
+    return (storage.end_epoch - storage.start_epoch) >= 2
+
+
+def _split_by_size_applicable(*, storage: StorageObject) -> bool:
+    """Whether ``storage`` has a valid ``--by-size`` split point.
+
+    ``split_by_size`` needs a ``split_size`` that leaves a non-zero
+    remainder, which only exists when ``storage_size`` is at least 2
+    bytes.
+
+    Args:
+        storage (StorageObject): The storage object to check.
+
+    Returns:
+        bool: True if the storage size can be peeled into two non-zero
+        parts.
+    """
+    return storage.storage_size >= 2
 
 
 def _fuse_amount_groups(
@@ -2703,10 +2732,27 @@ async def list_storage(args: argparse.Namespace) -> None:
         return
 
     print("split_storage")
-    splittable = [s for s in filtered if _split_applicable(storage=s)]
-    for storage in splittable:
-        print(f"  {storage.object_id}")
-    if not splittable:
+    by_epoch_splittable = [
+        s for s in filtered if _split_by_epoch_applicable(storage=s)
+    ]
+    by_size_splittable = [
+        s for s in filtered if _split_by_size_applicable(storage=s)
+    ]
+    if by_epoch_splittable or by_size_splittable:
+        print("  split_by_epoch (epoch range must span >= 2 epochs):")
+        if by_epoch_splittable:
+            for storage in by_epoch_splittable:
+                print(f"    {storage.object_id}")
+        else:
+            print("    (none)")
+
+        print("  split_by_size (storage size must be >= 2 bytes):")
+        if by_size_splittable:
+            for storage in by_size_splittable:
+                print(f"    {storage.object_id}")
+        else:
+            print("    (none)")
+    else:
         print("  (none)")
 
     print("fuse_storage")

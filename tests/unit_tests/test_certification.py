@@ -115,7 +115,7 @@ def _replace(confirmation: NodeConfirmation, **changes: object) -> NodeConfirmat
     Returns:
         NodeConfirmation: The modified copy.
     """
-    return dataclasses.replace(confirmation, **changes)
+    return dataclasses.replace(confirmation, **changes)  # type: ignore[arg-type]
 
 
 class TestSignersBitmapRoundTrip:

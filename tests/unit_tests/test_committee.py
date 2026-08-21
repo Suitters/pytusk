@@ -190,7 +190,7 @@ class TestWalrusCommittee:
         """Members are immutable."""
         member = self._committee().members[0]
         with pytest.raises(FrozenInstanceError):
-            member.node_id = "0xzz"
+            member.node_id = "0xzz"  # type: ignore[misc]
 
 
 class TestRequireGuards:
@@ -297,7 +297,10 @@ class TestPoolExtractors:
     def test_public_key_ignores_network_public_key(self) -> None:
         """The 33 byte transport key is not mistaken for the BLS key."""
         pool = _pool(node_id=_NODE_A, address="a.example.com:9185", key=_KEY_A)
-        transport = base64.b64decode(pool["node_info"]["network_public_key"])
+        node_info = _require_dict(node=pool["node_info"], path="node_info")
+        transport = base64.b64decode(
+            _require_str(node=node_info["network_public_key"], path="node_info.network_public_key")
+        )
         assert len(transport) == 33
         assert pool_public_key(pool=pool) != transport
 
@@ -507,14 +510,24 @@ class TestShardCoverageValidation:
     def test_duplicated_shard_raises(self) -> None:
         """A shard claimed by two members is an error."""
         inner = _staking_inner()
-        inner["committee"]["pos0"]["contents"][1]["value"] = [0.0]
+        committee = _require_dict(node=inner["committee"], path="committee")
+        vec_map = _require_dict(node=committee["pos0"], path="committee.pos0")
+        contents = _require_list(node=vec_map["contents"], path="committee.contents")
+        entry = _require_dict(node=contents[1], path="committee.contents[1]")
+        duplicate_shard: list[JsonValue] = [0.0]
+        entry["value"] = duplicate_shard
         with pytest.raises(ValueError):
             build_committee(staking_inner=inner, pools_by_node_id=_pools_map())
 
     def test_shard_beyond_n_shards_raises(self) -> None:
         """A member claiming a shard outside range is an error."""
         inner = _staking_inner()
-        inner["committee"]["pos0"]["contents"][1]["value"] = [99.0]
+        committee = _require_dict(node=inner["committee"], path="committee")
+        vec_map = _require_dict(node=committee["pos0"], path="committee.pos0")
+        contents = _require_list(node=vec_map["contents"], path="committee.contents")
+        entry = _require_dict(node=contents[1], path="committee.contents[1]")
+        out_of_range_shard: list[JsonValue] = [99.0]
+        entry["value"] = out_of_range_shard
         with pytest.raises(ValueError):
             build_committee(staking_inner=inner, pools_by_node_id=_pools_map())
 

@@ -695,7 +695,7 @@ class TestValidateFusePair:
         """A fusable pair passes silently."""
         first = _storage(start_epoch=1, end_epoch=5, storage_size=100)
         second = _storage(start_epoch=5, end_epoch=9, storage_size=100)
-        assert validate_fuse_pair(first=first, second=second) is None
+        validate_fuse_pair(first=first, second=second)  # no raise == compatible
 
     def test_incompatible_pair_raises_value_error(self) -> None:
         """``ValueError``, per the project's no-custom-exceptions norm."""
@@ -969,13 +969,12 @@ class TestAddFuse:
     async def test_returns_none(self) -> None:
         """``fuse`` has no Move return value, so there is nothing to consume."""
         txn = _RecordingTxn()
-        result = await add_fuse(
+        await add_fuse(
             txn=txn,  # type: ignore[arg-type]
             package_id=_PACKAGE,
             first_storage_id="0xfirst",
             second_storage_id="0xsecond",
         )
-        assert result is None
         assert txn.transfers() == []
 
 
@@ -999,12 +998,11 @@ class TestAddDestroyStorage:
     async def test_returns_none(self) -> None:
         """``destroy`` has no Move return value."""
         txn = _RecordingTxn()
-        result = await add_destroy_storage(
+        await add_destroy_storage(
             txn=txn,  # type: ignore[arg-type]
             package_id=_PACKAGE,
             storage_object_id="0xstorage",
         )
-        assert result is None
         assert txn.transfers() == []
 
 

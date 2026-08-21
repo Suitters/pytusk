@@ -156,7 +156,7 @@ class WalrusClient(AsyncClientBase):
         self,
         *,
         command: WalrusCommand | SuiCommand,
-        timeout: float | httpx.Timeout | None = None,
+        timeout: float | None = None,
         headers: dict | None = None,
         base_url: str | None = None,
     ) -> SuiRpcResult:
@@ -168,12 +168,11 @@ class WalrusClient(AsyncClientBase):
 
         Args:
             command: A WalrusCommand or SuiCommand instance.
-            timeout (float | httpx.Timeout | None): Request timeout in
-                seconds, or a structured ``httpx.Timeout`` for per-phase
-                control (connect/read/write/pool). ``None`` means use the
-                client's configured default (see :data:`_DEFAULT_TIMEOUT`),
-                not "no timeout" -- this call never forwards a bare
-                ``None`` to httpx at request scope (see :meth:`_send`).
+            timeout (float | None): Request timeout in seconds. ``None``
+                means use the client's configured default (see
+                :data:`_DEFAULT_TIMEOUT`), not "no timeout" -- this call
+                never forwards a bare ``None`` to httpx at request scope
+                (see :meth:`_send`).
             headers (dict[str, str] | None): Additional HTTP headers.
             base_url (str | None): Explicit base URL to dispatch a
                 WalrusCommand against, bypassing the command's configured
@@ -286,7 +285,7 @@ class WalrusClient(AsyncClientBase):
     ) -> None:
         """Close the underlying httpx and pysui clients."""
         await self._httpx.__aexit__(exc_type, exc_val, exc_tb)
-        await self._pysui_client.close()
+        await self._pysui_client.close()  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     # Internal dispatch
