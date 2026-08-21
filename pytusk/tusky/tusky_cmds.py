@@ -712,6 +712,7 @@ async def _destroy_storage_batches(
         sui_prot.ExecutedTransaction | sui_prot.SimulateTransactionResponse
     ] = []
     total_rebate = 0
+    rebate_recorded = False
     total_batches = (
         len(storage_ids) + _MAX_STORAGE_OPS_PER_PTB - 1
     ) // _MAX_STORAGE_OPS_PER_PTB
@@ -764,8 +765,9 @@ async def _destroy_storage_batches(
                 batch_rebate = effects.gas_used.storage_rebate
                 if batch_rebate is not None:
                     total_rebate += batch_rebate
+                    rebate_recorded = True
         results.append(result.result_data)
-    if total_rebate:
+    if rebate_recorded:
         print(f"Total storage rebate redeemed: {total_rebate} MIST.")
     return results
 

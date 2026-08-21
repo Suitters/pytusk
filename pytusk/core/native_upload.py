@@ -53,9 +53,14 @@ import logging
 import random
 import time
 from collections.abc import Sequence
+from typing import Protocol
+
+from pysui import SuiCommand, SuiRpcResult
 
 from pytusk.client.walrus_client import WalrusClient
 from pytusk.commands.node_commands import GetStorageConfirmation, PutMetadata, PutSliver
+from pytusk.commands.walrus_command import WalrusCommand
+
 from pytusk.core.certification import (
     Certificate,
     ConfirmationMismatchError,
@@ -80,6 +85,22 @@ from pytusk.core.system_ops import (
     execute_reserve_and_register,
 )
 from pytusk.core.utils import resolve_package_id
+
+
+class _ExecuteOnlyClient(Protocol):
+    """Structural type for functions that only need ``execute()`` off a
+    client -- lets tests pass a minimal fake without casting it to the
+    concrete :class:`~pytusk.client.walrus_client.WalrusClient`."""
+
+    async def execute(
+        self,
+        *,
+        command: WalrusCommand | SuiCommand,
+        timeout: float | None = None,
+        headers: dict | None = None,
+        base_url: str | None = None,
+    ) -> SuiRpcResult: ...
+
 
 __all__ = [
     "CertifyTransactionError",
@@ -416,7 +437,7 @@ class CertifyTransactionError(NativeUploadError):
 
 
 async def assert_certificate_epoch_current(
-    *, client: WalrusClient, committee: WalrusCommittee, staking_object: str
+    *, client: _ExecuteOnlyClient, committee: WalrusCommittee, staking_object: str
 ) -> None:
     """Raise if the live on-chain epoch has moved off ``committee.epoch``.
 
@@ -728,7 +749,7 @@ def _next_retry_backoff(
 
 async def _put_metadata(
     *,
-    client: WalrusClient,
+    client: _ExecuteOnlyClient,
     member: WalrusCommitteeMember,
     blob_id: bytes,
     metadata_bcs: bytes,
@@ -817,7 +838,7 @@ async def _put_metadata(
 
 async def _put_sliver(
     *,
-    client: WalrusClient,
+    client: _ExecuteOnlyClient,
     member: WalrusCommitteeMember,
     blob_id: bytes,
     sliver_pair_index: int,
@@ -963,7 +984,7 @@ async def _put_sliver(
 
 async def _upload_node(
     *,
-    client: WalrusClient,
+    client: _ExecuteOnlyClient,
     committee: WalrusCommittee,
     encoded: EncodedBlob,
     member: WalrusCommitteeMember,
@@ -1244,7 +1265,7 @@ def _outcome_from_task(
 
 async def upload_slivers(
     *,
-    client: WalrusClient,
+    client: _ExecuteOnlyClient,
     committee: WalrusCommittee,
     encoded: EncodedBlob,
     grace_base_seconds: float = 0.5,
@@ -1670,7 +1691,7 @@ async def _confirm_heartbeat(*, progress: _ConfirmProgress, interval: float) -> 
 
 async def _confirm_node(
     *,
-    client: WalrusClient,
+    client: _ExecuteOnlyClient,
     committee: WalrusCommittee,
     member: WalrusCommitteeMember,
     blob_id: bytes,
@@ -1788,7 +1809,7 @@ def _confirmation_outcome_from_task(
 
 async def collect_confirmations(
     *,
-    client: WalrusClient,
+    client: _ExecuteOnlyClient,
     committee: WalrusCommittee,
     blob_id: bytes,
     registration: Registration,
@@ -2109,7 +2130,7 @@ async def collect_confirmations(
 
 async def certify(
     *,
-    client: WalrusClient,
+    client: _ExecuteOnlyClient,
     committee: WalrusCommittee,
     blob_id: bytes,
     registration: Registration,

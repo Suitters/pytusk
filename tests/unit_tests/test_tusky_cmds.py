@@ -13,10 +13,11 @@ never ran).
 import argparse
 import types
 
+import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 import pytest
 from pysui import SuiRpcResult
 
-from pytusk import NativeBlobReceipt, StageTimings
+from pytusk import NativeBlobReceipt, StageTimings, StorageObject
 from pytusk.tusky import tusky_cmds
 
 
@@ -292,3 +293,207 @@ class TestCertifyBlobRecover:
         assert len(upload_calls) == 1
         captured = capsys.readouterr()
         assert '"certified": true' in captured.out
+
+
+class TestSplitByEpochApplicable:
+    """``_split_by_epoch_applicable`` requires an epoch range spanning at
+    least 2 epochs (an interior split point must exist)."""
+
+    def test_true_when_range_spans_two_epochs(self) -> None:
+        storage = StorageObject(
+            object_id="0x1", start_epoch=491, end_epoch=493, storage_size=100
+        )
+        assert tusky_cmds._split_by_epoch_applicable(storage=storage) is True
+
+    def test_false_when_range_spans_one_epoch(self) -> None:
+        storage = StorageObject(
+            object_id="0x1", start_epoch=491, end_epoch=492, storage_size=100
+        )
+        assert tusky_cmds._split_by_epoch_applicable(storage=storage) is False
+
+
+class TestSplitBySizeApplicable:
+    """``_split_by_size_applicable`` requires a storage size of at least 2
+    bytes (so both halves of a split are non-empty)."""
+
+    def test_true_when_size_is_two(self) -> None:
+        storage = StorageObject(
+            object_id="0x1", start_epoch=491, end_epoch=492, storage_size=2
+        )
+        assert tusky_cmds._split_by_size_applicable(storage=storage) is True
+
+    def test_false_when_size_is_one(self) -> None:
+        storage = StorageObject(
+            object_id="0x1", start_epoch=491, end_epoch=492, storage_size=1
+        )
+        assert tusky_cmds._split_by_size_applicable(storage=storage) is False
+
+    def test_false_when_size_is_zero(self) -> None:
+        storage = StorageObject(
+            object_id="0x1", start_epoch=491, end_epoch=492, storage_size=0
+        )
+        assert tusky_cmds._split_by_size_applicable(storage=storage) is False
+
+
+class _FakeDestroyTxn:
+    """Fake ``AsyncSuiTransaction`` recording ``move_call`` args for
+    ``_destroy_storage_batches``."""
+
+    def __init__(self) -> None:
+        self.move_calls: list[dict[str, object]] = []
+
+    async def move_call(self, **kwargs: object) -> None:
+        self.move_calls.append(kwargs)
+
+    async def build_and_sign(self) -> dict[str, object]:
+        return {"tx_bytestr": b"fake"}
+
+
+class _FakeDestroyClient:
+    """Fake ``WalrusClient`` for ``_destroy_storage_batches`` -- one canned
+    ``execute()`` response per call, in call order."""
+
+    def __init__(self, *, responses: list[SuiRpcResult]) -> None:
+        self._responses = list(responses)
+        self.txns: list[_FakeDestroyTxn] = []
+
+    async def transaction(self, **kwargs: object) -> _FakeDestroyTxn:
+        txn = _FakeDestroyTxn()
+        self.txns.append(txn)
+        return txn
+
+    async def execute(self, **kwargs: object) -> SuiRpcResult:
+        return self._responses.pop(0)
+
+
+class TestDestroyStorageBatches:
+    """``_destroy_storage_batches`` -- batching, the per-object rebate
+    printout, the execute/simulate mode split, and the total-rebate flag
+    (a legitimate 0 MIST total must still print, not be suppressed)."""
+
+    async def test_execute_mode_prints_per_object_and_total_rebate(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(tusky_cmds, "ExecuteTransaction", lambda **kwargs: object())
+        executed = sui_prot.ExecutedTransaction(
+            digest="0xdigest",
+            effects=sui_prot.TransactionEffects(
+                gas_used=sui_prot.GasCostSummary(storage_rebate=2979200)
+            ),
+            objects=sui_prot.ObjectSet(
+                objects=[
+                    sui_prot.Object(
+                        object_id="0x" + "0" * 63 + "a", storage_rebate=1489600
+                    ),
+                    sui_prot.Object(
+                        object_id="0x" + "0" * 63 + "b", storage_rebate=1489600
+                    ),
+                ]
+            ),
+        )
+        client = _FakeDestroyClient(responses=[SuiRpcResult(True, "", executed)])
+
+        results = await tusky_cmds._destroy_storage_batches(
+            client=client,
+            walrus_pkg="0xpkg",
+            storage_ids=["0xa", "0xb"],
+            sender="0xsender",
+            sponsor=None,
+            mode="execute",
+        )
+
+        assert results == [executed]
+        out = capsys.readouterr().out
+        assert "MIST storage rebate value" in out
+        assert "Total storage rebate redeemed: 2979200 MIST." in out
+
+    async def test_simulate_mode_skips_rebate_summary(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(tusky_cmds, "SimulateTransaction", lambda **kwargs: object())
+        simulated = sui_prot.SimulateTransactionResponse(
+            transaction=sui_prot.ExecutedTransaction(digest="0xdigest")
+        )
+        client = _FakeDestroyClient(responses=[SuiRpcResult(True, "", simulated)])
+
+        results = await tusky_cmds._destroy_storage_batches(
+            client=client,
+            walrus_pkg="0xpkg",
+            storage_ids=["0xa"],
+            sender="0xsender",
+            sponsor=None,
+            mode="simulate",
+        )
+
+        assert results == [simulated]
+        out = capsys.readouterr().out
+        assert "MIST" not in out
+
+    async def test_zero_rebate_still_prints_total(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(tusky_cmds, "ExecuteTransaction", lambda **kwargs: object())
+        executed = sui_prot.ExecutedTransaction(
+            digest="0xdigest",
+            effects=sui_prot.TransactionEffects(
+                gas_used=sui_prot.GasCostSummary(storage_rebate=0)
+            ),
+        )
+        client = _FakeDestroyClient(responses=[SuiRpcResult(True, "", executed)])
+
+        results = await tusky_cmds._destroy_storage_batches(
+            client=client,
+            walrus_pkg="0xpkg",
+            storage_ids=["0xa"],
+            sender="0xsender",
+            sponsor=None,
+            mode="execute",
+        )
+
+        assert results == [executed]
+        out = capsys.readouterr().out
+        assert "Total storage rebate redeemed: 0 MIST." in out
+
+    async def test_batches_storage_ids_at_max_per_ptb(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tusky_cmds, "ExecuteTransaction", lambda **kwargs: object())
+        storage_ids = [
+            f"0x{i:064x}" for i in range(tusky_cmds._MAX_STORAGE_OPS_PER_PTB + 1)
+        ]
+        client = _FakeDestroyClient(
+            responses=[
+                SuiRpcResult(True, "", sui_prot.ExecutedTransaction(digest="0xdigest0")),
+                SuiRpcResult(True, "", sui_prot.ExecutedTransaction(digest="0xdigest1")),
+            ]
+        )
+
+        results = await tusky_cmds._destroy_storage_batches(
+            client=client,
+            walrus_pkg="0xpkg",
+            storage_ids=storage_ids,
+            sender="0xsender",
+            sponsor=None,
+            mode="execute",
+        )
+
+        assert len(results) == 2
+        assert len(client.txns) == 2
+        assert len(client.txns[0].move_calls) == tusky_cmds._MAX_STORAGE_OPS_PER_PTB
+        assert len(client.txns[1].move_calls) == 1
+
+    async def test_submission_failure_exits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tusky_cmds, "ExecuteTransaction", lambda **kwargs: object())
+        client = _FakeDestroyClient(responses=[SuiRpcResult(False, "boom", None)])
+
+        with pytest.raises(SystemExit):
+            await tusky_cmds._destroy_storage_batches(
+                client=client,
+                walrus_pkg="0xpkg",
+                storage_ids=["0xa"],
+                sender="0xsender",
+                sponsor=None,
+                mode="execute",
+            )

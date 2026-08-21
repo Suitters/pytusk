@@ -275,16 +275,8 @@ async def walrus_client(pytusk_config: PytuskConfiguration):
         _session_blob_ids: list[str] = []
         _orig_execute = client.execute
 
-        async def _tracking_execute(
-            *,
-            command,
-            timeout: float | None = None,
-            headers: dict | None = None,
-            base_url: str | None = None,
-        ):
-            result = await _orig_execute(
-                command=command, timeout=timeout, headers=headers, base_url=base_url
-            )
+        async def _tracking_execute(**kwargs: object):
+            result = await _orig_execute(**kwargs)
             if result.is_ok() and isinstance(
                 result.result_data, (BlobReceipt, QuiltReceipt)
             ):

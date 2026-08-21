@@ -474,7 +474,7 @@ class TestUploadSliversWeightPerNode:
         encoded = encode_blob(data=_BLOB_DATA, n_shards=committee.n_shards)
         client = _FakeStorageClient()
 
-        report = await upload_slivers(client=cast(WalrusClient, client), committee=committee, encoded=encoded)
+        report = await upload_slivers(client=client, committee=committee, encoded=encoded)
 
         assert isinstance(report, FanoutReport)
         assert len(report.outcomes) == 4  # one per node, not one per shard
@@ -500,7 +500,7 @@ class TestUploadSliversQuorum:
         # otherwise run to max_retries with real (if tiny) exponential
         # sleeps; this test only cares about the final outcome.
         report = await upload_slivers(
-            client=cast(WalrusClient, client),
+            client=client,
             committee=committee,
             encoded=encoded,
             retry_min_backoff=0.0,
@@ -523,7 +523,7 @@ class TestUploadSliversQuorum:
 
         with pytest.raises(SliverUploadError) as excinfo:
             await upload_slivers(
-                client=cast(WalrusClient, client),
+                client=client,
                 committee=committee,
                 encoded=encoded,
                 retry_min_backoff=0.0,
@@ -573,7 +573,7 @@ class TestUploadSliversRouting:
         assert wrong_host != correct_host
 
         client = _FakeStorageClient()
-        await upload_slivers(client=cast(WalrusClient, client), committee=committee, encoded=encoded)
+        await upload_slivers(client=client, committee=committee, encoded=encoded)
 
         put_calls_to_correct_host = [
             command
@@ -608,7 +608,7 @@ class TestUploadSliversBothSliversRequired:
         )
 
         report = await upload_slivers(
-            client=cast(WalrusClient, client),
+            client=client,
             committee=committee,
             encoded=encoded,
             retry_min_backoff=0.0,
@@ -628,7 +628,7 @@ class TestUploadSliversBothSliversRequired:
         )
 
         report = await upload_slivers(
-            client=cast(WalrusClient, client),
+            client=client,
             committee=committee,
             encoded=encoded,
             retry_min_backoff=0.0,
@@ -655,7 +655,7 @@ class TestUploadNodeMetadataStage:
         progress = _FanoutProgress(total_nodes=1, required_weight=1)
 
         outcome = await _upload_node(
-            client=cast(WalrusClient, client),
+            client=client,
             committee=committee,
             encoded=encoded,
             member=member,
@@ -692,7 +692,7 @@ class TestUploadNodeMetadataStage:
         progress = _FanoutProgress(total_nodes=1, required_weight=1)
 
         outcome = await _upload_node(
-            client=cast(WalrusClient, client),
+            client=client,
             committee=committee,
             encoded=encoded,
             member=member,
@@ -909,7 +909,7 @@ class TestCollectConfirmations:
             ),
         ):
             certificate = await collect_confirmations(
-                client=cast(WalrusClient, client), committee=committee, blob_id=encoded.blob_id, registration=registration
+                client=client, committee=committee, blob_id=encoded.blob_id, registration=registration
             )
         assert certificate.serialized_message == message
         assert certificate.weight == committee.n_shards
@@ -922,7 +922,7 @@ class TestCollectConfirmations:
 
         with pytest.raises(ConfirmationCollectionError) as excinfo:
             await collect_confirmations(
-                client=cast(WalrusClient, client), committee=committee, blob_id=encoded.blob_id, registration=registration
+                client=client, committee=committee, blob_id=encoded.blob_id, registration=registration
             )
         assert excinfo.value.stage == "collect_confirmations"
 
@@ -942,7 +942,7 @@ class TestUploadSliversRetry:
         client = _FlakyPutClient(fail_first={key: 2})
 
         report = await upload_slivers(
-            client=cast(WalrusClient, client),
+            client=client,
             committee=committee,
             encoded=encoded,
             retry_min_backoff=0.001,
@@ -966,7 +966,7 @@ class TestUploadSliversRetry:
         client = _FlakyPutClient(fail_first={key: 999})
 
         report = await upload_slivers(
-            client=cast(WalrusClient, client),
+            client=client,
             committee=committee,
             encoded=encoded,
             retry_min_backoff=0.001,
@@ -1005,7 +1005,7 @@ class TestUploadNodeSliverTaskException:
         progress = _FanoutProgress(total_nodes=1, required_weight=1)
 
         outcome = await _upload_node(
-            client=cast(WalrusClient, client),
+            client=client,
             committee=committee,
             encoded=encoded,
             member=member,
@@ -1050,7 +1050,7 @@ class TestUploadSliversNodeTaskException:
             exc=RuntimeError("unexpected metadata dispatch failure"),
         )
 
-        report = await upload_slivers(client=cast(WalrusClient, client), committee=committee, encoded=encoded)
+        report = await upload_slivers(client=client, committee=committee, encoded=encoded)
 
         assert isinstance(report, FanoutReport)
         assert report.weight_succeeded == committee.n_shards - 1  # 6 of 7
@@ -1086,7 +1086,7 @@ class TestUploadSliversQuorumNotMetWithRaisingNode:
         )
 
         with pytest.raises(SliverUploadError) as excinfo:
-            await upload_slivers(client=cast(WalrusClient, client), committee=committee, encoded=encoded)
+            await upload_slivers(client=client, committee=committee, encoded=encoded)
 
         message = str(excinfo.value)
         assert "4" in message  # achieved weight
@@ -1152,7 +1152,7 @@ class TestUploadSliversNoOrphanedTasks:
 
         report = await asyncio.wait_for(
             upload_slivers(
-                client=cast(WalrusClient, client),
+                client=client,
                 committee=committee,
                 encoded=encoded,
                 grace_base_seconds=0.05,
@@ -1196,7 +1196,7 @@ class TestUploadSliversNoOrphanedTasks:
         with pytest.raises(SliverUploadError):
             await asyncio.wait_for(
                 upload_slivers(
-                    client=cast(WalrusClient, client),
+                    client=client,
                     committee=committee,
                     encoded=encoded,
                     retry_min_backoff=0.0,
@@ -1357,7 +1357,7 @@ class TestCollectConfirmationsQueriesAll:
             ),
         ):
             certificate = await collect_confirmations(
-                client=cast(WalrusClient, client), committee=committee, blob_id=encoded.blob_id, registration=registration
+                client=client, committee=committee, blob_id=encoded.blob_id, registration=registration
             )
 
         confirmation_calls = [
@@ -1404,7 +1404,7 @@ class TestCollectConfirmationsTolerance:
             ),
         ):
             certificate = await collect_confirmations(
-                client=cast(WalrusClient, client), committee=committee, blob_id=encoded.blob_id, registration=registration
+                client=client, committee=committee, blob_id=encoded.blob_id, registration=registration
             )
 
         # node0=3 + node2=1 + node3=2 = 6, meeting the required 5; node1's
@@ -1463,7 +1463,7 @@ class TestCollectConfirmationsQuorumEarlyExit:
         ):
             certificate = await asyncio.wait_for(
                 collect_confirmations(
-                    client=cast(WalrusClient, client),
+                    client=client,
                     committee=signed_committee,
                     blob_id=encoded.blob_id,
                     registration=registration,
@@ -1550,7 +1550,7 @@ class TestCollectConfirmationsNoOrphanedTasks:
         ):
             certificate = await asyncio.wait_for(
                 collect_confirmations(
-                    client=cast(WalrusClient, client),
+                    client=client,
                     committee=signed_committee,
                     blob_id=encoded.blob_id,
                     registration=registration,
@@ -1614,7 +1614,7 @@ class TestCollectConfirmationsGraceWindow:
         ):
             certificate = await asyncio.wait_for(
                 collect_confirmations(
-                    client=cast(WalrusClient, client),
+                    client=client,
                     committee=signed_committee,
                     blob_id=encoded.blob_id,
                     registration=registration,
@@ -1673,7 +1673,7 @@ class TestCollectConfirmationsFailurePathUnchanged:
             pytest.raises(ConfirmationCollectionError) as excinfo,
         ):
             await collect_confirmations(
-                client=cast(WalrusClient, client),
+                client=client,
                 committee=signed_committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
@@ -1779,7 +1779,7 @@ class TestCertifyTx2Failure:
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
-                client=cast(WalrusClient, object()),
+                client=cast(native_upload._ExecuteOnlyClient, object()),
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
@@ -1828,7 +1828,7 @@ class TestCertifyTx2Failure:
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
-                client=cast(WalrusClient, object()),
+                client=cast(native_upload._ExecuteOnlyClient, object()),
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
