@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Storage management implemented
+- New commands in tusky: list_storage, split_storage, fuse_storage, reclaim_storage and extend_blob_with_storage
+
 ### Fixed
 
 ### Changed
