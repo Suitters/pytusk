@@ -685,3 +685,245 @@ Example — resuming a blob whose sliver fan-out never ran:
        "total": null
      }
    }
+
+Storage Management (pysui PTB)
+-------------------------------
+
+These commands manage standalone (unwrapped) ``Storage`` objects:
+splitting, fusing, destroying, and using them to extend a blob's
+expiration instead of paying WAL. See :doc:`transactions`'s Storage
+Management section for the underlying PTB composition and the
+Move-level constraints each operation enforces.
+
+list_storage
+~~~~~~~~~~~~
+
+List standalone (unwrapped) Storage objects owned by the active address.
+Storage still embedded in a Blob is a wrapped object with no independent
+owner record and does not appear here -- see ``blob``/``blobs`` for that.
+
+.. code-block:: console
+
+   tusky list_storage [--status any|active|expired] [--details]
+
+``--status``
+   Filter by expiry status relative to the current Walrus epoch (default:
+   ``any``). Expired storage is still splittable, fusable, and
+   reclaimable, so this is a display filter, not a capability gate.
+
+``--details``
+   Replace the plain listing with an operation-oriented view: a heading
+   per storage-related command, each followed by the objects it
+   currently applies to. This is the fastest way to see which objects are
+   eligible for which operation before running one -- the constraint each
+   heading checks is noted below.
+
+   ``split_storage`` is split into two sub-groups, since the two split
+   modes have independent requirements:
+
+   - ``split_by_epoch`` -- only objects whose epoch range spans at least
+     2 epochs are listed. Move needs an interior epoch to split at
+     (``start_epoch < split_epoch < end_epoch``); an object covering only
+     one epoch (e.g. ``[491, 492)``) has no valid split point and will
+     never appear here.
+   - ``split_by_size`` -- only objects with ``storage_size >= 2`` bytes
+     are listed (in practice, nearly every real object qualifies).
+
+   ``fuse_storage`` lists two kinds of compatibility, since fuse always
+   consumes exactly two objects and Move's own rule is NOT transitive:
+
+   - ``fuse_amount`` -- every group of 2+ objects sharing an IDENTICAL
+     epoch range; sizes are just summed, so a whole group can be merged
+     in one transaction.
+   - ``fuse_periods`` -- individual PAIRS with equal ``storage_size`` and
+     ADJACENT epoch ranges (one begins exactly where the other ends).
+     Listed as pairs only, never as an "all fusable together" group,
+     since fusing one pair can change whether a third object becomes
+     compatible with the survivor.
+
+   ``reclaim_storage`` lists every filtered object -- ``destroy`` has no
+   preconditions at all.
+
+   ``extend_blob_with_storage`` makes one extra network call to fetch
+   owned Blobs, since eligibility depends on them. An object is listed
+   only if it could extend AT LEAST ONE currently owned, certified,
+   unexpired blob -- which requires the object's ``end_epoch`` to fall
+   strictly after that blob's current ``end_epoch``, AND its
+   ``storage_size`` to EXACTLY MATCH that blob's existing storage size
+   (the same rule ``fuse_periods`` enforces). A standalone Storage object
+   bought without checking this will almost always show up as ``(none)``
+   here -- it needs to be sized to match a specific blob's existing
+   storage exactly, not just any capacity.
+
+Example — an owned object listed under both ``split_by_size`` and
+``reclaim_storage`` but neither ``split_by_epoch`` nor
+``extend_blob_with_storage`` (single-epoch range, no compatible blob
+owned):
+
+.. code-block:: console
+
+   $ tusky list_storage --details
+   split_storage
+     split_by_epoch (epoch range must span >= 2 epochs):
+       (none)
+     split_by_size (storage size must be >= 2 bytes):
+       0xc2d69a4a39fab2921e173508091b03f6154e2620238dd399fdfceda4519d5cd8
+   fuse_storage
+     (none)
+   reclaim_storage
+     0xc2d69a4a39fab2921e173508091b03f6154e2620238dd399fdfceda4519d5cd8
+   extend_blob_with_storage
+     (none)
+
+split_storage
+~~~~~~~~~~~~~
+
+Split a standalone Storage object by epoch or by size. Both variants
+mutate the original object in place and transfer a NEW Storage (the
+split-off portion) to ``--recipient`` (default: sender) -- Storage has no
+``drop`` ability, so the new object cannot be left dangling. No epoch
+gate applies: an already-expired object splits just as readily as a live
+one.
+
+.. code-block:: console
+
+   tusky split_storage -i STORAGE_ID (--by-epoch N | --by-size N)
+                        [--recipient ADDRESS] [--sender ADDRESS]
+                        [--sponsor ADDRESS] [--mode simulate|execute]
+
+``-i`` / ``--storageid``
+   Sui object ID of the Storage object to split (0x-prefixed).
+
+``--by-epoch``
+   Absolute epoch to split at: the original keeps
+   ``[start_epoch, split_epoch)`` and the new Storage takes
+   ``[split_epoch, end_epoch)``. Requires an INTERIOR epoch
+   (``start_epoch < split_epoch < end_epoch``) -- only possible when the
+   object's range spans at least 2 epochs. Check ``list_storage
+   --details``'s ``split_by_epoch`` group before choosing a value.
+
+``--by-size``
+   Byte capacity to peel off into the new Storage; the original keeps the
+   remainder over the same epoch range.
+
+``--recipient``
+   Sui address to receive the new split-off Storage object (default:
+   sender).
+
+fuse_storage
+~~~~~~~~~~~~
+
+Fuse Storage objects together, in one of three mutually exclusive modes.
+Run ``list_storage --details`` first to preview which objects are
+compatible before choosing.
+
+.. code-block:: console
+
+   tusky fuse_storage (--fuse-to ID --fuse-from ID [ID ...] |
+                        --fuse-amount [--start-epoch N --end-epoch N] |
+                        --fuse-periods [--fuse-to ID])
+                       [--sender ADDRESS] [--sponsor ADDRESS]
+                       [--mode simulate|execute]
+
+``--fuse-to``
+   Sui object ID of the Storage that survives and absorbs the other(s).
+   Required for explicit mode; optional for ``--fuse-periods``, where it
+   names which cluster's hub to consolidate around when more than one is
+   owned.
+
+``--fuse-from``
+   One or more Sui object IDs to fold into ``--fuse-to``, in order; each
+   is consumed by its fuse. Explicit mode only.
+
+``--fuse-amount``
+   Bulk-fuse every owned Storage object sharing one identical epoch-range
+   group -- no object IDs needed. Requires an IDENTICAL epoch range on
+   every member of the group (sizes are just summed); this relation is
+   transitive, so the whole group merges in a single transaction. If more
+   than one such group is owned, ``--start-epoch``/``--end-epoch`` name
+   which one.
+
+``--fuse-periods``
+   Bulk-fuse every owned Storage object reachable, via equal-size
+   adjacent-range steps, from one hub -- no object IDs needed for the
+   spokes. Requires EQUAL ``storage_size`` and epoch-range ADJACENCY
+   between each step; this relation is NOT transitive -- fusing one pair
+   can change whether another becomes compatible, so folding is greedy
+   and can leave objects unfused (reported, not silently dropped). If
+   more than one disjoint cluster is owned, ``--fuse-to`` names the hub.
+
+``--start-epoch`` / ``--end-epoch``
+   With ``--fuse-amount``: the epoch-range group's bounds, required only
+   when more than one group is owned.
+
+reclaim_storage
+~~~~~~~~~~~~~~~
+
+Destroy one or more standalone Storage objects, reclaiming their Sui
+storage rebate. This does NOT refund the WAL originally paid to reserve
+the capacity -- that is spent regardless. Move performs no checks at
+all: an unexpired reservation is destroyed just as readily as a spent
+one. **Irreversible.**
+
+.. code-block:: console
+
+   tusky reclaim_storage (-i STORAGE_ID [STORAGE_ID ...] | --all)
+                          [--sender ADDRESS] [--sponsor ADDRESS]
+                          [--mode simulate|execute]
+
+``-i`` / ``--storageid``
+   One or more Sui object IDs of Storage objects to destroy.
+
+``--all``
+   Destroy every currently owned unwrapped Storage object -- no object
+   IDs needed.
+
+In ``execute`` mode, each destroyed object's Sui storage rebate (MIST
+redeemed) is printed individually, with a running total after all
+batches complete. ``simulate`` mode does not show this -- the simulated
+response does not carry per-object rebate data.
+
+Example — execute mode, two objects in one batch:
+
+.. code-block:: console
+
+   $ tusky reclaim_storage -i 0xc66d24f61597cd7679e60a74b74d610d0d1519bd79698a747756851e7d4066ad 0xe5b11f312838a84af2f2879e962cf11e836c732582cec36bbc9eec12bfd41133 --mode execute
+   Destroyed batch 1/1 (2 storage object(s)).
+   { ... }
+     0xc66d24f61597cd7679e60a74b74d610d0d1519bd79698a747756851e7d4066ad: 1489600 MIST redeemed
+     0xe5b11f312838a84af2f2879e962cf11e836c732582cec36bbc9eec12bfd41133: 1489600 MIST redeemed
+   Total storage rebate redeemed: 2979200 MIST.
+
+extend_blob_with_storage
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Extend a blob's expiration by consuming an owned Storage object instead
+of paying WAL. Four requirements are pre-flighted before building the
+transaction, so a violation reports the offending values instead of an
+opaque Move abort:
+
+- the blob must be CERTIFIED (``ENotCertified``);
+- the blob must not already be expired (``EResourceBounds``);
+- the Storage's ``end_epoch`` must be strictly LATER than the blob's
+  current ``end_epoch`` (``EResourceBounds``);
+- the Storage's ``storage_size`` must EXACTLY MATCH the blob's existing
+  storage size, and their epoch ranges must be ADJACENT -- the same
+  rules ``fuse_periods`` enforces (``EIncompatibleAmount`` /
+  ``EIncompatibleEpochs``).
+
+The Storage object is consumed by the call and ceases to exist. See
+``list_storage --details``'s ``extend_blob_with_storage`` group to find
+which owned objects, if any, currently satisfy this against which blobs.
+
+.. code-block:: console
+
+   tusky extend_blob_with_storage -i BLOB_ID --storageid STORAGE_ID
+                                   [--sender ADDRESS] [--sponsor ADDRESS]
+                                   [--mode simulate|execute]
+
+``-i`` / ``--blobid``
+   Sui object ID of the blob (0x-prefixed) -- not the Walrus blob ID
+   (content hash).
+
+``--storageid``
+   Sui object ID of the Storage object to consume (0x-prefixed).
