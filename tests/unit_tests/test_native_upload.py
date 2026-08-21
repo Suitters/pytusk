@@ -54,7 +54,11 @@ from pytusk.commands.node_commands import (
     SignedConfirmation,
 )
 from pytusk.core import native_upload
-from pytusk.core.certification import Certificate, confirmation_message, min_weight_for_quorum
+from pytusk.core.certification import (
+    Certificate,
+    confirmation_message,
+    min_weight_for_quorum,
+)
 from pytusk.core.committee import WalrusCommittee, WalrusCommitteeMember
 from pytusk.core.encoding import encode_blob
 from pytusk.core.native_upload import (

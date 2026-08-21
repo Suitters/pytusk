@@ -285,7 +285,7 @@ class WalrusClient(AsyncClientBase):
     ) -> None:
         """Close the underlying httpx and pysui clients."""
         await self._httpx.__aexit__(exc_type, exc_val, exc_tb)
-        await self._pysui_client.close()  # type: ignore[attr-defined]
+        await self.pysui_client.close()
 
     # ------------------------------------------------------------------
     # Internal dispatch

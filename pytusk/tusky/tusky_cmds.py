@@ -38,6 +38,7 @@ from pysui import (
 )
 from pysui.sui.sui_bcs import bcs
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
+from pysui.sui.sui_utils import hexstring_to_sui_id
 
 from pytusk import (
     BlobData,
@@ -589,7 +590,7 @@ async def _burn_blob_batches(
     sponsor: str | None,
     mode: str,
     label: str = "Burned batch",
-) -> list[sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse]:
+) -> list[sui_prot.ExecutedTransaction | sui_prot.SimulateTransactionResponse]:
     """Burn blob objects via blob::burn, batched _MAX_BLOB_OPS_PER_PTB per PTB.
 
     Each batch's result is printed to stdout as soon as it completes, so a
@@ -609,11 +610,11 @@ async def _burn_blob_batches(
         label (str): Prefix used in each batch's progress line.
 
     Returns:
-        list[sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse]:
+        list[sui_prot.ExecutedTransaction | sui_prot.SimulateTransactionResponse]:
             One result per successfully submitted batch transaction.
     """
     results: list[
-        sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse
+        sui_prot.ExecutedTransaction | sui_prot.SimulateTransactionResponse
     ] = []
     total_batches = (len(blob_ids) + _MAX_BLOB_OPS_PER_PTB - 1) // _MAX_BLOB_OPS_PER_PTB
     for batch_num, batch_start in enumerate(
@@ -660,7 +661,7 @@ async def _destroy_storage_batches(
     sponsor: str | None,
     mode: str,
     label: str = "Destroyed batch",
-) -> list[sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse]:
+) -> list[sui_prot.ExecutedTransaction | sui_prot.SimulateTransactionResponse]:
     """Destroy Storage objects via storage_resource::destroy, batched
     _MAX_STORAGE_OPS_PER_PTB per PTB.
 
@@ -676,13 +677,22 @@ async def _destroy_storage_batches(
     there is no compatibility or ordering concern here -- only the
     gas/PTB-size ceiling matters.
 
-    In ``execute`` mode, each batch's response already carries the
-    per-object Sui storage rebate for every destroyed Storage object
-    (``result.objects.objects``, keyed by ``object_id``), so the MIST
-    redeemed for each object is printed alongside the batch's JSON
-    receipt at no extra network cost, with a running total printed once
-    all batches complete. ``simulate`` mode's response does not expose
-    this data, so the rebate summary is skipped entirely in that mode.
+    In ``execute`` mode, each batch's response carries the per-object Sui
+    storage rebate for every destroyed Storage object
+    (``result.result_data.objects.objects``, a list sorted by
+    ``(object_id, version)`` -- not a map, so a mutated object can appear
+    more than once), and one MIST value is printed per destroyed object
+    at no extra network cost. The running TOTAL, however, is sourced
+    from ``effects.gas_used.storage_rebate`` -- the aggregate figure the
+    network actually credits for the whole transaction -- rather than
+    summed from the per-object values, since each object's
+    ``storage_rebate`` is its own theoretical rebate and is not
+    guaranteed to equal an even split of what gets credited. ``simulate``
+    mode's response is a ``SimulateTransactionResponse``, not an
+    ``ExecutedTransaction`` -- the rebate summary is skipped entirely in
+    that mode not because the data is unreachable (it exists one level
+    deeper, at ``result.result_data.transaction.objects``), but because
+    a dry run's figures are not what execution would actually credit.
 
     Args:
         client (WalrusClient): Client used to build and submit transactions.
@@ -695,11 +705,11 @@ async def _destroy_storage_batches(
         label (str): Prefix used in each batch's progress line.
 
     Returns:
-        list[sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse]:
+        list[sui_prot.ExecutedTransaction | sui_prot.SimulateTransactionResponse]:
             One result per successfully submitted batch transaction.
     """
     results: list[
-        sui_prot.ExecuteTransactionResponse | sui_prot.SimulateTransactionResponse
+        sui_prot.ExecutedTransaction | sui_prot.SimulateTransactionResponse
     ] = []
     total_rebate = 0
     total_batches = (
@@ -736,12 +746,24 @@ async def _destroy_storage_batches(
             sys.exit(1)
         print(f"{label} {batch_num}/{total_batches} ({len(batch)} storage object(s)).")
         print(result.result_data.to_json(indent=2))
-        batch_ids = set(batch)
-        if mode == "execute" and result.result_data.objects is not None:
-            for obj in result.result_data.objects.objects:
-                if obj.object_id in batch_ids and obj.storage_rebate is not None:
-                    print(f"  {obj.object_id}: {obj.storage_rebate} MIST redeemed")
-                    total_rebate += obj.storage_rebate
+        if isinstance(result.result_data, sui_prot.ExecutedTransaction):
+            batch_ids = {
+                hexstring_to_sui_id(storage_id).lower() for storage_id in batch
+            }
+            if result.result_data.objects is not None:
+                for obj in result.result_data.objects.objects:
+                    if obj.object_id is None or obj.storage_rebate is None:
+                        continue
+                    if hexstring_to_sui_id(obj.object_id).lower() in batch_ids:
+                        print(
+                            f"  {obj.object_id}: {obj.storage_rebate} MIST "
+                            "storage rebate value"
+                        )
+            effects = result.result_data.effects
+            if effects is not None and effects.gas_used is not None:
+                batch_rebate = effects.gas_used.storage_rebate
+                if batch_rebate is not None:
+                    total_rebate += batch_rebate
         results.append(result.result_data)
     if total_rebate:
         print(f"Total storage rebate redeemed: {total_rebate} MIST.")
