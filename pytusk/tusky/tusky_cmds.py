@@ -985,9 +985,11 @@ async def blobs(args: argparse.Namespace) -> None:
                 blob_id_b64 = "(unparseable)"
 
         found = True
+        blob_size = storage_from_blob(obj=obj).storage_size
         print(
             f"{obj.object_id}  blob_id={blob_id_b64}  "
-            f"deletable={deletable}  end_epoch={end_epoch}  status={status}"
+            f"deletable={deletable}  end_epoch={end_epoch}  status={status}  "
+            f"size={blob_size}"
         )
 
     if not found:
