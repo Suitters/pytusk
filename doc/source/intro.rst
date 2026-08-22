@@ -25,6 +25,42 @@ transport — it builds on top of `pysui
 If you're already familiar with pysui's configuration and client model,
 most of that knowledge carries over directly.
 
+Walrus Terms
+------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+   :width: 100%
+
+   * - Term
+     - Definition
+   * - Blob
+     - Single unstructured data object stored on Walrus.
+   * - Storage
+     - A Sui object that reserves storage space for a blob over a duration,
+       specified by ``start_epoch``/``end_epoch``; every blob is associated
+       with a ``Storage`` object.
+   * - Quilt
+     - Batch storage feature that encodes multiple small blobs (up to 666
+       for QuiltV1) into one unit, reducing per-byte overhead versus storing
+       many small blobs individually.
+   * - Shard
+     - (Disjoint) Subset of erasure-encoded data of all blobs; at every
+       point in time, a shard is assigned to and stored on a single storage
+       node.
+   * - Sliver
+     - Erasure-encoded data of one shard corresponding to a single blob for
+       one of the two encodings; this contains several erasure-encoded
+       symbols of that blob but not the blob metadata.
+   * - Stake
+     - Delegating WAL tokens to a specific storage node operator, not the
+       end user. Delegated stake determines storage-node committee
+       membership and shard assignment each epoch, and earns a share of
+       storage fees; principal is never slashed. ``pytusk``/``tusky`` is a
+       storage client and does not expose staking/delegation operations —
+       this term is included for protocol context only.
+
 Client Design
 --------------
 

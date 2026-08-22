@@ -32,4 +32,5 @@ autodoc_default_options = {
     "undoc-members": True,
     "exclude-members": "__weakref__",
 }
-html_static_path: list[str] = []
+html_static_path: list[str] = ["_static"]
+html_css_files = ["css/custom.css"]
