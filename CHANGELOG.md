@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `tusky blobs`: added 'size=' to report the blobs storage size
 - Supporting documentation (readthedocs) updated
+- Refactored native_upload to it's own package
 
 ### Removed
 

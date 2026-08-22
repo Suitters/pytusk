@@ -265,9 +265,9 @@ def _blob_id_bytes_from_object(obj: sui_prot.Object) -> bytes:
 # an APPLICATION built on top of pytusk, is entitled to configure logging,
 # but only when the user explicitly asks for it via --log-file/--verbose
 # on store_blob_native (the only command with progress/heartbeat
-# instrumentation today -- see pytusk.core.native_upload's module-level
-# comment near _HEARTBEAT_INTERVAL_SECONDS), and never by writing to a
-# derived or default path.
+# instrumentation today -- see pytusk.core.native_upload.common's
+# _HEARTBEAT_INTERVAL_SECONDS and its module-level comment), and never by
+# writing to a derived or default path.
 # ------------------------------------------------------------------------
 
 _NATIVE_UPLOAD_LOGGING_CONFIGURED: bool = False
@@ -283,9 +283,10 @@ def _configure_native_upload_logging(
     stream handler to the ``pytusk`` logger only when ``verbose`` is True,
     and/or an INFO-level file handler at exactly ``log_file`` only when it
     is given -- NEVER a derived or default path. Does nothing at all when
-    neither is requested. The ``pytusk`` logger is the parent of
-    ``pytusk.core.native_upload``'s ``_logger = logging.getLogger(__name__)``,
-    so that module's progress/heartbeat records propagate up to whichever
+    neither is requested. The ``pytusk`` logger is the parent of every
+    ``pytusk.core.native_upload`` submodule's own
+    ``logging.getLogger(__name__)`` (``fanout``, ``confirm``, etc.), so
+    their progress/heartbeat records propagate up to whichever
     destination(s) were configured. When ``verbose`` is True, stdout is
     also reconfigured for line buffering so progress is visible live even
     when output is redirected to a file. Idempotent: a second call in the

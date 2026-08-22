@@ -6,9 +6,13 @@
 """Argument parser construction for the tusky CLI.
 
 This module owns all argparse definitions and nothing else — it has no
-knowledge of command handler logic or dispatch. Handlers live in
-tusky_cmds.py and are bridged to this module's subcommands purely by the
-`subcommand` string set on each subparser via `set_defaults`.
+knowledge of command handler logic or dispatch. Handlers live across
+tusky_cmds_read.py, tusky_cmds_write.py, tusky_cmds_query.py,
+tusky_cmds_exchange.py, tusky_cmds_lifecycle.py,
+tusky_cmds_native_upload.py, and tusky_cmds_storage.py (with shared
+helpers in tusky_cmds_common.py — see tusky.py's own module docstring),
+bridged to this module's subcommands purely by the `subcommand` string
+set on each subparser via `set_defaults`.
 """
 
 import argparse

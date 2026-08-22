@@ -269,9 +269,10 @@ def protobuf_json_to_python(*, value: object) -> JsonValue:
     This is the only place in the committee path that touches the protobuf
     ``Value`` shape returned by ``GetDynamicFields``. Everything downstream
     works with plain dicts, lists, strings and numbers, so a change in the wire
-    rendering has one place to be fixed. (Note that ``pytusk.tusky.tusky_cmds``
-    still walks protobuf structures by hand in its blob-inspection helpers; that
-    code predates this function and has not been migrated onto it.)
+    rendering has one place to be fixed. (Note that ``pytusk.tusky.tusky_cmds_common``
+    and ``pytusk.tusky.tusky_cmds_query`` still walk protobuf structures by hand in
+    their blob-inspection helpers; that code predates this function and has not
+    been migrated onto it.)
 
     ASSUMPTION, load-bearing and unenforced: the protobuf runtime returns
     ``None`` for an UNSET oneof member. That is betterproto's behaviour, which

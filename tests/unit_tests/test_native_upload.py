@@ -38,6 +38,7 @@ exception-conversion or timing-threading logic under test.
 
 import asyncio
 import dataclasses
+import importlib
 from collections.abc import Coroutine, Mapping
 from types import SimpleNamespace
 from typing import cast
@@ -53,7 +54,6 @@ from pytusk.commands.node_commands import (
     PutSliver,
     SignedConfirmation,
 )
-from pytusk.core import native_upload
 from pytusk.core.certification import (
     Certificate,
     confirmation_message,
@@ -69,17 +69,30 @@ from pytusk.core.native_upload import (
     NodeUploadOutcome,
     SliverUploadError,
     StageTimings,
-    _BytesInFlightThrottle,
-    _ConfirmProgress,
-    _FanoutProgress,
-    _upload_node,
     certify,
     collect_confirmations,
     object_id_to_raw_bytes,
     store_blob_native,
     upload_slivers,
 )
+from pytusk.core.native_upload import common as native_upload_common
+from pytusk.core.native_upload import confirm as native_upload_confirm
+from pytusk.core.native_upload import fanout as native_upload_fanout
+from pytusk.core.native_upload import pipeline as native_upload_pipeline
+from pytusk.core.native_upload.confirm import _ConfirmProgress
+from pytusk.core.native_upload.fanout import (
+    _BytesInFlightThrottle,
+    _FanoutProgress,
+    _upload_node,
+)
 from pytusk.core.system_ops import Registration
+
+# importlib.import_module, not `import pytusk.core.native_upload.certify as
+# native_upload_certify`: the package's __init__.py re-exports a function
+# also named `certify`, which shadows the submodule attribute of the same
+# name once the package is initialised -- import_module bypasses that by
+# going straight through sys.modules instead of attribute traversal.
+native_upload_certify = importlib.import_module("pytusk.core.native_upload.certify")
 
 _BLOB_DATA = b"pytusk native upload deliverable 5 test payload"
 _N_SHARDS = 7
@@ -1101,18 +1114,18 @@ class TestUploadSliversNoOrphanedTasks:
     ``_upload_node``) creates via ``asyncio.create_task`` must be
     ``done()`` -- not left pending, running detached -- by the time
     ``upload_slivers`` returns or raises. Task creation is intercepted by
-    monkeypatching ``native_upload.asyncio.create_task`` so every task the
-    call spawns, at any depth, is tracked without needing access to
+    monkeypatching ``native_upload.fanout.asyncio.create_task`` so every task
+    the call spawns, at any depth, is tracked without needing access to
     ``upload_slivers``'s own local task dict."""
 
     def _track_tasks(
         self, *, monkeypatch: pytest.MonkeyPatch
     ) -> list[asyncio.Task[object]]:
-        """Wrap ``asyncio.create_task`` (as seen through ``native_upload``'s
-        own module-level ``asyncio`` import -- the SAME global ``asyncio``
-        module, so this intercepts every call made anywhere in the process
-        while installed) to record every task created, and return the live
-        list.
+        """Wrap ``asyncio.create_task`` (as seen through
+        ``native_upload.fanout``'s own module-level ``asyncio`` import -- the
+        SAME global ``asyncio`` module, so this intercepts every call made
+        anywhere in the process while installed) to record every task
+        created, and return the live list.
 
         Args:
             monkeypatch (pytest.MonkeyPatch): Fixture used to install and
@@ -1132,7 +1145,7 @@ class TestUploadSliversNoOrphanedTasks:
             created.append(task)
             return task
 
-        monkeypatch.setattr(native_upload.asyncio, "create_task", _tracking_create_task)
+        monkeypatch.setattr(native_upload_fanout.asyncio, "create_task", _tracking_create_task)
         return created
 
     async def test_no_pending_tasks_after_quorum_with_straggler(
@@ -1489,9 +1502,10 @@ class TestCollectConfirmationsNoOrphanedTasks:
     by the early exit, not just the tasks already resolved when quorum was
     reached. Reuses the ``_track_tasks`` monkeypatch pattern established by
     ``TestUploadSliversNoOrphanedTasks`` (see its docstring for why:
-    intercepting ``native_upload``'s own module-level ``asyncio.create_task``
-    catches every task the call spawns, at any depth, without needing
-    access to ``collect_confirmations``'s own local task dict)."""
+    intercepting ``native_upload.confirm``'s own module-level
+    ``asyncio.create_task`` catches every task the call spawns, at any
+    depth, without needing access to ``collect_confirmations``'s own local
+    task dict)."""
 
     def _track_tasks(
         self, *, monkeypatch: pytest.MonkeyPatch
@@ -1521,7 +1535,7 @@ class TestCollectConfirmationsNoOrphanedTasks:
             created.append(task)
             return task
 
-        monkeypatch.setattr(native_upload.asyncio, "create_task", _tracking_create_task)
+        monkeypatch.setattr(native_upload_confirm.asyncio, "create_task", _tracking_create_task)
         return created
 
     async def test_no_pending_tasks_after_early_exit_with_stragglers(
@@ -1771,15 +1785,15 @@ class TestCertifyTx2Failure:
         async def fake_execute_certify(**kwargs: object) -> object:
             raise RuntimeError(original_message)
 
-        monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
+        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
         monkeypatch.setattr(
-            native_upload, "verify_certificate", lambda **kwargs: True
+            native_upload_certify, "verify_certificate", lambda **kwargs: True
         )
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
-                client=cast(native_upload._ExecuteOnlyClient, object()),
+                client=cast(native_upload_common._ExecuteOnlyClient, object()),
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
@@ -1820,15 +1834,15 @@ class TestCertifyTx2Failure:
         async def fake_execute_certify(**kwargs: object) -> object:
             raise ValueError(original_message)
 
-        monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
+        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
         monkeypatch.setattr(
-            native_upload, "verify_certificate", lambda **kwargs: True
+            native_upload_certify, "verify_certificate", lambda **kwargs: True
         )
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
-                client=cast(native_upload._ExecuteOnlyClient, object()),
+                client=cast(native_upload_common._ExecuteOnlyClient, object()),
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
@@ -1879,16 +1893,17 @@ class TestCertifyTx2Failure:
         async def fake_collect_confirmations(**kwargs: object) -> object:
             return SimpleNamespace(signer_positions=())
 
-        monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
-        monkeypatch.setattr(native_upload, "resolve_package_id", fake_resolve_package_id)
+        monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
+        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(native_upload_pipeline, "resolve_package_id", fake_resolve_package_id)
         monkeypatch.setattr(
-            native_upload, "execute_reserve_and_register", fake_execute_reserve_and_register
+            native_upload_pipeline, "execute_reserve_and_register", fake_execute_reserve_and_register
         )
-        monkeypatch.setattr(native_upload, "upload_slivers", fake_upload_slivers)
-        monkeypatch.setattr(native_upload, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(native_upload_pipeline, "upload_slivers", fake_upload_slivers)
+        monkeypatch.setattr(native_upload_pipeline, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(native_upload_certify, "collect_confirmations", fake_collect_confirmations)
         monkeypatch.setattr(
-            native_upload, "verify_certificate", lambda **kwargs: True
+            native_upload_certify, "verify_certificate", lambda **kwargs: True
         )
 
         client = _FakeCertifyClient(
@@ -1945,16 +1960,17 @@ class TestCertifyTx2Failure:
         async def fake_collect_confirmations(**kwargs: object) -> object:
             return SimpleNamespace(signer_positions=())
 
-        monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
-        monkeypatch.setattr(native_upload, "resolve_package_id", fake_resolve_package_id)
+        monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
+        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(native_upload_pipeline, "resolve_package_id", fake_resolve_package_id)
         monkeypatch.setattr(
-            native_upload, "execute_reserve_and_register", fake_execute_reserve_and_register
+            native_upload_pipeline, "execute_reserve_and_register", fake_execute_reserve_and_register
         )
-        monkeypatch.setattr(native_upload, "upload_slivers", fake_upload_slivers)
-        monkeypatch.setattr(native_upload, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(native_upload_pipeline, "upload_slivers", fake_upload_slivers)
+        monkeypatch.setattr(native_upload_pipeline, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(native_upload_certify, "collect_confirmations", fake_collect_confirmations)
         monkeypatch.setattr(
-            native_upload, "verify_certificate", lambda **kwargs: True
+            native_upload_certify, "verify_certificate", lambda **kwargs: True
         )
 
         client = _FakeCertifyClient(

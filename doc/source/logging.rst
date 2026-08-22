@@ -12,25 +12,29 @@ Logger Names
 -------------
 
 Every pytusk module gets its own logger via ``logging.getLogger(__name__)``,
-so the two loggers relevant to native upload progress are:
+so the three loggers relevant to native upload progress are:
 
-``pytusk.core.native_upload``
+``pytusk.core.native_upload.fanout``
    Emits ``INFO``-level records for: per-node sliver-upload outcomes
-   (success, failure with reason, cancelled stragglers), sliver fan-out
-   start/summary, confirmation-collection progress (quorum reached, grace
-   window, per-node confirmation outcomes), and periodic heartbeat
-   progress lines during long-running stages. Emits ``WARNING``-level
-   records for individual storage-node failures that are *tolerated*
-   because quorum is still reachable from the rest of the committee (dead
-   DNS, expired/self-signed TLS certs, and similar node-side issues are
-   common on testnet and do not by themselves fail the upload).
+   (success, failure with reason, cancelled stragglers), and sliver
+   fan-out start/summary and periodic heartbeat progress lines during the
+   fan-out stage. Emits ``WARNING``-level records for individual
+   storage-node failures that are *tolerated* because quorum is still
+   reachable from the rest of the committee (dead DNS, expired/self-signed
+   TLS certs, and similar node-side issues are common on testnet and do
+   not by themselves fail the upload).
+
+``pytusk.core.native_upload.confirm``
+   Emits ``INFO``-level records for confirmation-collection progress
+   (quorum reached, grace window, per-node confirmation outcomes) and its
+   own periodic heartbeat progress lines.
 
 ``pytusk.core.committee``
    Emits ``INFO``-level records for committee/storage-pool resolution:
    ``GetDynamicFields`` page counts when reading the staking object and
    pools table.
 
-Both loggers propagate up to the ``pytusk`` logger by Python's normal
+All three loggers propagate up to the ``pytusk`` logger by Python's normal
 logger-hierarchy rules — attaching a handler to ``pytusk`` (rather than
 to each submodule individually) is the simplest way to capture
 everything.

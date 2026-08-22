@@ -27,7 +27,8 @@ DELIBERATELY NOT HERE: ``system::extend_blob_with_resource``. It consumes a
 ``Storage`` but its SUBJECT is a ``Blob`` -- taking a ``Storage`` argument
 does not make an operation a storage operation, any more than
 ``register_blob`` is one. It is composed inline in
-``pytusk.tusky.tusky_cmds`` alongside the other blob-lifecycle commands.
+``pytusk.tusky.tusky_cmds_storage`` alongside the other blob-lifecycle
+commands.
 It does, however, reuse :func:`validate_fuse_pair` from this module, since
 ``blob::extend_with_resource`` calls ``fuse_periods`` internally and is
 bound by the same compatibility rules (plus one of its own -- the extension

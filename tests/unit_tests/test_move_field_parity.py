@@ -5,8 +5,8 @@
 
 """Drift guard between the deliberately duplicated blob-field parsers.
 
-``pytusk.core.system_ops`` and ``pytusk.tusky.tusky_cmds`` each carry their
-own copy of the blob-field parser (``_end_epoch_and_deletable`` /
+``pytusk.core.system_ops`` and ``pytusk.tusky.tusky_cmds_common`` each carry
+their own copy of the blob-field parser (``_end_epoch_and_deletable`` /
 ``_blob_deletable_and_end_epoch``). That duplication is DELIBERATE -- see
 both functions' own docstrings -- to preserve a one-way dependency
 (``tusky`` depends on ``core``, not the reverse), not an oversight to be

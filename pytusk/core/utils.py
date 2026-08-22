@@ -7,7 +7,8 @@
 
 These are the small, reusable primitives that sit underneath the PTB layers
 in :mod:`pytusk.core.system_ops` and :mod:`pytusk.core.storage_ops`, and are
-also called directly by :mod:`pytusk.tusky.tusky_cmds`. They were factored
+also called directly by pytusk's tusky command modules (e.g.
+``tusky_cmds_lifecycle``, ``tusky_cmds_native_upload``). They were factored
 out of ``system_ops`` so that a module composing storage-object transactions
 does not have to import from the native-upload module to reach them.
 
@@ -62,8 +63,8 @@ default budget is roughly 7 seconds across
 async def resolve_package_id(*, client: WalrusClient, system_object: str) -> str:
     """Read the current Walrus package ID from the configured System object.
 
-    ``pytusk.tusky.tusky_cmds``'s ``_walrus_package_id`` delegates to this
-    function directly; the same pattern is also used by
+    ``pytusk.tusky.tusky_cmds_common``'s ``_walrus_package_id`` delegates to
+    this function directly; the same pattern is also used by
     ``_ensure_wal``/``_cleanup_blobs`` in
     ``tests/integration_tests/conftest.py``: the package ID is read from
     ``System.package_id`` rather than assumed from a Blob's type-tag address,
@@ -93,7 +94,7 @@ def _matches_wal_coin_type(*, coin_type: str, wal_coin_type: str) -> bool:
     The single implementation. ``pytusk.tusky.tusky_cmds`` carried a
     duplicate of this helper until it was consolidated here: the one-way
     dependency rule forbids ``core`` importing ``tusky``, not ``tusky``
-    importing ``core``, and ``tusky_cmds`` already imports from ``pytusk``
+    importing ``core``, and ``tusky`` already imports from ``pytusk``
     freely. Uses an exact match against ``wal_coin_type`` when the active
     network has a pinned value (currently mainnet only); falls back to a
     substring match when unpinned (e.g. testnet, whose contracts are
@@ -116,9 +117,10 @@ async def select_wal_payment_coin(*, client: WalrusClient, owner: str) -> str:
     """Select a single owned WAL coin object to use as ``Coin<WAL>`` payment.
 
     Adapts the coin-selection block used by ``extend_blob_expiration`` in
-    ``pytusk.tusky.tusky_cmds``: resolve the owner's WAL ``coin_type`` via a
-    balance listing (matched via :func:`_matches_wal_coin_type`, the same
-    pinned-exact/substring-fallback logic ``tusky_cmds`` uses), then list
+    ``pytusk.tusky.tusky_cmds_lifecycle``: resolve the owner's WAL
+    ``coin_type`` via a balance listing (matched via
+    :func:`_matches_wal_coin_type`, the same pinned-exact/substring-fallback
+    logic ``tusky_cmds_lifecycle`` uses), then list
     owned coins of that type via ``GetCoins`` and take the largest by
     balance. No merge logic is added -- ``reserve_space``/``register_blob``
     each deduct what they need from a single ``&mut Coin<WAL>`` and leave the

@@ -7,8 +7,10 @@
 ``register_blob`` (Tx1, composed in one PTB) and ``certify_blob`` (Tx2).
 
 Everything Sui-level here is built through pysui, following the exact PTB
-patterns already proven in ``pytusk.tusky.tusky_cmds`` (``extend_blob_expiration``,
-``delete_blob``, ``burn_blob``, ``exchange_for_wal``): a transaction is opened
+patterns already proven in ``pytusk.tusky.tusky_cmds_lifecycle``
+(``extend_blob_expiration``, ``delete_blob``, ``burn_blob``) and
+``pytusk.tusky.tusky_cmds_exchange`` (``exchange_for_wal``): a transaction is
+opened
 via :meth:`~pytusk.client.walrus_client.WalrusClient.transaction`, Move calls
 are issued with ``txn.move_call(target=..., arguments=[...], type_arguments=[])``,
 a command's result is threaded directly into a later command's ``arguments``
@@ -235,8 +237,8 @@ def _end_epoch_and_deletable(obj: sui_prot.Object) -> tuple[int, bool]:
     """Extract a freshly created Blob object's storage end_epoch and deletable flag.
 
     Ported field-for-field from ``_blob_deletable_and_end_epoch`` in
-    ``pytusk.tusky.tusky_cmds`` (not imported from there -- ``tusky`` depends
-    on ``client``, not the reverse).
+    ``pytusk.tusky.tusky_cmds_common`` (not imported from there -- ``tusky``
+    depends on ``client``, not the reverse).
 
     Args:
         obj (sui_prot.Object): A fetched object expected to be a Walrus Blob.
@@ -293,8 +295,9 @@ async def add_reserve_and_register(
     the resulting command result. ``reserve_space``'s ``Storage`` result is
     passed DIRECTLY as the ``storage`` argument to ``register_blob`` -- a
     command result flowing into a later command's ``arguments`` list, the
-    same mechanism ``delete_blob`` and ``exchange_for_wal`` in
-    ``pytusk.tusky.tusky_cmds`` already use for their own command results.
+    same mechanism ``delete_blob`` (``pytusk.tusky.tusky_cmds_lifecycle``)
+    and ``exchange_for_wal`` (``pytusk.tusky.tusky_cmds_exchange``) already
+    use for their own command results.
 
     WARNING: the returned ``Blob`` command result is an UNCONSUMED OBJECT
     RESULT. If the caller does not consume it -- typically via
@@ -475,8 +478,10 @@ async def execute_reserve_and_register(
     only opens a transaction, delegates to it, consumes the returned
     ``Blob`` result (transferring it to the resolved ``sender`` -- an
     object result left unconsumed by a later command would otherwise abort
-    the PTB, exactly the reason ``delete_blob`` and ``exchange_for_wal`` in
-    ``pytusk.tusky.tusky_cmds`` transfer their own move_call results), then
+    the PTB, exactly the reason ``delete_blob``
+    (``pytusk.tusky.tusky_cmds_lifecycle``) and ``exchange_for_wal``
+    (``pytusk.tusky.tusky_cmds_exchange``) transfer their own move_call
+    results), then
     builds, signs, and submits it. It exists for a caller who wants the old
     one-call behaviour rather than composing Tx1 by hand.
 
@@ -502,10 +507,10 @@ async def execute_reserve_and_register(
 
     ``sender``/``sponsor`` are threaded into
     ``client.transaction(initial_sender=..., initial_sponsor=...)``,
-    matching how ``burn_blob`` in ``pytusk.tusky.tusky_cmds`` resolves and
-    passes them. When omitted, ``sender`` defaults to the active address and
-    no sponsor is used -- the same behaviour as the previous bare
-    ``client.transaction()`` call.
+    matching how ``burn_blob`` in ``pytusk.tusky.tusky_cmds_lifecycle``
+    resolves and passes them. When omitted, ``sender`` defaults to the
+    active address and no sponsor is used -- the same behaviour as the
+    previous bare ``client.transaction()`` call.
 
     Gas is left to pysui's automatic simulate, matching every existing PTB
     builder in this repo (none pass an explicit budget).
@@ -674,10 +679,10 @@ async def execute_certify(
 
     ``sender``/``sponsor`` are threaded into
     ``client.transaction(initial_sender=..., initial_sponsor=...)``,
-    matching how ``burn_blob`` in ``pytusk.tusky.tusky_cmds`` resolves and
-    passes them. When omitted, ``sender`` defaults to the active address and
-    no sponsor is used -- the same behaviour as the previous bare
-    ``client.transaction()`` call.
+    matching how ``burn_blob`` in ``pytusk.tusky.tusky_cmds_lifecycle``
+    resolves and passes them. When omitted, ``sender`` defaults to the
+    active address and no sponsor is used -- the same behaviour as the
+    previous bare ``client.transaction()`` call.
 
     Args:
         client (WalrusClient): Client used to submit the transaction.

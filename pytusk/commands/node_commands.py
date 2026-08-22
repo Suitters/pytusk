@@ -264,9 +264,9 @@ class PutMetadata(WalrusCommand):
     any sliver PUT for the same blob -- a node that has not received it
     rejects every sliver PUT with HTTP 400 FAILED_PRECONDITION /
     METADATA_NOT_FOUND. See
-    :func:`~pytusk.core.native_upload._upload_node`, which issues this
-    command first for each node and abandons the whole node (no sliver PUT
-    attempted) if it fails.
+    :func:`~pytusk.core.native_upload.fanout._upload_node`, which issues
+    this command first for each node and abandons the whole node (no sliver
+    PUT attempted) if it fails.
 
     ``base_url`` is a specific storage node's address resolved from the
     committee -- see :attr:`endpoint_role`.
