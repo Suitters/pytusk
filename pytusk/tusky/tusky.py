@@ -5,38 +5,50 @@
 
 """tusky CLI entry point.
 
-Dispatches parsed subcommands to their handlers in tusky_cmds.py.
+Dispatches parsed subcommands to their handlers, split by domain across
+tusky_cmds_read.py, tusky_cmds_write.py, tusky_cmds_query.py,
+tusky_cmds_exchange.py, tusky_cmds_lifecycle.py,
+tusky_cmds_native_upload.py, and tusky_cmds_storage.py (with shared
+helpers in tusky_cmds_common.py).
 """
 
 import asyncio
 import sys
 
-from pytusk.tusky import tusky_cmds
+from pytusk.tusky import (
+    tusky_cmds_exchange,
+    tusky_cmds_lifecycle,
+    tusky_cmds_native_upload,
+    tusky_cmds_query,
+    tusky_cmds_read,
+    tusky_cmds_storage,
+    tusky_cmds_write,
+)
 from pytusk.tusky.tusky_args import build_parser
 
 _DISPATCH = {
-    "read_blob": tusky_cmds.read_blob,
-    "read_quilt": tusky_cmds.read_quilt,
-    "store_blob": tusky_cmds.store_blob,
-    "store_quilt": tusky_cmds.store_quilt,
-    "blobs": tusky_cmds.blobs,
-    "blob": tusky_cmds.blob,
-    "epoch": tusky_cmds.epoch,
-    "committee": tusky_cmds.committee,
-    "expiry_report": tusky_cmds.expiry_report,
-    "wal_coins": tusky_cmds.wal_coins,
-    "exchange_for_wal": tusky_cmds.exchange_for_wal,
-    "exchange_for_sui": tusky_cmds.exchange_for_sui,
-    "extend_blob_expiration": tusky_cmds.extend_blob_expiration,
-    "delete_blob": tusky_cmds.delete_blob,
-    "burn_blob": tusky_cmds.burn_blob,
-    "store_blob_native": tusky_cmds.store_blob_native,
-    "certify_blob": tusky_cmds.certify_blob,
-    "list_storage": tusky_cmds.list_storage,
-    "split_storage": tusky_cmds.split_storage,
-    "fuse_storage": tusky_cmds.fuse_storage,
-    "reclaim_storage": tusky_cmds.reclaim_storage,
-    "extend_blob_with_storage": tusky_cmds.extend_blob_with_storage,
+    "read_blob": tusky_cmds_read.read_blob,
+    "read_quilt": tusky_cmds_read.read_quilt,
+    "store_blob": tusky_cmds_write.store_blob,
+    "store_quilt": tusky_cmds_write.store_quilt,
+    "blobs": tusky_cmds_query.blobs,
+    "blob": tusky_cmds_query.blob,
+    "epoch": tusky_cmds_query.epoch,
+    "committee": tusky_cmds_query.committee,
+    "expiry_report": tusky_cmds_query.expiry_report,
+    "wal_coins": tusky_cmds_query.wal_coins,
+    "exchange_for_wal": tusky_cmds_exchange.exchange_for_wal,
+    "exchange_for_sui": tusky_cmds_exchange.exchange_for_sui,
+    "extend_blob_expiration": tusky_cmds_lifecycle.extend_blob_expiration,
+    "delete_blob": tusky_cmds_lifecycle.delete_blob,
+    "burn_blob": tusky_cmds_lifecycle.burn_blob,
+    "store_blob_native": tusky_cmds_native_upload.store_blob_native,
+    "certify_blob": tusky_cmds_native_upload.certify_blob,
+    "list_storage": tusky_cmds_storage.list_storage,
+    "split_storage": tusky_cmds_storage.split_storage,
+    "fuse_storage": tusky_cmds_storage.fuse_storage,
+    "reclaim_storage": tusky_cmds_storage.reclaim_storage,
+    "extend_blob_with_storage": tusky_cmds_storage.extend_blob_with_storage,
 }
 
 

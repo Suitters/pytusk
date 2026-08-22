@@ -18,7 +18,7 @@ import pytest
 from pysui import SuiRpcResult
 
 from pytusk import NativeBlobReceipt, StageTimings, StorageObject
-from pytusk.tusky import tusky_cmds
+from pytusk.tusky import tusky_cmds_common, tusky_cmds_native_upload, tusky_cmds_storage
 
 
 class _FakeValue:
@@ -161,20 +161,24 @@ def _patch_pipeline(
     """Patch every collaborator certify_blob's --recover path calls, so
     only the handler's own orchestration logic (validation, blob_id-match
     check, call order) is under test."""
-    monkeypatch.setattr(tusky_cmds, "PytuskConfiguration", lambda **kwargs: object())
     monkeypatch.setattr(
-        tusky_cmds, "WalrusClient", lambda *, pytusk_config: fake_client
+        tusky_cmds_common, "PytuskConfiguration", lambda **kwargs: object()
+    )
+    monkeypatch.setattr(
+        tusky_cmds_native_upload, "WalrusClient", lambda *, pytusk_config: fake_client
     )
 
     async def _fake_resolve_package_id(*, client: object, system_object: str) -> str:
         return "0xwalruspkg"
 
-    monkeypatch.setattr(tusky_cmds, "resolve_package_id", _fake_resolve_package_id)
+    monkeypatch.setattr(
+        tusky_cmds_common, "resolve_package_id", _fake_resolve_package_id
+    )
 
     def _fake_encode_blob(*, data: bytes, n_shards: int) -> object:
         return types.SimpleNamespace(blob_id=encoded_blob_id)
 
-    monkeypatch.setattr(tusky_cmds, "encode_blob", _fake_encode_blob)
+    monkeypatch.setattr(tusky_cmds_native_upload, "encode_blob", _fake_encode_blob)
 
     async def _fake_upload_slivers(
         *, client: object, committee: object, encoded: object
@@ -182,13 +186,15 @@ def _patch_pipeline(
         upload_calls.append(encoded)
         return object()
 
-    monkeypatch.setattr(tusky_cmds, "upload_slivers", _fake_upload_slivers)
+    monkeypatch.setattr(
+        tusky_cmds_native_upload, "upload_slivers", _fake_upload_slivers
+    )
 
     async def _fake_collect_confirmations(**kwargs: object) -> str:
         return "fake-certificate"
 
     monkeypatch.setattr(
-        tusky_cmds, "collect_confirmations", _fake_collect_confirmations
+        tusky_cmds_native_upload, "collect_confirmations", _fake_collect_confirmations
     )
 
     async def _fake_certify(**kwargs: object) -> NativeBlobReceipt:
@@ -208,7 +214,7 @@ def _patch_pipeline(
             ),
         )
 
-    monkeypatch.setattr(tusky_cmds, "certify", _fake_certify)
+    monkeypatch.setattr(tusky_cmds_native_upload, "certify", _fake_certify)
 
 
 class TestCertifyBlobRecover:
@@ -223,7 +229,7 @@ class TestCertifyBlobRecover:
         args = _base_args(recover=True, content=None, file=None)
 
         with pytest.raises(SystemExit) as excinfo:
-            await tusky_cmds.certify_blob(args)
+            await tusky_cmds_native_upload.certify_blob(args)
 
         assert excinfo.value.code == 1
         captured = capsys.readouterr()
@@ -237,7 +243,7 @@ class TestCertifyBlobRecover:
         args = _base_args(recover=False, content="hello", file=None)
 
         with pytest.raises(SystemExit) as excinfo:
-            await tusky_cmds.certify_blob(args)
+            await tusky_cmds_native_upload.certify_blob(args)
 
         assert excinfo.value.code == 1
         captured = capsys.readouterr()
@@ -263,7 +269,7 @@ class TestCertifyBlobRecover:
         args = _base_args(recover=True, content="hello world")
 
         with pytest.raises(SystemExit) as excinfo:
-            await tusky_cmds.certify_blob(args)
+            await tusky_cmds_native_upload.certify_blob(args)
 
         assert excinfo.value.code == 1
         captured = capsys.readouterr()
@@ -288,7 +294,7 @@ class TestCertifyBlobRecover:
         )
         args = _base_args(recover=True, content="hello world")
 
-        await tusky_cmds.certify_blob(args)
+        await tusky_cmds_native_upload.certify_blob(args)
 
         assert len(upload_calls) == 1
         captured = capsys.readouterr()
@@ -303,13 +309,13 @@ class TestSplitByEpochApplicable:
         storage = StorageObject(
             object_id="0x1", start_epoch=491, end_epoch=493, storage_size=100
         )
-        assert tusky_cmds._split_by_epoch_applicable(storage=storage) is True
+        assert tusky_cmds_storage._split_by_epoch_applicable(storage=storage) is True
 
     def test_false_when_range_spans_one_epoch(self) -> None:
         storage = StorageObject(
             object_id="0x1", start_epoch=491, end_epoch=492, storage_size=100
         )
-        assert tusky_cmds._split_by_epoch_applicable(storage=storage) is False
+        assert tusky_cmds_storage._split_by_epoch_applicable(storage=storage) is False
 
 
 class TestSplitBySizeApplicable:
@@ -320,19 +326,19 @@ class TestSplitBySizeApplicable:
         storage = StorageObject(
             object_id="0x1", start_epoch=491, end_epoch=492, storage_size=2
         )
-        assert tusky_cmds._split_by_size_applicable(storage=storage) is True
+        assert tusky_cmds_storage._split_by_size_applicable(storage=storage) is True
 
     def test_false_when_size_is_one(self) -> None:
         storage = StorageObject(
             object_id="0x1", start_epoch=491, end_epoch=492, storage_size=1
         )
-        assert tusky_cmds._split_by_size_applicable(storage=storage) is False
+        assert tusky_cmds_storage._split_by_size_applicable(storage=storage) is False
 
     def test_false_when_size_is_zero(self) -> None:
         storage = StorageObject(
             object_id="0x1", start_epoch=491, end_epoch=492, storage_size=0
         )
-        assert tusky_cmds._split_by_size_applicable(storage=storage) is False
+        assert tusky_cmds_storage._split_by_size_applicable(storage=storage) is False
 
 
 class _FakeDestroyTxn:
@@ -374,7 +380,9 @@ class TestDestroyStorageBatches:
     async def test_execute_mode_prints_per_object_and_total_rebate(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setattr(tusky_cmds, "ExecuteTransaction", lambda **kwargs: object())
+        monkeypatch.setattr(
+            tusky_cmds_common, "ExecuteTransaction", lambda **kwargs: object()
+        )
         executed = sui_prot.ExecutedTransaction(
             digest="0xdigest",
             effects=sui_prot.TransactionEffects(
@@ -393,7 +401,7 @@ class TestDestroyStorageBatches:
         )
         client = _FakeDestroyClient(responses=[SuiRpcResult(True, "", executed)])
 
-        results = await tusky_cmds._destroy_storage_batches(
+        results = await tusky_cmds_storage._destroy_storage_batches(
             client=client,
             walrus_pkg="0xpkg",
             storage_ids=["0xa", "0xb"],
@@ -410,13 +418,15 @@ class TestDestroyStorageBatches:
     async def test_simulate_mode_skips_rebate_summary(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setattr(tusky_cmds, "SimulateTransaction", lambda **kwargs: object())
+        monkeypatch.setattr(
+            tusky_cmds_common, "SimulateTransaction", lambda **kwargs: object()
+        )
         simulated = sui_prot.SimulateTransactionResponse(
             transaction=sui_prot.ExecutedTransaction(digest="0xdigest")
         )
         client = _FakeDestroyClient(responses=[SuiRpcResult(True, "", simulated)])
 
-        results = await tusky_cmds._destroy_storage_batches(
+        results = await tusky_cmds_storage._destroy_storage_batches(
             client=client,
             walrus_pkg="0xpkg",
             storage_ids=["0xa"],
@@ -432,7 +442,9 @@ class TestDestroyStorageBatches:
     async def test_zero_rebate_still_prints_total(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setattr(tusky_cmds, "ExecuteTransaction", lambda **kwargs: object())
+        monkeypatch.setattr(
+            tusky_cmds_common, "ExecuteTransaction", lambda **kwargs: object()
+        )
         executed = sui_prot.ExecutedTransaction(
             digest="0xdigest",
             effects=sui_prot.TransactionEffects(
@@ -441,7 +453,7 @@ class TestDestroyStorageBatches:
         )
         client = _FakeDestroyClient(responses=[SuiRpcResult(True, "", executed)])
 
-        results = await tusky_cmds._destroy_storage_batches(
+        results = await tusky_cmds_storage._destroy_storage_batches(
             client=client,
             walrus_pkg="0xpkg",
             storage_ids=["0xa"],
@@ -457,9 +469,11 @@ class TestDestroyStorageBatches:
     async def test_batches_storage_ids_at_max_per_ptb(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(tusky_cmds, "ExecuteTransaction", lambda **kwargs: object())
+        monkeypatch.setattr(
+            tusky_cmds_common, "ExecuteTransaction", lambda **kwargs: object()
+        )
         storage_ids = [
-            f"0x{i:064x}" for i in range(tusky_cmds._MAX_STORAGE_OPS_PER_PTB + 1)
+            f"0x{i:064x}" for i in range(tusky_cmds_storage._MAX_STORAGE_OPS_PER_PTB + 1)
         ]
         client = _FakeDestroyClient(
             responses=[
@@ -468,7 +482,7 @@ class TestDestroyStorageBatches:
             ]
         )
 
-        results = await tusky_cmds._destroy_storage_batches(
+        results = await tusky_cmds_storage._destroy_storage_batches(
             client=client,
             walrus_pkg="0xpkg",
             storage_ids=storage_ids,
@@ -479,17 +493,19 @@ class TestDestroyStorageBatches:
 
         assert len(results) == 2
         assert len(client.txns) == 2
-        assert len(client.txns[0].move_calls) == tusky_cmds._MAX_STORAGE_OPS_PER_PTB
+        assert len(client.txns[0].move_calls) == tusky_cmds_storage._MAX_STORAGE_OPS_PER_PTB
         assert len(client.txns[1].move_calls) == 1
 
     async def test_submission_failure_exits(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(tusky_cmds, "ExecuteTransaction", lambda **kwargs: object())
+        monkeypatch.setattr(
+            tusky_cmds_common, "ExecuteTransaction", lambda **kwargs: object()
+        )
         client = _FakeDestroyClient(responses=[SuiRpcResult(False, "boom", None)])
 
         with pytest.raises(SystemExit):
-            await tusky_cmds._destroy_storage_batches(
+            await tusky_cmds_storage._destroy_storage_batches(
                 client=client,
                 walrus_pkg="0xpkg",
                 storage_ids=["0xa"],

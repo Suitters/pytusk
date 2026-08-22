@@ -35,7 +35,7 @@ from pytusk.core.system_ops import (
 from pytusk.core.utils import (
     _matches_wal_coin_type,
 )
-from pytusk.tusky.tusky_cmds import (
+from pytusk.tusky.tusky_cmds_common import (
     _blob_deletable_and_end_epoch,
 )
 
