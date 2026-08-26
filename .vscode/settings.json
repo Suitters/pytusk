@@ -5,9 +5,11 @@
         // This is because of false positive in create_new_address of sui_crypto.py
         "--disable",
         "unpacking-non-sequence,C0301",
-        "--extension-pkg-allow-list=pysui_fastcrypto"
+        "--extension-pkg-allow-list=pysui_fastcrypto",
+        "--max-module-lines",
+        "3500"
       ],
-    "autoDocstring.docstringFormat": "google",
+    "autoDocstring.docstringFormat": "sphinx",
     "autoDocstring.generateDocstringOnEnter": true,
     "autoDocstring.guessTypes": true,
     "autoDocstring.includeName": false,
@@ -16,5 +18,5 @@
       "editor.formatOnSave": true,
     },
     "python-envs.defaultEnvManager": "ms-python.python:pipenv",
-    
+
 }

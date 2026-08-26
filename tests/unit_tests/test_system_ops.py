@@ -12,8 +12,8 @@ None of that is meaningfully unit-testable without either a live node or an
 elaborate mock of ``AsyncSuiTransaction``/``WalrusClient`` that would fake
 coverage rather than prove behaviour -- so none of it is tested here. What IS
 tested: the pure/local helpers that do not require a client at all
-(``_end_epoch_and_deletable``, ``_find_created_object_id``,
-``_require_success``, the ``_encoded_storage_amount`` blocker) and the
+(``_end_epoch_and_deletable``, ``find_created_object_id``,
+``require_success``, the ``_encoded_storage_amount`` blocker) and the
 ``Registration``/``CertifyResult`` dataclasses (construction, frozen,
 keyword-only). See the deliverable-4 report for what is deferred to the live
 testnet run and why.
@@ -42,7 +42,7 @@ import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 import pytest
 from pysui import SuiRpcResult
 
-from pytusk.core import system_ops
+from pytusk.core import system_ops, utils
 from pytusk.core.certification import Certificate
 from pytusk.core.encoding import EncodedBlob, encoded_blob_length
 from pytusk.core.system_ops import (
@@ -50,10 +50,12 @@ from pytusk.core.system_ops import (
     Registration,
     _encoded_storage_amount,
     _end_epoch_and_deletable,
-    _find_created_object_id,
-    _require_success,
     add_certify,
     execute_reserve_and_register,
+)
+from pytusk.core.utils import (
+    find_created_object_id,
+    require_success,
     wait_for_finality,
 )
 
@@ -353,7 +355,7 @@ class TestFindCreatedObjectId:
             ]
         )
         assert (
-            _find_created_object_id(effects=effects, owner="0xsender")  # type: ignore[arg-type]
+            find_created_object_id(effects=effects, owner="0xsender")  # type: ignore[arg-type]
             == "0xblob"
         )
 
@@ -369,12 +371,12 @@ class TestFindCreatedObjectId:
             ]
         )
         with pytest.raises(RuntimeError):
-            _find_created_object_id(effects=effects, owner="0xsender")  # type: ignore[arg-type]
+            find_created_object_id(effects=effects, owner="0xsender")  # type: ignore[arg-type]
 
     def test_no_changed_objects_raises(self) -> None:
         """An empty changed_objects list raises RuntimeError."""
         with pytest.raises(RuntimeError):
-            _find_created_object_id(effects=_FakeEffects(), owner="0xsender")  # type: ignore[arg-type]
+            find_created_object_id(effects=_FakeEffects(), owner="0xsender")  # type: ignore[arg-type]
 
 
 class TestRequireSuccess:
@@ -385,7 +387,7 @@ class TestRequireSuccess:
         effects = _FakeEffects(status=_FakeStatus(success=True))
         result_data = _FakeResultData(effects=effects)
         assert (
-            _require_success(result_data=result_data, label="test")  # type: ignore[arg-type]
+            require_success(result_data=result_data, label="test")  # type: ignore[arg-type]
             is effects
         )
 
@@ -398,20 +400,20 @@ class TestRequireSuccess:
         )
         result_data = _FakeResultData(effects=effects)
         with pytest.raises(RuntimeError, match="boom"):
-            _require_success(result_data=result_data, label="test")  # type: ignore[arg-type]
+            require_success(result_data=result_data, label="test")  # type: ignore[arg-type]
 
     def test_failure_without_error_uses_unknown(self) -> None:
         """An abort with no error detail falls back to 'unknown error'."""
         effects = _FakeEffects(status=_FakeStatus(success=False, error=None))
         result_data = _FakeResultData(effects=effects)
         with pytest.raises(RuntimeError, match="unknown error"):
-            _require_success(result_data=result_data, label="test")  # type: ignore[arg-type]
+            require_success(result_data=result_data, label="test")  # type: ignore[arg-type]
 
     def test_no_effects_raises(self) -> None:
         """A response carrying no effects at all raises RuntimeError."""
         result_data = _FakeResultData(effects=None)
         with pytest.raises(RuntimeError):
-            _require_success(result_data=result_data, label="test")  # type: ignore[arg-type]
+            require_success(result_data=result_data, label="test")  # type: ignore[arg-type]
 
 
 class _FakeFinalityClient:
@@ -442,14 +444,14 @@ class TestWaitForFinality:
     """
 
     def _patch_sleep(self, *, monkeypatch: pytest.MonkeyPatch) -> list[float]:
-        """Replace ``system_ops.asyncio.sleep`` with a recorder and return
+        """Replace ``utils.asyncio.sleep`` with a recorder and return
         the list it appends delays to."""
         sleep_calls: list[float] = []
 
         async def _fake_sleep(seconds: float) -> None:
             sleep_calls.append(seconds)
 
-        monkeypatch.setattr(system_ops.asyncio, "sleep", _fake_sleep)
+        monkeypatch.setattr(utils.asyncio, "sleep", _fake_sleep)
         return sleep_calls
 
     async def test_visible_immediately(self, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -38,21 +38,27 @@ exception-conversion or timing-threading logic under test.
 
 import asyncio
 import dataclasses
-from collections.abc import Coroutine
+import importlib
+from collections.abc import Coroutine, Mapping
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 from pysui import SuiRpcResult
 
+from pytusk.client.walrus_client import WalrusClient
 from pytusk.commands.node_commands import (
     GetStorageConfirmation,
     PutMetadata,
     PutSliver,
     SignedConfirmation,
 )
-from pytusk.core import native_upload
-from pytusk.core.certification import confirmation_message, min_weight_for_quorum
+from pytusk.core.certification import (
+    Certificate,
+    confirmation_message,
+    min_weight_for_quorum,
+)
 from pytusk.core.committee import WalrusCommittee, WalrusCommitteeMember
 from pytusk.core.encoding import encode_blob
 from pytusk.core.native_upload import (
@@ -63,17 +69,30 @@ from pytusk.core.native_upload import (
     NodeUploadOutcome,
     SliverUploadError,
     StageTimings,
-    _BytesInFlightThrottle,
-    _ConfirmProgress,
-    _FanoutProgress,
-    _upload_node,
     certify,
     collect_confirmations,
     object_id_to_raw_bytes,
     store_blob_native,
     upload_slivers,
 )
+from pytusk.core.native_upload import common as native_upload_common
+from pytusk.core.native_upload import confirm as native_upload_confirm
+from pytusk.core.native_upload import fanout as native_upload_fanout
+from pytusk.core.native_upload import pipeline as native_upload_pipeline
+from pytusk.core.native_upload.confirm import _ConfirmProgress
+from pytusk.core.native_upload.fanout import (
+    _BytesInFlightThrottle,
+    _FanoutProgress,
+    _upload_node,
+)
 from pytusk.core.system_ops import Registration
+
+# importlib.import_module, not `import pytusk.core.native_upload.certify as
+# native_upload_certify`: the package's __init__.py re-exports a function
+# also named `certify`, which shadows the submodule attribute of the same
+# name once the package is initialised -- import_module bypasses that by
+# going straight through sys.modules instead of attribute traversal.
+native_upload_certify = importlib.import_module("pytusk.core.native_upload.certify")
 
 _BLOB_DATA = b"pytusk native upload deliverable 5 test payload"
 _N_SHARDS = 7
@@ -167,7 +186,7 @@ class _FakeStorageClient:
         *,
         put_failures: dict[tuple[str, str], str] | None = None,
         metadata_failures: dict[str, str] | None = None,
-        confirmations: dict[str, SignedConfirmation | None] | None = None,
+        confirmations: Mapping[str, SignedConfirmation | None] | None = None,
     ) -> None:
         self.put_failures = put_failures or {}
         self.metadata_failures = metadata_failures or {}
@@ -183,6 +202,7 @@ class _FakeStorageClient:
         base_url: str | None = None,
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
+        assert base_url is not None
         if isinstance(command, PutMetadata):
             reason = self.metadata_failures.get(base_url)
             if reason is not None:
@@ -227,6 +247,7 @@ class _FlakyPutClient:
         base_url: str | None = None,
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
+        assert base_url is not None
         if isinstance(command, PutMetadata):
             return SuiRpcResult(True, "")
         if not isinstance(command, PutSliver):
@@ -368,7 +389,7 @@ class _HangingConfirmationClient:
     def __init__(
         self,
         *,
-        confirmations: dict[str, SignedConfirmation | None],
+        confirmations: Mapping[str, SignedConfirmation | None],
         hang_for: frozenset[str],
     ) -> None:
         self.confirmations = confirmations
@@ -386,6 +407,7 @@ class _HangingConfirmationClient:
         base_url: str | None = None,
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
+        assert base_url is not None
         if not isinstance(command, GetStorageConfirmation):
             raise NotImplementedError(f"Unhandled command type: {type(command)}")
         if base_url in self.hang_for:
@@ -441,6 +463,7 @@ class _GatedStragglerConfirmationClient:
         base_url: str | None = None,
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
+        assert base_url is not None
         if not isinstance(command, GetStorageConfirmation):
             raise NotImplementedError(f"Unhandled command type: {type(command)}")
         if base_url == self.straggler_base_url:
@@ -1091,18 +1114,18 @@ class TestUploadSliversNoOrphanedTasks:
     ``_upload_node``) creates via ``asyncio.create_task`` must be
     ``done()`` -- not left pending, running detached -- by the time
     ``upload_slivers`` returns or raises. Task creation is intercepted by
-    monkeypatching ``native_upload.asyncio.create_task`` so every task the
-    call spawns, at any depth, is tracked without needing access to
+    monkeypatching ``native_upload.fanout.asyncio.create_task`` so every task
+    the call spawns, at any depth, is tracked without needing access to
     ``upload_slivers``'s own local task dict."""
 
     def _track_tasks(
         self, *, monkeypatch: pytest.MonkeyPatch
     ) -> list[asyncio.Task[object]]:
-        """Wrap ``asyncio.create_task`` (as seen through ``native_upload``'s
-        own module-level ``asyncio`` import -- the SAME global ``asyncio``
-        module, so this intercepts every call made anywhere in the process
-        while installed) to record every task created, and return the live
-        list.
+        """Wrap ``asyncio.create_task`` (as seen through
+        ``native_upload.fanout``'s own module-level ``asyncio`` import -- the
+        SAME global ``asyncio`` module, so this intercepts every call made
+        anywhere in the process while installed) to record every task
+        created, and return the live list.
 
         Args:
             monkeypatch (pytest.MonkeyPatch): Fixture used to install and
@@ -1116,13 +1139,13 @@ class TestUploadSliversNoOrphanedTasks:
         original_create_task = asyncio.create_task
 
         def _tracking_create_task(
-            coro: Coroutine[object, object, object], **kwargs: object
+            coro: Coroutine[object, object, object], *, name: str | None = None
         ) -> asyncio.Task[object]:
-            task = original_create_task(coro, **kwargs)
+            task = original_create_task(coro, name=name)
             created.append(task)
             return task
 
-        monkeypatch.setattr(native_upload.asyncio, "create_task", _tracking_create_task)
+        monkeypatch.setattr(native_upload_fanout.asyncio, "create_task", _tracking_create_task)
         return created
 
     async def test_no_pending_tasks_after_quorum_with_straggler(
@@ -1353,7 +1376,7 @@ class TestCollectConfirmationsQueriesAll:
         confirmation_calls = [
             base_url
             for base_url, command in client.calls
-            if isinstance(command, GetStorageConfirmation)
+            if isinstance(command, GetStorageConfirmation) and base_url is not None
         ]
         assert failed_upload_node.base_url in confirmation_calls
         assert len(confirmation_calls) == len(committee.members)
@@ -1479,9 +1502,10 @@ class TestCollectConfirmationsNoOrphanedTasks:
     by the early exit, not just the tasks already resolved when quorum was
     reached. Reuses the ``_track_tasks`` monkeypatch pattern established by
     ``TestUploadSliversNoOrphanedTasks`` (see its docstring for why:
-    intercepting ``native_upload``'s own module-level ``asyncio.create_task``
-    catches every task the call spawns, at any depth, without needing
-    access to ``collect_confirmations``'s own local task dict)."""
+    intercepting ``native_upload.confirm``'s own module-level
+    ``asyncio.create_task`` catches every task the call spawns, at any
+    depth, without needing access to ``collect_confirmations``'s own local
+    task dict)."""
 
     def _track_tasks(
         self, *, monkeypatch: pytest.MonkeyPatch
@@ -1505,13 +1529,13 @@ class TestCollectConfirmationsNoOrphanedTasks:
         original_create_task = asyncio.create_task
 
         def _tracking_create_task(
-            coro: Coroutine[object, object, object], **kwargs: object
+            coro: Coroutine[object, object, object], *, name: str | None = None
         ) -> asyncio.Task[object]:
-            task = original_create_task(coro, **kwargs)
+            task = original_create_task(coro, name=name)
             created.append(task)
             return task
 
-        monkeypatch.setattr(native_upload.asyncio, "create_task", _tracking_create_task)
+        monkeypatch.setattr(native_upload_confirm.asyncio, "create_task", _tracking_create_task)
         return created
 
     async def test_no_pending_tasks_after_early_exit_with_stragglers(
@@ -1672,7 +1696,7 @@ class TestCollectConfirmationsFailurePathUnchanged:
         confirmation_calls = [
             base_url
             for base_url, command in client.calls
-            if isinstance(command, GetStorageConfirmation)
+            if isinstance(command, GetStorageConfirmation) and base_url is not None
         ]
         assert sorted(confirmation_calls) == sorted(
             member.base_url for member in signed_committee.members
@@ -1761,19 +1785,19 @@ class TestCertifyTx2Failure:
         async def fake_execute_certify(**kwargs: object) -> object:
             raise RuntimeError(original_message)
 
-        monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
+        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
         monkeypatch.setattr(
-            native_upload, "verify_certificate", lambda **kwargs: True
+            native_upload_certify, "verify_certificate", lambda **kwargs: True
         )
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
-                client=object(),
+                client=cast(native_upload_common._ExecuteOnlyClient, object()),
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
-                certificate=SimpleNamespace(signer_positions=()),
+                certificate=cast(Certificate, SimpleNamespace(signer_positions=())),
                 package_id="0xpkg",
                 system_object="0xsystem",
                 staking_object="0xstaking",
@@ -1810,19 +1834,19 @@ class TestCertifyTx2Failure:
         async def fake_execute_certify(**kwargs: object) -> object:
             raise ValueError(original_message)
 
-        monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
+        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
         monkeypatch.setattr(
-            native_upload, "verify_certificate", lambda **kwargs: True
+            native_upload_certify, "verify_certificate", lambda **kwargs: True
         )
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
-                client=object(),
+                client=cast(native_upload_common._ExecuteOnlyClient, object()),
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
-                certificate=SimpleNamespace(signer_positions=()),
+                certificate=cast(Certificate, SimpleNamespace(signer_positions=())),
                 package_id="0xpkg",
                 system_object="0xsystem",
                 staking_object="0xstaking",
@@ -1869,23 +1893,24 @@ class TestCertifyTx2Failure:
         async def fake_collect_confirmations(**kwargs: object) -> object:
             return SimpleNamespace(signer_positions=())
 
-        monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
-        monkeypatch.setattr(native_upload, "resolve_package_id", fake_resolve_package_id)
+        monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
+        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(native_upload_pipeline, "resolve_package_id", fake_resolve_package_id)
         monkeypatch.setattr(
-            native_upload, "execute_reserve_and_register", fake_execute_reserve_and_register
+            native_upload_pipeline, "execute_reserve_and_register", fake_execute_reserve_and_register
         )
-        monkeypatch.setattr(native_upload, "upload_slivers", fake_upload_slivers)
-        monkeypatch.setattr(native_upload, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(native_upload_pipeline, "upload_slivers", fake_upload_slivers)
+        monkeypatch.setattr(native_upload_pipeline, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(native_upload_certify, "collect_confirmations", fake_collect_confirmations)
         monkeypatch.setattr(
-            native_upload, "verify_certificate", lambda **kwargs: True
+            native_upload_certify, "verify_certificate", lambda **kwargs: True
         )
 
         client = _FakeCertifyClient(
             committee=committee, system_object="0xsystem", staking_object="0xstaking"
         )
 
-        receipt = await store_blob_native(client=client, data=_BLOB_DATA, epochs=3)
+        receipt = await store_blob_native(client=cast(WalrusClient, client), data=_BLOB_DATA, epochs=3)
 
         assert receipt.certified is False
         assert receipt.failed_stage == "certify"
@@ -1935,23 +1960,24 @@ class TestCertifyTx2Failure:
         async def fake_collect_confirmations(**kwargs: object) -> object:
             return SimpleNamespace(signer_positions=())
 
-        monkeypatch.setattr(native_upload, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload, "execute_certify", fake_execute_certify)
-        monkeypatch.setattr(native_upload, "resolve_package_id", fake_resolve_package_id)
+        monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
+        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(native_upload_pipeline, "resolve_package_id", fake_resolve_package_id)
         monkeypatch.setattr(
-            native_upload, "execute_reserve_and_register", fake_execute_reserve_and_register
+            native_upload_pipeline, "execute_reserve_and_register", fake_execute_reserve_and_register
         )
-        monkeypatch.setattr(native_upload, "upload_slivers", fake_upload_slivers)
-        monkeypatch.setattr(native_upload, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(native_upload_pipeline, "upload_slivers", fake_upload_slivers)
+        monkeypatch.setattr(native_upload_pipeline, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(native_upload_certify, "collect_confirmations", fake_collect_confirmations)
         monkeypatch.setattr(
-            native_upload, "verify_certificate", lambda **kwargs: True
+            native_upload_certify, "verify_certificate", lambda **kwargs: True
         )
 
         client = _FakeCertifyClient(
             committee=committee, system_object="0xsystem", staking_object="0xstaking"
         )
 
-        receipt = await store_blob_native(client=client, data=_BLOB_DATA, epochs=3)
+        receipt = await store_blob_native(client=cast(WalrusClient, client), data=_BLOB_DATA, epochs=3)
 
         assert receipt.certified is False
         assert receipt.failed_stage == "certify"

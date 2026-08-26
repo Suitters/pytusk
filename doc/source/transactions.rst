@@ -223,6 +223,273 @@ transfers back to the sender.
 
     asyncio.run(main())
 
+Storage Management
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Standalone ``Storage`` objects (unwrapped from any ``Blob``) can be
+split, fused, destroyed, or used to extend a blob's expiration instead
+of paying WAL. All four operations are thin wrappers around
+``storage_resource``/``system`` Move entry points; the sections below
+show each, with the Move-level constraints that would otherwise surface
+only as an opaque on-chain abort.
+
+Splitting Storage
+''''''''''''''''''''''''''''''''''''''''
+
+Splitting mutates the original ``Storage`` in place and returns a NEW
+``Storage`` for the split-off portion. Since ``Storage`` has no ``drop``
+ability, that returned result must be consumed within the same PTB (here,
+transferred to the sender) or the transaction aborts when built.
+
+Splitting **by epoch** requires an interior split point: Move asserts
+``start_epoch < split_epoch < end_epoch``, so the object's epoch range
+must span at least two epochs -- a ``Storage`` covering only one epoch
+(e.g. ``[491, 492)``) has no valid ``split_epoch`` and cannot be split
+this way at all.
+
+.. code-block:: python
+
+    import asyncio
+    from pysui import ExecuteTransaction, GetObject
+    from pytusk import PytuskConfiguration, WalrusClient, add_split_by_epoch
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            system_obj_id = client.config.network.system_object
+            sys_result = await client.execute(
+                command=GetObject(object_id=system_obj_id)
+            )
+            walrus_pkg = sys_result.result_data.json.struct_value.fields[
+                "package_id"
+            ].string_value
+            storage_object_id = "0x..."  # the Storage object's Sui object ID
+
+            txn = await client.transaction(initial_sender=sender)
+            new_storage = await add_split_by_epoch(
+                txn=txn,
+                package_id=walrus_pkg,
+                storage_object_id=storage_object_id,
+                split_epoch=500,  # must satisfy start_epoch < 500 < end_epoch
+            )
+            await txn.transfer_objects(transfers=[new_storage], recipient=sender)
+
+            txdict = await txn.build_and_sign()
+            result = await client.execute(command=ExecuteTransaction(**txdict))
+            if result.is_ok():
+                print(result.result_data)
+
+    asyncio.run(main())
+
+Splitting **by size** instead peels off a byte capacity, leaving the
+original with the remainder; Move asserts ``storage_size >= split_size``
+(``EIncompatibleAmount`` if the requested size is larger than what
+exists). Swap ``add_split_by_epoch``/``split_epoch=...`` above for
+``add_split_by_size``/``split_size=...`` -- the rest of the PTB is
+identical.
+
+Fusing Storage
+''''''''''''''''''''''''''''''''''''''''
+
+Fusing two Storage objects consumes one of them (called ``second`` below)
+and folds its size and/or epoch range into the other (``first``), which
+is mutated in place rather than consumed. ``storage_resource::fuse``
+dispatches on whether the two share a ``start_epoch``:
+
+- **Same start_epoch** ("fuse_amount" route) -- requires an IDENTICAL
+  epoch range on both sides; sizes are simply summed.
+- **Different start_epoch** ("fuse_periods" route) -- requires EQUAL
+  sizes and ADJACENT ranges (one must begin exactly where the other
+  ends); the epoch ranges are joined.
+
+:func:`~pytusk.validate_fuse_pair` mirrors this dispatch and assertion
+order exactly, so pre-flighting a pair before building the PTB reports
+the same reason Move itself would abort with:
+
+.. code-block:: python
+
+    import asyncio
+    from pysui import ExecuteTransaction, GetObject
+    from pytusk import (
+        PytuskConfiguration,
+        WalrusClient,
+        add_fuse,
+        storage_from_object,
+        validate_fuse_pair,
+    )
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            system_obj_id = client.config.network.system_object
+            sys_result = await client.execute(
+                command=GetObject(object_id=system_obj_id)
+            )
+            walrus_pkg = sys_result.result_data.json.struct_value.fields[
+                "package_id"
+            ].string_value
+
+            first_id = "0x..."  # survives and absorbs second_id
+            second_id = "0x..."  # consumed by the fuse
+
+            first_obj = await client.execute(command=GetObject(object_id=first_id))
+            second_obj = await client.execute(command=GetObject(object_id=second_id))
+            first = storage_from_object(obj=first_obj.result_data)
+            second = storage_from_object(obj=second_obj.result_data)
+            validate_fuse_pair(first=first, second=second)  # raises ValueError if incompatible
+
+            txn = await client.transaction(initial_sender=sender)
+            await add_fuse(
+                txn=txn,
+                package_id=walrus_pkg,
+                first_storage_id=first_id,
+                second_storage_id=second_id,
+            )
+
+            txdict = await txn.build_and_sign()
+            result = await client.execute(command=ExecuteTransaction(**txdict))
+            if result.is_ok():
+                print(result.result_data)
+
+    asyncio.run(main())
+
+Reclaiming Storage
+''''''''''''''''''''''''''''''''''''''''
+
+``storage_resource::destroy`` consumes a ``Storage`` object and refunds
+its Sui storage rebate to the sender -- it does NOT refund the WAL
+originally paid to reserve the capacity, which is spent regardless. Move
+performs no checks at all: an unexpired reservation is destroyed just as
+readily as a spent one, so there is no pre-flight to run first.
+
+.. code-block:: python
+
+    import asyncio
+    from pysui import ExecuteTransaction
+    from pytusk import PytuskConfiguration, WalrusClient, add_destroy_storage
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            system_obj_id = client.config.network.system_object
+            sys_result = await client.execute(
+                command=GetObject(object_id=system_obj_id)
+            )
+            walrus_pkg = sys_result.result_data.json.struct_value.fields[
+                "package_id"
+            ].string_value
+            storage_object_id = "0x..."
+
+            txn = await client.transaction(initial_sender=sender)
+            await add_destroy_storage(
+                txn=txn,
+                package_id=walrus_pkg,
+                storage_object_id=storage_object_id,
+            )
+
+            txdict = await txn.build_and_sign()
+            result = await client.execute(command=ExecuteTransaction(**txdict))
+            if result.is_ok():
+                print(result.result_data)
+
+    asyncio.run(main())
+
+Extending a Blob with Storage
+''''''''''''''''''''''''''''''''''''''''
+
+``system::extend_blob_with_resource`` pays for a blob's expiration
+extension with a Storage object instead of WAL. It bottoms out in
+``blob::extend_with_resource``, which imposes four requirements:
+
+- the blob must be CERTIFIED (``ENotCertified``);
+- the blob must not already be expired (``EResourceBounds``);
+- the extension's ``end_epoch`` must be strictly LATER than the blob's
+  current ``end_epoch`` (``EResourceBounds``);
+- the extension must satisfy the SAME rules as ``fuse_periods`` against
+  the blob's existing storage -- **an exact ``storage_size`` match**
+  (``EIncompatibleAmount``) and epoch-range adjacency
+  (``EIncompatibleEpochs``). This is easy to get wrong: buying an
+  arbitrary standalone ``Storage`` object will almost never satisfy the
+  exact-size requirement -- it must be sized to match the blob's
+  existing storage precisely.
+
+The Storage object is consumed by the call and ceases to exist.
+:func:`~pytusk.fuse_periods_incompatibility` (not
+:func:`~pytusk.fuse_incompatibility`) mirrors the last check, since
+``extend_with_resource`` calls ``fuse_periods`` unconditionally rather
+than going through ``fuse``'s ``start_epoch`` dispatch:
+
+.. code-block:: python
+
+    import asyncio
+    from pysui import ExecuteTransaction, GetObject
+    from pytusk import (
+        PytuskConfiguration,
+        WalrusClient,
+        fuse_periods_incompatibility,
+        storage_from_blob,
+        storage_from_object,
+    )
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            system_obj_id = client.config.network.system_object
+            sys_result = await client.execute(
+                command=GetObject(object_id=system_obj_id)
+            )
+            walrus_pkg = sys_result.result_data.json.struct_value.fields[
+                "package_id"
+            ].string_value
+
+            blob_object_id = "0x..."  # the blob's Sui object ID
+            storage_object_id = "0x..."  # consumed by the extension
+
+            blob_obj = await client.execute(command=GetObject(object_id=blob_object_id))
+            storage_obj = await client.execute(
+                command=GetObject(object_id=storage_object_id)
+            )
+            blob_storage = storage_from_blob(obj=blob_obj.result_data)
+            extension = storage_from_object(obj=storage_obj.result_data)
+
+            reason = fuse_periods_incompatibility(first=blob_storage, second=extension)
+            if reason is not None:
+                raise ValueError(reason)
+
+            txn = await client.transaction(initial_sender=sender)
+            await txn.move_call(
+                target=f"{walrus_pkg}::system::extend_blob_with_resource",
+                arguments=[system_obj_id, blob_object_id, storage_object_id],
+                type_arguments=[],
+            )
+
+            txdict = await txn.build_and_sign()
+            result = await client.execute(command=ExecuteTransaction(**txdict))
+            if result.is_ok():
+                print(result.result_data)
+
+    asyncio.run(main())
+
 Native Upload (Storage Nodes)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -290,7 +557,7 @@ instead, following this flow:
    execution if it is not transferred or fed into a further move_call.
 4. Simulate or execute, as you choose.
 5. Observe the outcome and collect what Tx2 needs: the created ``Blob``'s
-   object ID (via :py:func:`~pytusk.core.system_ops.find_created_object_id`,
+   object ID (via :py:func:`~pytusk.core.utils.find_created_object_id`,
    reading directly off the ``TransactionEffects`` you already hold — no
    extra round trip) and its ``storage.end_epoch``/``deletable`` (read back
    via ``GetObject``, the same JSON shape ``tusky blob`` prints — see

@@ -1,0 +1,8 @@
+/* sphinx_rtd_theme wraps every table in .wy-table-responsive, whose default
+   stylesheet forces white-space: nowrap on all cells. That causes long
+   prose cells (e.g. glossary/reference tables) to overflow into horizontal
+   scroll instead of wrapping. Restore normal wrapping. */
+.wy-table-responsive table td,
+.wy-table-responsive table th {
+    white-space: normal;
+}

@@ -3,21 +3,28 @@
 
 # -*- coding: utf-8 -*-
 
-"""Drift guard between deliberately duplicated Move-field-parsing helpers.
+"""Drift guard between the deliberately duplicated blob-field parsers.
 
-``pytusk.core.system_ops`` and ``pytusk.tusky.tusky_cmds`` each carry their
-own copy of two small Move-field-parsing helpers
-(``_matches_wal_coin_type`` and ``_end_epoch_and_deletable`` /
-``_blob_deletable_and_end_epoch``). The duplication is DELIBERATE -- see
+``pytusk.core.system_ops`` and ``pytusk.tusky.tusky_cmds_common`` each carry
+their own copy of the blob-field parser (``_end_epoch_and_deletable`` /
+``_blob_deletable_and_end_epoch``). That duplication is DELIBERATE -- see
 both functions' own docstrings -- to preserve a one-way dependency
 (``tusky`` depends on ``core``, not the reverse), not an oversight to be
 refactored away. What was previously missing is any automated signal that
-the two copies have drifted apart. This module's only job is to be that
-signal: it imports BOTH copies directly and asserts they agree on every
-case. A future Walrus contract upgrade that changes the Blob object's JSON
-field layout, or the WAL coin type format, is exactly the kind of change
-likely to touch only one copy by accident -- this file turns that mistake
-into a failing test instead of a silent divergence.
+the two copies have drifted apart. This module's job is to be that signal:
+it imports BOTH copies directly and asserts they agree on every case. A
+future Walrus contract upgrade that changes the Blob object's JSON field
+layout is exactly the kind of change likely to touch only one copy by
+accident -- this file turns that mistake into a failing test instead of a
+silent divergence.
+
+``_matches_wal_coin_type`` was duplicated the same way until the
+``tusky_cmds`` copy was consolidated into :mod:`pytusk.core.utils` -- the
+one-way rule forbids ``core`` importing ``tusky``, not the reverse. Its
+parity check is therefore gone, but the behavioural cases that check
+introduced are kept below: they remain that helper's only direct unit
+test, and they now assert concrete expected values rather than mere
+agreement between two copies.
 """
 
 import pytest
@@ -25,14 +32,11 @@ import pytest
 from pytusk.core.system_ops import (
     _end_epoch_and_deletable,
 )
-from pytusk.core.system_ops import (
-    _matches_wal_coin_type as core_matches_wal_coin_type,
+from pytusk.core.utils import (
+    _matches_wal_coin_type,
 )
-from pytusk.tusky.tusky_cmds import (
+from pytusk.tusky.tusky_cmds_common import (
     _blob_deletable_and_end_epoch,
-)
-from pytusk.tusky.tusky_cmds import (
-    _matches_wal_coin_type as tusky_matches_wal_coin_type,
 )
 
 
@@ -83,32 +87,36 @@ def _blob_object(
     )
 
 
-class TestMatchesWalCoinTypeParity:
-    """Drift guard for the two ``_matches_wal_coin_type`` copies.
+class TestMatchesWalCoinType:
+    """Behavioural cases for the single ``_matches_wal_coin_type``.
 
-    Neither copy had any direct unit test before this file -- both are
-    exercised here for the first time, in addition to the parity check
-    itself.
+    These began as a parity check against a ``tusky_cmds`` duplicate. That
+    duplicate is gone, but the cases are kept -- they are still this
+    helper's only direct unit test, and they now assert concrete expected
+    values instead of merely that two copies agreed with each other.
     """
 
     @pytest.mark.parametrize(
-        ("coin_type", "wal_coin_type"),
+        ("coin_type", "wal_coin_type", "expected"),
         [
-            ("0xabc::wal::WAL", "0xabc::wal::WAL"),
-            ("0xabc::wal::WAL", "0xdef::wal::WAL"),
-            ("0xabc::wal::WAL", ""),
-            ("0xabc::sui::SUI", ""),
-            ("0xabc::sui::SUI", "0xabc::wal::WAL"),
-            ("", ""),
-            ("", "0xabc::wal::WAL"),
+            # Pinned (currently mainnet only): exact match, nothing else.
+            ("0xabc::wal::WAL", "0xabc::wal::WAL", True),
+            ("0xabc::wal::WAL", "0xdef::wal::WAL", False),
+            ("0xabc::sui::SUI", "0xabc::wal::WAL", False),
+            ("", "0xabc::wal::WAL", False),
+            # Unpinned (e.g. testnet): substring fallback.
+            ("0xabc::wal::WAL", "", True),
+            ("0xabc::sui::SUI", "", False),
+            ("", "", False),
         ],
     )
-    def test_agrees_on_every_case(self, coin_type: str, wal_coin_type: str) -> None:
-        """Both copies must return the identical bool for every input pair."""
-        assert core_matches_wal_coin_type(
-            coin_type=coin_type, wal_coin_type=wal_coin_type
-        ) == tusky_matches_wal_coin_type(
-            coin_type=coin_type, wal_coin_type=wal_coin_type
+    def test_matches_expected(
+        self, coin_type: str, wal_coin_type: str, expected: bool
+    ) -> None:
+        """Pinned networks match exactly; unpinned fall back to substring."""
+        assert (
+            _matches_wal_coin_type(coin_type=coin_type, wal_coin_type=wal_coin_type)
+            is expected
         )
 
 

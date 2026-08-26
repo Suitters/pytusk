@@ -6,9 +6,13 @@
 """Argument parser construction for the tusky CLI.
 
 This module owns all argparse definitions and nothing else — it has no
-knowledge of command handler logic or dispatch. Handlers live in
-tusky_cmds.py and are bridged to this module's subcommands purely by the
-`subcommand` string set on each subparser via `set_defaults`.
+knowledge of command handler logic or dispatch. Handlers live across
+tusky_cmds_read.py, tusky_cmds_write.py, tusky_cmds_query.py,
+tusky_cmds_exchange.py, tusky_cmds_lifecycle.py,
+tusky_cmds_native_upload.py, and tusky_cmds_storage.py (with shared
+helpers in tusky_cmds_common.py — see tusky.py's own module docstring),
+bridged to this module's subcommands purely by the `subcommand` string
+set on each subparser via `set_defaults`.
 """
 
 import argparse
@@ -632,5 +636,222 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     _add_signing_args(p_exchange_for_sui)
     _add_config_args(p_exchange_for_sui)
+
+    p_list_storage = subparsers.add_parser(
+        "list_storage",
+        help="List standalone Storage objects owned by the active address.",
+        description=(
+            "List standalone (unwrapped) Storage objects owned by the "
+            "active address. Storage still embedded in a Blob is a wrapped "
+            "object and does not appear here."
+        ),
+    )
+    p_list_storage.add_argument(
+        "--status",
+        choices=["any", "active", "expired"],
+        default="any",
+        help=(
+            "Filter by expiry status relative to the current Walrus epoch "
+            "(default: any). Expired storage is still splittable, fusable "
+            "and reclaimable, so this is a display filter, not a capability "
+            "gate."
+        ),
+    )
+    p_list_storage.add_argument(
+        "--details",
+        action="store_true",
+        help=(
+            "Show which storage-related operations apply to each object "
+            "instead of the plain listing: split_storage, fuse_storage (as "
+            "compatible pairs), reclaim_storage, and "
+            "extend_blob_with_storage (this makes one extra network call "
+            "to fetch owned blobs)."
+        ),
+    )
+    _add_config_args(p_list_storage)
+
+    p_split_storage = subparsers.add_parser(
+        "split_storage",
+        help="Split a Storage object by epoch or by size.",
+        description=(
+            "Split a standalone Storage object in two, either at an epoch "
+            "boundary or by byte capacity. The original is modified in "
+            "place; the newly created Storage is transferred to --recipient."
+        ),
+    )
+    p_split_storage.add_argument(
+        "-i",
+        "--storageid",
+        dest="storageid",
+        action=ValidateObjectID,
+        required=True,
+        help="Sui object ID of the Storage object to split (0x-prefixed).",
+    )
+    split_group = p_split_storage.add_mutually_exclusive_group(required=True)
+    split_group.add_argument(
+        "--by-epoch",
+        dest="by_epoch",
+        action=ValidatePositive,
+        help=(
+            "Absolute epoch to split at: the original keeps "
+            "[start_epoch, split_epoch) and the new Storage takes "
+            "[split_epoch, end_epoch)."
+        ),
+    )
+    split_group.add_argument(
+        "--by-size",
+        dest="by_size",
+        action=ValidatePositive,
+        help=(
+            "Byte capacity to peel off into the new Storage; the original "
+            "keeps the remainder over the same epoch range."
+        ),
+    )
+    p_split_storage.add_argument(
+        "--recipient",
+        dest="recipient",
+        default=None,
+        help=(
+            "Address to receive the newly created Storage object; defaults "
+            "to the sender."
+        ),
+    )
+    _add_signing_args(p_split_storage)
+    _add_config_args(p_split_storage)
+
+    p_fuse_storage = subparsers.add_parser(
+        "fuse_storage",
+        help="Fuse compatible Storage objects into one.",
+        description=(
+            "Fuse Storage objects together. Three mutually exclusive modes: "
+            "explicit (--fuse-to/--fuse-from name the objects), --fuse-amount "
+            "(bulk-fuses every object sharing one epoch-range group, no "
+            "object IDs needed), and --fuse-periods (bulk-fuses every object "
+            "reachable from one hub via adjacent-and-equal-size steps, no "
+            "object IDs needed for the spokes). Run 'list_storage --details' "
+            "to preview the fuse_amount groups and fuse_periods clusters "
+            "before choosing."
+        ),
+    )
+    p_fuse_storage.add_argument(
+        "--fuse-to",
+        dest="fuse_to",
+        action=ValidateObjectID,
+        default=None,
+        help=(
+            "Sui object ID of the Storage that survives and absorbs the "
+            "other(s) (0x-prefixed). Required for explicit mode; optional "
+            "for --fuse-periods, where it names which cluster's hub to "
+            "consolidate around when more than one is owned."
+        ),
+    )
+    p_fuse_storage.add_argument(
+        "--fuse-from",
+        dest="fuse_from",
+        nargs="+",
+        action=ValidateObjectID,
+        default=None,
+        help=(
+            "One or more Sui object IDs to fold into --fuse-to, in order "
+            "(0x-prefixed); each is consumed by its fuse. Explicit mode "
+            "only."
+        ),
+    )
+    fuse_bulk_group = p_fuse_storage.add_mutually_exclusive_group()
+    fuse_bulk_group.add_argument(
+        "--fuse-amount",
+        action="store_true",
+        help=(
+            "Bulk-fuse every owned Storage object sharing one identical "
+            "epoch-range group -- no object IDs needed. If more than one "
+            "such group is owned, --start-epoch/--end-epoch name which one."
+        ),
+    )
+    fuse_bulk_group.add_argument(
+        "--fuse-periods",
+        action="store_true",
+        help=(
+            "Bulk-fuse every owned Storage object reachable, via "
+            "equal-size adjacent-range steps, from one hub -- no object "
+            "IDs needed for the spokes. If more than one disjoint cluster "
+            "is owned, --fuse-to names the hub to consolidate around."
+        ),
+    )
+    p_fuse_storage.add_argument(
+        "--start-epoch",
+        dest="start_epoch",
+        action=ValidatePositive,
+        default=None,
+        help=(
+            "With --fuse-amount: the epoch-range group's start_epoch, "
+            "required only when more than one group is owned."
+        ),
+    )
+    p_fuse_storage.add_argument(
+        "--end-epoch",
+        dest="end_epoch",
+        action=ValidatePositive,
+        default=None,
+        help=(
+            "With --fuse-amount: the epoch-range group's end_epoch, "
+            "required only when more than one group is owned."
+        ),
+    )
+    _add_signing_args(p_fuse_storage)
+    _add_config_args(p_fuse_storage)
+
+    p_reclaim_storage = subparsers.add_parser(
+        "reclaim_storage",
+        help="Destroy one or more Storage objects, reclaiming their Sui storage rebate.",
+        description=(
+            "Destroy one or more standalone Storage objects. This does NOT "
+            "refund the WAL paid to reserve the capacity -- only the Sui "
+            "storage rebate for each object is returned. Irreversible."
+        ),
+    )
+    reclaim_group = p_reclaim_storage.add_mutually_exclusive_group(required=True)
+    reclaim_group.add_argument(
+        "-i",
+        "--storageid",
+        dest="storageid",
+        nargs="+",
+        action=ValidateObjectID,
+        default=None,
+        help="One or more Sui object IDs of Storage objects to destroy (0x-prefixed).",
+    )
+    reclaim_group.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Destroy every currently owned unwrapped Storage object -- no "
+            "object IDs needed."
+        ),
+    )
+    _add_signing_args(p_reclaim_storage)
+    _add_config_args(p_reclaim_storage)
+
+    p_extend_blob_with_storage = subparsers.add_parser(
+        "extend_blob_with_storage",
+        help="Extend a blob's expiration using an owned Storage object.",
+        description=(
+            "Extend a blob's storage expiration by consuming a standalone "
+            "Storage object instead of paying WAL. The Storage must end "
+            "strictly later than the blob's current end_epoch, and must be "
+            "compatible with the blob's existing storage."
+        ),
+    )
+    _add_blob_id_arg(p_extend_blob_with_storage)
+    p_extend_blob_with_storage.add_argument(
+        "--storageid",
+        dest="storageid",
+        action=ValidateObjectID,
+        required=True,
+        help=(
+            "Sui object ID of the Storage object to consume (0x-prefixed). "
+            "It is consumed by the extension and ceases to exist."
+        ),
+    )
+    _add_signing_args(p_extend_blob_with_storage)
+    _add_config_args(p_extend_blob_with_storage)
 
     return parser.parse_args(in_args)
