@@ -20,6 +20,7 @@ from typing import Protocol
 from pysui import SuiCommand, SuiRpcResult
 
 from pytusk.commands.walrus_command import WalrusCommand
+from pytusk.core.utils import object_id_to_raw_bytes  # noqa: F401 -- back-compat re-export; moved to pytusk.core.utils
 
 
 class _ExecuteOnlyClient(Protocol):  # noqa: PYI046 -- consumed by sibling modules (fanout.py, confirm.py, certify.py), which ruff's single-file check can't see
@@ -51,43 +52,6 @@ class _ExecuteOnlyClient(Protocol):  # noqa: PYI046 -- consumed by sibling modul
 
 _HEARTBEAT_INTERVAL_SECONDS: float = 2.0
 _HEARTBEAT_SLOWEST_NODES: int = 5
-
-
-def object_id_to_raw_bytes(*, object_id: str) -> bytes:
-    """Convert a Sui object ID string into its 32 raw bytes.
-
-    Sui object IDs are ``0x`` followed by 64 hex characters (32 bytes).
-    This is a DIFFERENT identifier and a DIFFERENT encoding from the Walrus
-    blob ID -- do not conflate the two. It is needed for the deletable-blob
-    branch of :func:`~pytusk.core.certification.confirmation_message`'s
-    ``object_id`` argument: the SIGNED MESSAGE requires the raw bytes, while
-    the ``GetStorageConfirmation`` URL path
-    (:class:`~pytusk.commands.node_commands.GetStorageConfirmation`) takes
-    the same object ID as the ``0x...`` string, unconverted. See the module
-    docstring's four-row table for the complete set of 32-byte identifier
-    encodings in play across native upload and how they differ.
-
-    Args:
-        object_id (str): A Sui object ID, ``0x`` followed by 64 hex
-            characters.
-
-    Returns:
-        bytes: The 32 raw bytes the object ID encodes.
-
-    Raises:
-        ValueError: If ``object_id`` is not well-formed hex, or does not
-            decode to exactly 32 bytes.
-    """
-    text = object_id[2:] if object_id.startswith(("0x", "0X")) else object_id
-    try:
-        decoded = bytes.fromhex(text)
-    except ValueError as exc:
-        raise ValueError(f"object_id {object_id!r} is not valid hex") from exc
-    if len(decoded) != 32:
-        raise ValueError(
-            f"object_id {object_id!r} decoded to {len(decoded)} bytes, expected 32"
-        )
-    return decoded
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)

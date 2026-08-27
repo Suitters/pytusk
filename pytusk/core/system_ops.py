@@ -456,6 +456,114 @@ async def add_certify(
         await txn.transfer_objects(transfers=[blob_object_id], recipient=recipient)
 
 
+async def execute_registration_txn(
+    *,
+    client: WalrusClient,
+    txn: AsyncSuiTransaction,
+    encoded: EncodedBlob,
+    owner: str,
+    label: str = "reserve_space/register_blob",
+    finality_max_attempts: int = DEFAULT_FINALITY_MAX_ATTEMPTS,
+    finality_max_delay: float = DEFAULT_FINALITY_MAX_DELAY,
+) -> Registration:
+    """Sign, submit, and read back a transaction that registers a blob.
+
+    Shared tail for every Tx1 shape. The caller composes whatever PTB it
+    needs -- registration alone, or registration bundled with an upload
+    relay tip -- and hands the finished transaction here. Everything from
+    signing through the ``Registration`` read-back is identical across
+    those shapes and lives only here.
+
+    The ordering below is load-bearing and must not be rearranged:
+    ``end_epoch`` is never present in the transaction effects, so it costs
+    a follow-up ``GetObject``, and that read is only valid once
+    :func:`wait_for_finality` confirms the transaction reached a
+    checkpoint. Reading the newly created object before then returns a
+    stub.
+
+    Args:
+        client: Walrus client used to submit and read back.
+        txn: Fully composed transaction. The caller is responsible for
+            consuming the ``Blob`` result -- an unconsumed value aborts
+            the build.
+        encoded: Encoded blob whose ``blob_id`` lands in the result.
+        owner: Address the created ``Blob`` is transferred to, used to
+            pick the object out of the transaction effects.
+        label: Operation name used in error messages, so a bundled PTB
+            can report what it actually contained.
+        finality_max_attempts: Maximum checkpoint-visibility polls.
+        finality_max_delay: Maximum delay between those polls.
+
+    Returns:
+        The ``Registration`` describing the newly created blob object.
+
+    Raises:
+        RuntimeError: The transaction failed, or succeeded on-chain but
+            could not be read back.
+        RegistrationPendingError: The transaction succeeded but finality
+            or read-back did not complete. The blob IS registered and
+            storage IS paid for -- the digest and object id are carried
+            on the error for resumption.
+    """
+    txdict = await txn.build_and_sign()
+
+    result = await client.execute(command=ExecuteTransaction(**txdict))
+    if not result.is_ok():
+        raise RuntimeError(f"{label} transaction failed: {result.result_string}")
+    effects = require_success(result_data=result.result_data, label=label)
+
+    try:
+        object_id = find_created_object_id(effects=effects, owner=owner)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"{exc} Tx1 (digest {result.result_data.digest}) SUCCEEDED "
+            "on-chain -- the blob is registered and storage is already "
+            "paid for, so this is a lookup failure, not a lost "
+            f"transaction. {_RESUME_HINT}"
+        ) from exc
+
+    finalized = await wait_for_finality(
+        client=client,
+        digest=result.result_data.digest,
+        max_attempts=finality_max_attempts,
+        max_delay=finality_max_delay,
+    )
+    if not finalized:
+        raise RegistrationPendingError(
+            digest=result.result_data.digest,
+            object_id=object_id,
+            detail=(
+                "Checkpoint finality was not reached after "
+                f"{finality_max_attempts} attempts."
+            ),
+        )
+
+    blob_result = await client.execute(command=GetObject(object_id=object_id))
+    if not blob_result.is_ok():
+        raise RegistrationPendingError(
+            digest=result.result_data.digest,
+            object_id=object_id,
+            detail=f"Cannot fetch newly created Blob: {blob_result.result_string}",
+        )
+    try:
+        end_epoch, actual_deletable = _end_epoch_and_deletable(blob_result.result_data)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{exc} Tx1 (digest {result.result_data.digest}) SUCCEEDED "
+            "on-chain -- the blob is registered and storage is already "
+            "paid for, so this is only a read-back failure, not a lost "
+            f"transaction. {_RESUME_HINT}"
+        ) from exc
+
+    return Registration(
+        object_id=object_id,
+        blob_id=encoded.blob_id,
+        end_epoch=end_epoch,
+        deletable=actual_deletable,
+        digest=result.result_data.digest,
+    )
+
+
 async def execute_reserve_and_register(
     *,
     client: WalrusClient,
@@ -591,66 +699,13 @@ async def execute_reserve_and_register(
         payment_coin=resolved_payment_coin,
     )
     await txn.transfer_objects(transfers=[blob], recipient=resolved_sender)
-    txdict = await txn.build_and_sign()
-
-    result = await client.execute(command=ExecuteTransaction(**txdict))
-    if not result.is_ok():
-        raise RuntimeError(
-            f"reserve_space/register_blob transaction failed: {result.result_string}"
-        )
-    effects = require_success(
-        result_data=result.result_data, label="reserve_space/register_blob"
-    )
-
-    try:
-        object_id = find_created_object_id(effects=effects, owner=resolved_sender)
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"{exc} Tx1 (digest {result.result_data.digest}) SUCCEEDED "
-            "on-chain -- the blob is registered and storage is already "
-            "paid for, so this is a lookup failure, not a lost "
-            f"transaction. {_RESUME_HINT}"
-        ) from exc
-
-    finalized = await wait_for_finality(
+    return await execute_registration_txn(
         client=client,
-        digest=result.result_data.digest,
-        max_attempts=finality_max_attempts,
-        max_delay=finality_max_delay,
-    )
-    if not finalized:
-        raise RegistrationPendingError(
-            digest=result.result_data.digest,
-            object_id=object_id,
-            detail=(
-                "Checkpoint finality was not reached after "
-                f"{finality_max_attempts} attempts."
-            ),
-        )
-
-    blob_result = await client.execute(command=GetObject(object_id=object_id))
-    if not blob_result.is_ok():
-        raise RegistrationPendingError(
-            digest=result.result_data.digest,
-            object_id=object_id,
-            detail=f"Cannot fetch newly created Blob: {blob_result.result_string}",
-        )
-    try:
-        end_epoch, actual_deletable = _end_epoch_and_deletable(blob_result.result_data)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"{exc} Tx1 (digest {result.result_data.digest}) SUCCEEDED "
-            "on-chain -- the blob is registered and storage is already "
-            "paid for, so this is only a read-back failure, not a lost "
-            f"transaction. {_RESUME_HINT}"
-        ) from exc
-
-    return Registration(
-        object_id=object_id,
-        blob_id=encoded.blob_id,
-        end_epoch=end_epoch,
-        deletable=actual_deletable,
-        digest=result.result_data.digest,
+        txn=txn,
+        encoded=encoded,
+        owner=resolved_sender,
+        finality_max_attempts=finality_max_attempts,
+        finality_max_delay=finality_max_delay,
     )
 
 

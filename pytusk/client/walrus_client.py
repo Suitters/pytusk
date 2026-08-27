@@ -307,6 +307,10 @@ class WalrusClient(AsyncClientBase):
                storage-node commands have no configured endpoint, since
                their target host is per-call data resolved from the
                committee rather than fixed configuration.
+            2b. Else, if the role is ``relay``, raise -- a relay is chosen
+               by name from a per-network list, so there is no single
+               configured URL to fall back on. Callers resolve one with
+               ``PytuskConfiguration.relay_url_for()`` and pass it in.
             3. Else, if the role is ``publisher``, resolve the network's
                configured publisher URL.
             4. Else, resolve the network's configured aggregator URL.
@@ -336,6 +340,12 @@ class WalrusClient(AsyncClientBase):
             raise ValueError(
                 f"{type(command).__name__} has endpoint_role='storage_node' "
                 "and requires an explicit base_url; none was supplied."
+            )
+        elif command.endpoint_role == "relay":
+            raise ValueError(
+                f"{type(command).__name__} has endpoint_role='relay' "
+                "and requires an explicit base_url; none was supplied. "
+                "Resolve one with PytuskConfiguration.relay_url_for()."
             )
         elif command.endpoint_role == "publisher":
             resolved_base_url = network.walrus_publisher_url

@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
-from pysui import GetCoinMetaData, GetObject
+from pysui import GetObject
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 
 from pytusk import (
@@ -51,182 +51,17 @@ from pytusk import store_blob_native as _store_blob_native_pipeline
 # already performs (see its _encoded_storage_amount), not a new public
 # surface, so it is kept out of pytusk.__all__.
 from pytusk.core.encoding import encoded_blob_length
-
-# Same rationale as above: a private helper reused across modules rather
-# than duplicated. tusky_cmds carried its own copy of this until the
-# duplication was consolidated -- the one-way dependency rule forbids core
-# importing tusky, not tusky importing core.
-from pytusk.core.utils import _matches_wal_coin_type
 from pytusk.tusky.tusky_cmds_common import (
     _blob_deletable_and_end_epoch,
     _config_from_args,
+    _format_token_amount,
     _read_file_bytes,
     _resolve_sender,
     _resolve_sponsor,
+    _simulate_cost_from_balance_changes,
     _submit,
     _walrus_package_id,
 )
-
-
-def _format_token_amount(*, raw: int, decimals: int) -> str:
-    """Render a raw integer token amount as an exact decimal string.
-
-    Uses integer ``divmod`` rather than floating-point division, so the
-    result is exact for any magnitude -- important here since raw amounts
-    (MIST, FROST) can run into the billions and a float division could lose
-    precision at that range.
-
-    Args:
-        raw (int): The raw integer amount (may be negative).
-        decimals (int): Number of decimal places the token uses.
-
-    Returns:
-        str: Exact decimal string rendering, e.g. ``"0.004603480"`` for
-            ``raw=4603480, decimals=9``.
-    """
-    sign = "-" if raw < 0 else ""
-    divisor = 10**decimals
-    whole, frac = divmod(abs(raw), divisor)
-    return f"{sign}{whole}.{frac:0{decimals}d}"
-
-
-async def _simulate_cost_from_balance_changes(
-    *, client: WalrusClient, transaction: sui_prot.ExecutedTransaction | None
-) -> tuple[dict[str, int | str | None], dict[str, int | str | None]]:
-    """Derive SUI and WAL cost summaries from a simulated Tx1's balance changes.
-
-    Cost is reported as the NEGATION of the on-chain net balance change
-    (which is negative for an outgoing spend), so a positive value here
-    means "this many units are spent" -- matching what a user asking "what
-    will this cost?" wants to read, while still surfacing an unexpected
-    positive on-chain delta (a net gain) as a negative cost rather than
-    silently flipping its sign.
-
-    SUI's coin_type is matched by substring (``"::sui::SUI"``) since the
-    simulate response reports it in normalized long-address form (e.g.
-    ``0x000...0002::sui::SUI``), not the short ``0x2::sui::SUI`` form. WAL's
-    coin_type is matched via ``_matches_wal_coin_type``, the same
-    pinned-exact/substring-fallback logic used everywhere else in this
-    module (e.g. :func:`_wal_balance_and_decimals`), rather than a third
-    variant of that logic.
-
-    Neither currency's absence crashes this function or is reported as a
-    silent zero: each missing/unreadable value gets its own
-    ``unavailable_reason`` explaining why, independent of whether the other
-    currency was found.
-
-    Args:
-        client (WalrusClient): Client used to look up WAL's CoinMetadata
-            (for its decimal precision) once its coin_type is known from a
-            matched balance change.
-        transaction (sui_prot.ExecutedTransaction | None): The simulate
-            result's ``transaction`` field (``result.result_data.transaction``),
-            or ``None`` if the response had no such field.
-
-    Returns:
-        tuple[dict[str, int | str | None], dict[str, int | str | None]]:
-            ``(sui_info, wal_info)``. ``sui_info`` has keys ``raw_mist``,
-            ``sui``, ``unavailable_reason``. ``wal_info`` has keys
-            ``coin_type``, ``raw_frost``, ``wal``, ``unavailable_reason``.
-            A found value's ``unavailable_reason`` is ``None``; the
-            corresponding amount fields are ``None`` when unavailable.
-    """
-    sui_info: dict[str, int | str | None] = {
-        "raw_mist": None,
-        "sui": None,
-        "unavailable_reason": None,
-    }
-    wal_info: dict[str, int | str | None] = {
-        "coin_type": None,
-        "raw_frost": None,
-        "wal": None,
-        "unavailable_reason": None,
-    }
-
-    if transaction is None:
-        reason = (
-            "Simulate result had no 'transaction' field; cannot read "
-            "balance_changes to determine cost."
-        )
-        sui_info["unavailable_reason"] = reason
-        wal_info["unavailable_reason"] = reason
-        return sui_info, wal_info
-
-    balance_changes = getattr(transaction, "balance_changes", None) or []
-
-    sui_change = next(
-        (bc for bc in balance_changes if bc.coin_type and "::sui::SUI" in bc.coin_type),
-        None,
-    )
-    if sui_change is None:
-        sui_info["unavailable_reason"] = (
-            "No SUI entry found in the simulate result's balance_changes; "
-            "the response shape may differ from what this command expects."
-        )
-    else:
-        try:
-            cost_mist = -int(sui_change.amount)
-        except (TypeError, ValueError):
-            sui_info["unavailable_reason"] = (
-                f"SUI balance change amount {sui_change.amount!r} could not "
-                "be parsed as an integer; the response shape may differ "
-                "from what this command expects."
-            )
-        else:
-            sui_info["raw_mist"] = cost_mist
-            # SUI's decimal precision (9) is a fixed Sui protocol constant,
-            # not a per-coin-type value read from CoinMetadata -- unlike
-            # WAL below, which is a deployed coin whose decimals must never
-            # be assumed.
-            sui_info["sui"] = _format_token_amount(raw=cost_mist, decimals=9)
-
-    wal_coin_type = client.config.network.wal_coin_type
-    wal_change = next(
-        (
-            bc
-            for bc in balance_changes
-            if bc.coin_type
-            and _matches_wal_coin_type(
-                coin_type=bc.coin_type, wal_coin_type=wal_coin_type
-            )
-        ),
-        None,
-    )
-    if wal_change is None:
-        wal_info["unavailable_reason"] = (
-            "No WAL entry found in the simulate result's balance_changes; "
-            "the response shape may differ from what this command expects."
-        )
-    else:
-        wal_info["coin_type"] = wal_change.coin_type
-        try:
-            cost_frost = -int(wal_change.amount)
-        except (TypeError, ValueError):
-            wal_info["unavailable_reason"] = (
-                f"WAL balance change amount {wal_change.amount!r} could not "
-                "be parsed as an integer; the response shape may differ "
-                "from what this command expects."
-            )
-        else:
-            wal_info["raw_frost"] = cost_frost
-            meta_result = await client.execute(
-                command=GetCoinMetaData(coin_type=wal_change.coin_type)
-            )
-            metadata = (
-                meta_result.result_data.metadata if meta_result.is_ok() else None
-            )
-            if metadata is None or metadata.decimals is None:
-                wal_info["unavailable_reason"] = (
-                    f"WAL coin metadata for {wal_change.coin_type} could not "
-                    "be read or has no decimals field; raw_frost is known "
-                    "but its decimal rendering is not."
-                )
-            else:
-                wal_info["wal"] = _format_token_amount(
-                    raw=cost_frost, decimals=metadata.decimals
-                )
-
-    return sui_info, wal_info
 
 
 def _blob_id_bytes_from_object(obj: sui_prot.Object) -> bytes:

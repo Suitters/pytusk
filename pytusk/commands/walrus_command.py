@@ -37,6 +37,15 @@ class WalrusCommand(ABC):
             endpoint, so callers MUST supply an explicit ``base_url`` to
             :meth:`WalrusClient.execute`. Dispatch raises ``ValueError``
             if one is not supplied.
+        "relay": NOT resolved from configuration either, for a different
+            reason: a network configures a LIST of named upload relays
+            rather than a single URL, so there is nothing unambiguous to
+            fall back on. Callers resolve one by name with
+            ``PytuskConfiguration.relay_url_for()`` and pass it as an
+            explicit ``base_url``. Dispatch raises ``ValueError`` if one is
+            not supplied -- without that branch a relay command would fall
+            through to the aggregator URL and silently post to the wrong
+            host.
     """
 
     @abstractmethod

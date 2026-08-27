@@ -456,6 +456,83 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_signing_args(p_store_blob_native)
     _add_config_args(p_store_blob_native)
 
+    # --- Upload relay commands (--mode + sender/sponsor apply) ---
+    p_store_blob_relay = subparsers.add_parser(
+        "store_blob_relay",
+        help="Store a blob through a Walrus upload relay (practical for mainnet writes).",
+        description=(
+            "Store a blob via a Walrus upload relay (reserve_space+register_blob "
+            "bundled with the relay tip in one transaction, relay upload, "
+            "certify_blob). The relay performs the sliver fan-out on your behalf."
+        ),
+    )
+    relay_content_group = p_store_blob_relay.add_mutually_exclusive_group(
+        required=True
+    )
+    relay_content_group.add_argument(
+        "--content",
+        help="Blob content (UTF-8 text). Mutually exclusive with --file.",
+    )
+    relay_content_group.add_argument(
+        "--file",
+        action=ValidateFile,
+        help="Path to a file whose raw bytes will be stored. Mutually exclusive with --content.",
+    )
+    p_store_blob_relay.add_argument(
+        "--epochs",
+        action=ValidatePositive,
+        required=True,
+        help=(
+            "Number of epochs to store the blob for, counted from now "
+            "(a duration, not an absolute epoch number)."
+        ),
+    )
+    p_store_blob_relay.add_argument(
+        "--permanent",
+        action="store_true",
+        help="Store as a permanent blob (cannot be deleted before expiry).",
+    )
+    p_store_blob_relay.add_argument(
+        "--relay",
+        dest="relay",
+        default=None,
+        help=(
+            "Name of the upload relay to use (default: the active network's "
+            "active_relay)."
+        ),
+    )
+    p_store_blob_relay.add_argument(
+        "--tip-source",
+        dest="tip_source",
+        default="from_gas",
+        help=(
+            "Where the relay tip is paid from: 'from_gas', meaning whoever "
+            "funds the transaction pays (the sponsor if given, otherwise the "
+            "sender), or a SUI coin object id to split the tip from "
+            "(default: from_gas)."
+        ),
+    )
+    p_store_blob_relay.add_argument(
+        "--recipient",
+        dest="recipient",
+        action=ValidateAddress,
+        default=None,
+        help="Sui address to receive the stored blob object (default: sender).",
+    )
+    p_store_blob_relay.add_argument(
+        "--full-json",
+        dest="full_json",
+        action="store_true",
+        help=(
+            "Also print the complete raw simulate transaction result as "
+            "JSON, in addition to the concise cost summary (--mode simulate "
+            "only; default: off, since the raw result can run to thousands "
+            "of lines for a large blob)."
+        ),
+    )
+    _add_signing_args(p_store_blob_relay)
+    _add_config_args(p_store_blob_relay)
+
     p_certify_blob = subparsers.add_parser(
         "certify_blob",
         help=(

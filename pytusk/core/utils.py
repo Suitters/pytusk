@@ -38,7 +38,9 @@ from pytusk.client.walrus_client import WalrusClient
 __all__ = [
     "DEFAULT_FINALITY_MAX_ATTEMPTS",
     "DEFAULT_FINALITY_MAX_DELAY",
+    "assert_coin_usable",
     "find_created_object_id",
+    "object_id_to_raw_bytes",
     "require_success",
     "resolve_package_id",
     "select_wal_payment_coin",
@@ -309,3 +311,98 @@ async def wait_for_finality(
             await asyncio.sleep(delay)
             delay = min(delay * 2, max_delay)
     return False
+
+
+async def assert_coin_usable(
+    *, client: WalrusClient, coin_id: str, owners: set[str], minimum_balance: int
+) -> None:
+    """Assert a coin object is owned by one of ``owners`` and holds enough.
+
+    Deliberately generic: it takes a SET of acceptable owners rather than
+    sender/sponsor roles, so the same check serves a relay tip coin (which
+    either party of a sponsored transaction may legitimately own) and the
+    WAL payment coin passed to
+    :func:`~pytusk.core.system_ops.add_reserve_and_register`.
+
+    This is a caller-side precondition, so it RAISES rather than reporting
+    an outcome -- named per the ``assert_...`` convention shared with
+    :func:`~pytusk.core.native_upload.assert_certificate_epoch_current`.
+    Checking BEFORE composing is the whole point: an unusable coin must
+    fail before a transaction is built, not after money has moved.
+
+    ``GetObject``'s default field mask already includes ``owner`` and
+    ``balance``, so no explicit field mask is needed. ``Object.balance`` is
+    the same field :func:`select_wal_payment_coin` already sorts on.
+    ``Object.owner.address`` is UNVERIFIED against a live node -- no pytusk
+    code path reads an owner off a fetched object today; the access path is
+    taken from the proto type, which is the same ``Owner`` message that
+    :func:`find_created_object_id` reads as ``output_owner.address``. If
+    that is wrong it fails loudly here, before anything is spent.
+
+    Args:
+        client (WalrusClient): Client used to fetch the coin object.
+        coin_id (str): Object ID of the coin to check.
+        owners (set[str]): Addresses, any one of which may own the coin.
+        minimum_balance (int): Smallest acceptable balance, in the coin's
+            own base units.
+
+    Raises:
+        RuntimeError: If the coin cannot be fetched, reports no owner or no
+            balance, is owned by an address outside ``owners``, or holds
+            less than ``minimum_balance``.
+    """
+    result = await client.execute(command=GetObject(object_id=coin_id))
+    if not result.is_ok():
+        raise RuntimeError(f"Cannot fetch coin {coin_id}: {result.result_string}")
+    obj = result.result_data
+    owner = obj.owner.address if obj.owner else None
+    if owner is None:
+        raise RuntimeError(f"Coin {coin_id} reports no owner address.")
+    if owner not in owners:
+        raise RuntimeError(
+            f"Coin {coin_id} is owned by {owner}, not by any of {sorted(owners)}."
+        )
+    if obj.balance is None:
+        raise RuntimeError(f"Object {coin_id} reports no balance; it is not a coin.")
+    if obj.balance < minimum_balance:
+        raise RuntimeError(
+            f"Coin {coin_id} balance {obj.balance} is below the required "
+            f"{minimum_balance}."
+        )
+
+
+def object_id_to_raw_bytes(*, object_id: str) -> bytes:
+    """Convert a Sui object ID string into its 32 raw bytes.
+
+    Sui object IDs are ``0x`` followed by 64 hex characters (32 bytes).
+    This is a DIFFERENT identifier and a DIFFERENT encoding from the Walrus
+    blob ID -- do not conflate the two. It is needed for the deletable-blob
+    branch of :func:`~pytusk.core.certification.confirmation_message`'s
+    ``object_id`` argument: the SIGNED MESSAGE requires the raw bytes, while
+    the ``GetStorageConfirmation`` URL path
+    (:class:`~pytusk.commands.node_commands.GetStorageConfirmation`) takes
+    the same object ID as the ``0x...`` string, unconverted. See the module
+    docstring's four-row table for the complete set of 32-byte identifier
+    encodings in play across native upload and how they differ.
+
+    Args:
+        object_id (str): A Sui object ID, ``0x`` followed by 64 hex
+            characters.
+
+    Returns:
+        bytes: The 32 raw bytes the object ID encodes.
+
+    Raises:
+        ValueError: If ``object_id`` is not well-formed hex, or does not
+            decode to exactly 32 bytes.
+    """
+    text = object_id[2:] if object_id.startswith(("0x", "0X")) else object_id
+    try:
+        decoded = bytes.fromhex(text)
+    except ValueError as exc:
+        raise ValueError(f"object_id {object_id!r} is not valid hex") from exc
+    if len(decoded) != 32:
+        raise ValueError(
+            f"object_id {object_id!r} decoded to {len(decoded)} bytes, expected 32"
+        )
+    return decoded
