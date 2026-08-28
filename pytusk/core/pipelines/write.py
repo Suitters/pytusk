@@ -62,6 +62,7 @@ from pytusk.core.types import (
     Registration,
     RegistrationPendingError,
     RelayBlobReceipt,
+    RelayCertifyTransactionError,
     RelayOutcome,
     RelayStageTimings,
     RelayUploadError,
@@ -365,7 +366,7 @@ async def store_blob_native(
         registration=registration,
     )
 
-    if delivered.certificate is None:
+    if delivered.outcome is not DeliveryOutcome.DELIVERED:
         # NativeDelivery REPORTS a post-spend failure rather than raising it
         # (see its module docstring), which is what lets the stage durations
         # recorded up to the failure reach this receipt.
@@ -386,7 +387,7 @@ async def store_blob_native(
             committee=committee,
             blob_id=encoded.blob_id,
             registration=registration,
-            certificate=delivered.certificate,
+            certificate=delivered.require_certificate(),
             package_id=package_id,
             system_object=system_object,
             staking_object=staking_object,
@@ -514,6 +515,19 @@ async def store_blob_relay(
     # preflight_sponsor's docstring.
     await preflight_sponsor(client=client, sponsor=sponsor)
 
+    # `max_upload_attempts` is otherwise only validated inside
+    # relay_upload.upload, which is not reached until AFTER the tip and Tx1
+    # have landed. That is post-spend; the caller-side contract violation
+    # must be caught here, before anything is spent.
+    if max_upload_attempts < 1:
+        raise RelayUploadError(
+            message=(
+                "max_upload_attempts must be at least 1, got "
+                f"{max_upload_attempts}"
+            ),
+            stage="preflight",
+        )
+
     relay_url = client.config.relay_url_for(
         network_name=client.config.active_network, relay_name=relay_name
     )
@@ -636,6 +650,8 @@ async def store_blob_relay(
             attempts=None,
             transport_error=None,
         )
+    except (RuntimeError, ValueError) as exc:
+        raise RelayUploadError(message=str(exc), stage="register_tx1") from exc
     register_duration = time.monotonic() - register_start
 
     delivered = await RelayDelivery(
@@ -652,7 +668,7 @@ async def store_blob_relay(
     )
     upload = delivered.upload
 
-    if delivered.certificate is None:
+    if delivered.outcome is not DeliveryOutcome.DELIVERED:
         return RelayBlobReceipt(
             outcome=(
                 RelayOutcome.REJECTED
@@ -703,9 +719,10 @@ async def store_blob_relay(
             client=client,
             committee=committee,
             registration=registration,
-            certificate=delivered.certificate,
+            certificate=delivered.require_certificate(),
             package_id=package_id,
             system_object=system_object,
+            error_type=RelayCertifyTransactionError,
             sender=sender,
             sponsor=sponsor,
             recipient=recipient,

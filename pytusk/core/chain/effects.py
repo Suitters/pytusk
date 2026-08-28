@@ -15,6 +15,8 @@ import dataclasses
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 
+from pytusk.core.chain.coin_types import matches_wal_coin_type
+
 __all__ = [
     "BalanceChangeCosts",
     "extract_balance_change_costs",
@@ -73,7 +75,7 @@ def extract_balance_change_costs(
     SUI's coin_type is matched by substring (``"::sui::SUI"``) because the
     simulate response reports it in normalized long-address form (e.g.
     ``0x000...0002::sui::SUI``), not the short ``0x2::sui::SUI`` form. WAL is
-    matched via :func:`~pytusk.core.ops.coins.matches_wal_coin_type`, whose
+    matched via :func:`~pytusk.core.chain.coin_types.matches_wal_coin_type`, whose
     pinned-exact/substring-fallback logic is not duplicated here.
 
     Args:
@@ -86,8 +88,6 @@ def extract_balance_change_costs(
         BalanceChangeCosts: Raw costs, with a per-currency reason wherever a
             value could not be read.
     """
-    from pytusk.core.ops.coins import matches_wal_coin_type
-
     if transaction is None:
         reason = (
             "Simulate result had no 'transaction' field; cannot read "

@@ -16,17 +16,25 @@ what dissolves the import cycle that previously required
 from pytusk.core.types.errors import (
     CertifyTransactionError,
     ConfirmationCollectionError,
+    ConfirmationMismatchError,
     EpochMismatchError,
+    InvalidConfirmationError,
     NativeUploadError,
+    QuorumNotReachedError,
     RegistrationPendingError,
     RelayCertificateParseError,
+    RelayCertifyTransactionError,
     RelayUploadError,
     SliverUploadError,
     TipConfigError,
     TipPaymentError,
 )
 from pytusk.core.types.outcomes import RelayOutcome, RelayUploadOutcome
-from pytusk.core.types.protocols import StageTimingsProtocol, UploadReceipt
+from pytusk.core.types.protocols import (
+    ExecuteOnlyClient,
+    StageTimingsProtocol,
+    UploadReceipt,
+)
 from pytusk.core.types.receipts import (
     CertifyResult,
     NativeBlobReceipt,
@@ -47,6 +55,8 @@ from pytusk.core.types.tips import (
     TipComposition,
     TipConfig,
     TipKind,
+    TipQuote,
+    TipResult,
 )
 
 __all__ = [
@@ -55,15 +65,20 @@ __all__ = [
     "CertifyResult",
     "CertifyTransactionError",
     "ConfirmationCollectionError",
+    "ConfirmationMismatchError",
     "ConstTip",
     "EpochMismatchError",
+    "ExecuteOnlyClient",
+    "InvalidConfirmationError",
     "LinearTip",
     "NativeBlobReceipt",
     "NativeUploadError",
+    "QuorumNotReachedError",
     "Registration",
     "RegistrationPendingError",
     "RelayBlobReceipt",
     "RelayCertificateParseError",
+    "RelayCertifyTransactionError",
     "RelayOutcome",
     "RelayStageTimings",
     "RelayUploadError",
@@ -80,5 +95,7 @@ __all__ = [
     "TipConfigError",
     "TipKind",
     "TipPaymentError",
+    "TipQuote",
+    "TipResult",
     "UploadReceipt",
 ]

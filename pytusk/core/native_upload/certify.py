@@ -14,19 +14,20 @@ import dataclasses
 from pytusk.core.certification import Certificate
 from pytusk.core.chain import WalrusCommittee, fetch_committee, fetch_epoch
 from pytusk.core.encoding import blob_id_to_url_base64
-from pytusk.core.native_upload.common import _ExecuteOnlyClient
 from pytusk.core.native_upload.confirm import collect_confirmations
 from pytusk.core.ops.blob_execute import submit_certification
 from pytusk.core.types import (
+    CertifyTransactionError,
     EpochMismatchError,
     NativeBlobReceipt,
     Registration,
     StageTimings,
 )
+from pytusk.core.types.protocols import ExecuteOnlyClient
 
 
 async def assert_certificate_epoch_current(
-    *, client: _ExecuteOnlyClient, committee: WalrusCommittee, staking_object: str
+    *, client: ExecuteOnlyClient, committee: WalrusCommittee, staking_object: str
 ) -> None:
     """Raise if the live on-chain epoch has moved off ``committee.epoch``.
 
@@ -81,7 +82,7 @@ async def assert_certificate_epoch_current(
 
 async def certify(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     committee: WalrusCommittee,
     blob_id: bytes,
     registration: Registration,
@@ -218,6 +219,7 @@ async def certify(
         certificate=current_certificate,
         package_id=package_id,
         system_object=system_object,
+        error_type=CertifyTransactionError,
         sender=sender,
         sponsor=sponsor,
         recipient=recipient,

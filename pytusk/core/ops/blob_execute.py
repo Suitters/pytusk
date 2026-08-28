@@ -83,7 +83,7 @@ from pytusk.core.ops.system_reads import (
     wait_for_finality,
 )
 from pytusk.core.types.errors import (
-    CertifyTransactionError,
+    NativeUploadError,
     RegistrationPendingError,
     RelayUploadError,
 )
@@ -212,11 +212,16 @@ async def execute_registration_txn(
             obj=blob_result.result_data
         )
     except ValueError as exc:
-        raise RuntimeError(
-            f"{exc} Tx1 (digest {result.result_data.digest}) SUCCEEDED "
-            "on-chain -- the blob is registered and storage is already "
-            "paid for, so this is only a read-back failure, not a lost "
-            f"transaction. {_RESUME_HINT}"
+        # Tx1 succeeded and storage is paid for, so this is post-spend; both
+        # pipelines already convert RegistrationPendingError into a receipt,
+        # so raising the typed error is what routes this to the receipt path
+        # instead of surfacing an exception for a blob the user has already
+        # paid for.
+        raise RegistrationPendingError(
+            digest=result.result_data.digest,
+            object_id=object_id,
+            detail=f"{exc} {_RESUME_HINT}",
+            stage="register_readback",
         ) from exc
 
     return Registration(
@@ -628,6 +633,7 @@ async def submit_certification(
     certificate: Certificate,
     package_id: str,
     system_object: str,
+    error_type: type[NativeUploadError] | type[RelayUploadError],
     sender: str | None = None,
     sponsor: str | None = None,
     recipient: str | None = None,
@@ -667,6 +673,8 @@ async def submit_certification(
         package_id (str): Walrus package ID.
         system_object (str): Object ID of the configured Walrus System
             object.
+        error_type (type[NativeUploadError] | type[RelayUploadError]): The
+            exception class to raise Tx2 failures as.
         sender (str | None): Address to sign Tx2 as. Defaults to the active
             address when ``None``. Must be the current owner of the ``Blob``.
         sponsor (str | None): Address to sponsor Tx2's gas as, or ``None``
@@ -679,10 +687,11 @@ async def submit_certification(
         CertificationOutcome: Tx2's result and the duration of the submit.
 
     Raises:
-        CertifyTransactionError: If local certificate verification fails --
-            with ``duration`` left ``None``, since nothing was submitted --
-            or if :func:`execute_certify` fails to submit, aborts on-chain,
-            or fails pysui's pre-submission gas-estimation dry run. pysui
+        NativeUploadError | RelayUploadError: Whichever ``error_type``
+            names, if local certificate verification fails -- with
+            ``duration`` left ``None``, since nothing was submitted -- or
+            if :func:`execute_certify` fails to submit, aborts on-chain, or
+            fails pysui's pre-submission gas-estimation dry run. pysui
             signals those last two with TWO different bare exception types:
             ``RuntimeError`` for a submission failure or on-chain abort, and
             ``ValueError`` from its ``txn_gas.py`` for a simulate failure
@@ -694,7 +703,7 @@ async def submit_certification(
         for position in certificate.signer_positions
     ]
     if not verify_certificate(certificate=certificate, public_keys=signer_public_keys):
-        raise CertifyTransactionError(
+        raise error_type(
             message=(
                 "Local certificate verification failed -- the aggregate "
                 "signature does not verify against the committee public "
@@ -716,7 +725,7 @@ async def submit_certification(
             recipient=recipient,
         )
     except (RuntimeError, ValueError) as exc:
-        raise CertifyTransactionError(
+        raise error_type(
             message=str(exc),
             stage="certify",
             duration=time.monotonic() - certify_tx2_start,

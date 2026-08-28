@@ -129,6 +129,35 @@ class DeliveryResult:
     duration: float
     failed_stage: str | None = None
 
+    def require_certificate(self) -> Certificate:
+        """Return the certificate, which is present whenever delivery succeeded.
+
+        The outcome enum, not the presence of :attr:`certificate`, is the
+        source of truth for whether delivery succeeded -- see this module's
+        note that callers must branch on the outcome. That branch alone does
+        not narrow :attr:`certificate` for a type checker, because the field
+        is declared independently of the outcome. This accessor closes that
+        gap without a cast: callers that have already established a
+        ``DELIVERED`` outcome call it and receive a non-optional
+        :class:`~pytusk.core.certification.Certificate`.
+
+        Returns:
+            Certificate: The delivery certificate.
+
+        Raises:
+            RuntimeError: If called on a result whose outcome is not
+                ``DELIVERED``. This is a programming error in the caller,
+                not a delivery failure -- a failed delivery is reported
+                through the outcome, never through this method.
+        """
+        if self.certificate is None:
+            raise RuntimeError(
+                "require_certificate() called on a DeliveryResult with "
+                f"outcome {self.outcome}; the certificate is only present "
+                "when the outcome is DELIVERED."
+            )
+        return self.certificate
+
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class NativeDeliveryResult(DeliveryResult):

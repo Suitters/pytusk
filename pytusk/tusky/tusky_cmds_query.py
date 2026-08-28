@@ -13,15 +13,17 @@ tusky.py drives them via asyncio.run.
 """
 
 import argparse
-import base64
 import sys
 
 from pysui import GetCoins, GetObject, GetObjectsOwnedByAddress
 
-from pytusk import WalrusClient, storage_from_blob
-from pytusk.core.chain import (
+from pytusk import (
+    WalrusClient,
     blob_certified_epoch,
     blob_deletable_and_end_epoch,
+    blob_id_from_object,
+    blob_id_to_url_base64,
+    storage_from_blob,
 )
 from pytusk.tusky.tusky_cmds_common import (
     config_from_args,
@@ -55,41 +57,37 @@ async def blobs(args: argparse.Namespace) -> None:
     for obj in objects_result.result_data.objects:
         if not (obj.object_type and "::blob::Blob" in obj.object_type):
             continue
-        if not (obj.json and obj.json.struct_value):
-            continue
-        fields = obj.json.struct_value.fields
 
-        end_epoch = 0
-        storage_val = fields.get("storage")
-        if storage_val and storage_val.struct_value:
-            end_epoch_val = storage_val.struct_value.fields.get("end_epoch")
-            end_epoch = int(end_epoch_val.number_value) if end_epoch_val else 0
+        # blobs() lists everything a user owns, so one object with an
+        # incomplete/malformed JSON view (e.g. a partial RPC response)
+        # must degrade its own row rather than abort the whole listing --
+        # unlike expiry_report(), which is strict by design. Each field
+        # extraction below is guarded independently and falls back to the
+        # same defaults the pre-refactor hand-walked code used.
+        try:
+            deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
+        except ValueError:
+            deletable, end_epoch = False, 0
         status = "expired" if end_epoch <= current_epoch else "active"
-
-        deletable_val = fields.get("deletable")
-        deletable = bool(deletable_val and deletable_val.bool_value)
 
         if args.deletable != "any" and str(deletable).lower() != args.deletable:
             continue
         if args.status != "any" and status != args.status:
             continue
 
-        blob_id_b64 = ""
-        blob_id_val = fields.get("blob_id")
-        if blob_id_val and blob_id_val.string_value:
-            try:
-                blob_id_b64 = (
-                    base64.urlsafe_b64encode(
-                        int(blob_id_val.string_value).to_bytes(32, byteorder="little")
-                    )
-                    .rstrip(b"=")
-                    .decode()
-                )
-            except (ValueError, OverflowError):
-                blob_id_b64 = "(unparseable)"
+        try:
+            blob_id_b64 = blob_id_to_url_base64(blob_id=blob_id_from_object(obj=obj))
+        except (ValueError, OverflowError):
+            blob_id_b64 = "(unparseable)"
 
         found = True
-        blob_size = storage_from_blob(obj=obj).storage_size
+        try:
+            blob_size = storage_from_blob(obj=obj).storage_size
+        except ValueError:
+            # Same missing-JSON-view/missing-'storage'-field cases that
+            # blob_deletable_and_end_epoch() already tolerated above would
+            # otherwise raise here too and still abort the listing.
+            blob_size = 0
         print(
             f"{obj.object_id}  blob_id={blob_id_b64}  "
             f"deletable={deletable}  end_epoch={end_epoch}  status={status}  "

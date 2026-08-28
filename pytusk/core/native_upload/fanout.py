@@ -23,9 +23,9 @@ from pytusk.core.encoding import EncodedBlob, blob_id_to_url_base64
 from pytusk.core.native_upload.common import (
     _HEARTBEAT_INTERVAL_SECONDS,
     _HEARTBEAT_SLOWEST_NODES,
-    _ExecuteOnlyClient,
 )
 from pytusk.core.types import SliverUploadError
+from pytusk.core.types.protocols import ExecuteOnlyClient
 
 _logger = logging.getLogger(__name__)
 
@@ -388,7 +388,7 @@ def _next_retry_backoff(
 
 async def _put_metadata(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     member: WalrusCommitteeMember,
     blob_id: bytes,
     metadata_bcs: bytes,
@@ -477,7 +477,7 @@ async def _put_metadata(
 
 async def _put_sliver(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     member: WalrusCommitteeMember,
     blob_id: bytes,
     sliver_pair_index: int,
@@ -623,7 +623,7 @@ async def _put_sliver(
 
 async def _upload_node(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     committee: WalrusCommittee,
     encoded: EncodedBlob,
     member: WalrusCommitteeMember,
@@ -904,7 +904,7 @@ def _outcome_from_task(
 
 async def upload_slivers(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     committee: WalrusCommittee,
     encoded: EncodedBlob,
     grace_base_seconds: float = 0.5,

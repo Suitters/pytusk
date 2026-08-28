@@ -73,6 +73,8 @@ from pytusk.core.certification import (
     confirmation_message,
     is_quorum,
     min_weight_for_quorum,
+    pack_signers_bitmap,
+    unpack_signers_bitmap,
     verify_certificate,
     verify_confirmation,
 )
@@ -86,13 +88,13 @@ from pytusk.core.chain import (
     WalrusCommitteeMember,
     blob_certified_epoch,
     blob_deletable_and_end_epoch,
+    blob_id_from_object,
     extract_balance_change_costs,
     fetch_committee,
     fetch_epoch,
     find_created_object_id,
-    pack_signers_bitmap,
+    matches_wal_coin_type,
     require_success,
-    unpack_signers_bitmap,
 )
 
 # Encoding (RedStuff, blob-ID and root-hash conversions)
@@ -112,6 +114,7 @@ from pytusk.core.encoding import (
     max_n_faulty,
     metadata_length,
     min_n_correct,
+    object_id_to_raw_bytes,
     root_hash_to_u256,
     source_symbol_counts,
     symbol_size,
@@ -132,7 +135,6 @@ from pytusk.core.native_upload import (
     assert_certificate_epoch_current,
     certify,
     collect_confirmations,
-    object_id_to_raw_bytes,
     upload_slivers,
 )
 
@@ -150,6 +152,7 @@ from pytusk.core.ops import (
     add_certify,
     add_destroy_storage,
     add_fuse,
+    add_registration_sequence,
     add_reserve_and_register,
     add_split_by_epoch,
     add_split_by_size,
@@ -162,7 +165,8 @@ from pytusk.core.ops import (
     fuse_incompatibility,
     fuse_periods_incompatibility,
     list_storage_objects,
-    matches_wal_coin_type,
+    preflight_payment,
+    preflight_sponsor,
     resolve_package_id,
     select_wal_payment_coin,
     storage_from_blob,
@@ -174,14 +178,32 @@ from pytusk.core.ops import (
 
 # End-to-end write pipelines (the compose functions that own stage order and
 # receipt construction -- see pytusk.core.pipelines's module docstring)
-from pytusk.core.pipelines import store_blob_native
+from pytusk.core.pipelines import store_blob_native, store_blob_relay
+
+# Relay upload orchestration (tip quoting/payment, relay POST, confirmation
+# certificate, thin end-to-end compose)
+from pytusk.core.relay_upload import (
+    RelayBlobReceipt,
+    RelayCertificateParseError,
+    RelayCertifyTransactionError,
+    RelayOutcome,
+    RelayStageTimings,
+    RelayUploadError,
+    TipConfigError,
+    TipPaymentError,
+    build_auth_package,
+    quote_tip,
+)
 from pytusk.core.types import (
     CertifyResult,
     Registration,
     RegistrationPendingError,
     SplitResult,
+    StageTimingsProtocol,
     StorageObject,
     StorageOpResult,
+    TipComposition,
+    UploadReceipt,
 )
 from pytusk.version import __version__
 
@@ -217,13 +239,12 @@ __all__ = [  # noqa: RUF022
     "WalrusCommitteeMember",
     "blob_certified_epoch",
     "blob_deletable_and_end_epoch",
+    "blob_id_from_object",
     "extract_balance_change_costs",
     "fetch_committee",
     "fetch_epoch",
     "find_created_object_id",
-    "pack_signers_bitmap",
     "require_success",
-    "unpack_signers_bitmap",
     # Command base and response types
     "WalrusCommand",
     "BlobData",
@@ -269,6 +290,7 @@ __all__ = [  # noqa: RUF022
     "max_n_faulty",
     "metadata_length",
     "min_n_correct",
+    "object_id_to_raw_bytes",
     "root_hash_to_u256",
     "source_symbol_counts",
     "symbol_size",
@@ -282,6 +304,8 @@ __all__ = [  # noqa: RUF022
     "confirmation_message",
     "is_quorum",
     "min_weight_for_quorum",
+    "pack_signers_bitmap",
+    "unpack_signers_bitmap",
     "verify_certificate",
     "verify_confirmation",
     # Storage-object operations
@@ -307,9 +331,12 @@ __all__ = [  # noqa: RUF022
     "Registration",
     "RegistrationPendingError",
     "add_certify",
+    "add_registration_sequence",
     "add_reserve_and_register",
     "execute_certify",
     "execute_reserve_and_register",
+    "preflight_payment",
+    "preflight_sponsor",
     # Shared ops helpers (client-taking)
     "DEFAULT_FINALITY_MAX_ATTEMPTS",
     "DEFAULT_FINALITY_MAX_DELAY",
@@ -331,7 +358,22 @@ __all__ = [  # noqa: RUF022
     "assert_certificate_epoch_current",
     "certify",
     "collect_confirmations",
-    "object_id_to_raw_bytes",
     "store_blob_native",
     "upload_slivers",
+    # Relay upload orchestration
+    "RelayBlobReceipt",
+    "RelayCertificateParseError",
+    "RelayCertifyTransactionError",
+    "RelayOutcome",
+    "RelayStageTimings",
+    "RelayUploadError",
+    "TipComposition",
+    "TipConfigError",
+    "TipPaymentError",
+    "build_auth_package",
+    "quote_tip",
+    "store_blob_relay",
+    # Receipt protocols
+    "StageTimingsProtocol",
+    "UploadReceipt",
 ]

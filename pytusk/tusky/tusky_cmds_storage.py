@@ -27,13 +27,13 @@ from pytusk import (
     add_fuse,
     add_split_by_epoch,
     add_split_by_size,
+    blob_certified_epoch,
     fuse_incompatibility,
     fuse_periods_incompatibility,
     list_storage_objects,
     storage_from_blob,
     storage_from_object,
 )
-from pytusk.core.chain import blob_certified_epoch
 from pytusk.tusky.tusky_cmds_common import (
     config_from_args,
     resolve_sender,

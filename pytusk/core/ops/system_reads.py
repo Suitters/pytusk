@@ -20,6 +20,7 @@ import asyncio
 from pysui import GetObject, GetTransaction
 
 from pytusk.client.walrus_client import WalrusClient
+from pytusk.core.chain.committee import protobuf_json_to_python
 
 __all__ = [
     "DEFAULT_FINALITY_MAX_ATTEMPTS",
@@ -62,13 +63,32 @@ async def resolve_package_id(*, client: WalrusClient, system_object: str) -> str
 
     Raises:
         RuntimeError: If the System object cannot be fetched.
+        ValueError: If the fetched object carries no JSON view, or its JSON
+            view has no ``package_id`` field -- an incomplete RPC response.
+            The original hand-walked read had no such guard and crashed with
+            a bare ``AttributeError`` on a malformed System object; this
+            check is a deliberate improvement, not a preserved behaviour.
     """
     result = await client.execute(command=GetObject(object_id=system_object))
     if not result.is_ok():
         raise RuntimeError(
             f"Cannot fetch System object {system_object}: {result.result_string}"
         )
-    return result.result_data.json.struct_value.fields["package_id"].string_value
+    fields = protobuf_json_to_python(value=result.result_data.json)
+    if not isinstance(fields, dict):
+        # ValueError, not TypeError -- mirrors the malformed-object
+        # contract used throughout pytusk.core.chain.blob_fields and
+        # pytusk.core.ops.storage_reads.
+        raise ValueError(  # noqa: TRY004
+            f"System object {system_object} has no JSON view; "
+            "cannot resolve package_id."
+        )
+    package_id = fields.get("package_id")
+    if not isinstance(package_id, str) or not package_id:
+        raise ValueError(
+            f"System object {system_object} is missing its 'package_id' field."
+        )
+    return package_id
 
 
 async def wait_for_finality(

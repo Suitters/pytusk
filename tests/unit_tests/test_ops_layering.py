@@ -3,7 +3,7 @@
 
 # -*- coding: utf-8 -*-
 
-"""Enforces the COMPOSE/EXECUTE layering invariant in ``pytusk.core.ops``.
+"""Enforces client-free layering invariants below ``pytusk/client/``.
 
 ``pytusk.core.ops`` is deliberately split into COMPOSE modules
 (``*_compose.py``: ``add_*`` functions plus pure validators, which append
@@ -24,6 +24,17 @@ COMPOSE/EXECUTE split this package exists to enforce. This test parses each
 anywhere in the file, including one nested inside a function body to break
 a circular import) and fails if any of them names a client or
 transaction-executor type.
+
+The same client-free requirement also applies, for a different reason, to
+``pytusk.core.types``, ``pytusk.core.encoding``, ``pytusk.core.chain``, and
+``pytusk.core.certification``: these packages sit BELOW ``pytusk/client/``
+in the project's layering (``client/walrus_client.py`` imports from
+``core.chain``, and transitively from the others), so a client import in
+any of them is not a style violation -- it is a real import cycle
+(``chain -> client -> chain`` and friends). ``TestBelowClientModulesNeverImportAClient``
+below runs the identical ``ast``-based check over that second set of
+packages, reusing the same walker and forbidden-name/module constants as
+the COMPOSE check above.
 """
 
 import ast
@@ -31,7 +42,8 @@ from pathlib import Path
 
 import pytest
 
-_OPS_DIR = Path(__file__).resolve().parent.parent.parent / "pytusk" / "core" / "ops"
+_CORE_DIR = Path(__file__).resolve().parent.parent.parent / "pytusk" / "core"
+_OPS_DIR = _CORE_DIR / "ops"
 
 # Names that identify a client or transaction-executor. A compose module
 # must reference none of these, anywhere -- not just at module scope --
@@ -57,6 +69,29 @@ _FORBIDDEN_MODULE_SUBSTRINGS: tuple[str, ...] = (
 def _compose_modules() -> list[Path]:
     """Return every ``*_compose.py`` module under ``pytusk.core.ops``."""
     return sorted(_OPS_DIR.glob("*_compose.py"))
+
+
+def _below_client_modules() -> list[Path]:
+    """Return every module in the packages that sit below ``pytusk/client/``.
+
+    Covers ``pytusk.core.types``, ``pytusk.core.encoding``,
+    ``pytusk.core.chain`` (every ``*.py`` file in each, including
+    ``__init__.py``), plus the single module ``pytusk.core.certification``.
+    ``client/walrus_client.py`` imports from ``core.chain``, so any of
+    these packages importing a client back would be a genuine import
+    cycle, not merely an inconsistency -- see this file's module
+    docstring.
+    """
+    package_dirs = (
+        _CORE_DIR / "types",
+        _CORE_DIR / "encoding",
+        _CORE_DIR / "chain",
+    )
+    modules = [
+        module_path for package_dir in package_dirs for module_path in package_dir.glob("*.py")
+    ]
+    modules.append(_CORE_DIR / "certification.py")
+    return sorted(modules)
 
 
 def _imported_names_and_modules(*, source: str) -> tuple[set[str], set[str]]:
@@ -148,3 +183,72 @@ class TestComposeModulesNeverImportAClient:
         ``storage_compose.py`` for the parametrization to have found.
         """
         assert len(_compose_modules()) >= 2
+
+
+class TestBelowClientModulesNeverImportAClient:
+    """No module in ``pytusk.core.types``, ``pytusk.core.encoding``,
+    ``pytusk.core.chain``, or ``pytusk.core.certification`` may import or
+    reference a client / transaction-executor.
+
+    These packages sit BELOW ``pytusk/client/`` in the project's layering:
+    ``pytusk.client.walrus_client`` imports from ``pytusk.core.chain``, so
+    a client import inside any of these packages closes a real import
+    cycle (e.g. ``chain -> client -> chain``), not just a style
+    inconsistency. This mirrors ``TestComposeModulesNeverImportAClient``
+    above -- same walker, same forbidden-name/module constants -- applied
+    to a different set of packages for a different (but related) reason.
+    """
+
+    @pytest.mark.parametrize(
+        "module_path",
+        _below_client_modules(),
+        ids=lambda p: str(p.relative_to(_CORE_DIR)),
+    )
+    def test_no_forbidden_import(self, module_path: Path) -> None:
+        """Fails if ``module_path`` imports a client/executor name or module.
+
+        A failure here means a package below ``pytusk/client/`` has
+        started depending on a client or transaction-executor -- e.g. a
+        function-local import added to dodge a circular import instead of
+        moving the function to the layer where it belongs. Move the
+        client-touching code (or the function needing a client-free
+        helper) to its correct layer instead of importing across the
+        seam.
+        """
+        source = module_path.read_text()
+        names, modules = _imported_names_and_modules(source=source)
+
+        forbidden_names_found = names & _FORBIDDEN_NAMES
+        assert not forbidden_names_found, (
+            f"{module_path.relative_to(_CORE_DIR)} imports "
+            f"{sorted(forbidden_names_found)}, which names a "
+            "client/transaction-executor type. Modules below "
+            "pytusk/client/ must never import or reference a client or "
+            "transaction-executor -- doing so closes a real import cycle, "
+            "not just a style violation."
+        )
+
+        forbidden_modules_found = {
+            module
+            for module in modules
+            if any(substring in module for substring in _FORBIDDEN_MODULE_SUBSTRINGS)
+        }
+        assert not forbidden_modules_found, (
+            f"{module_path.relative_to(_CORE_DIR)} imports from "
+            f"{sorted(forbidden_modules_found)}, a client/transaction-executor "
+            "module. Modules below pytusk/client/ must never import or "
+            "reference a client or transaction-executor -- doing so closes "
+            "a real import cycle, not just a style violation."
+        )
+
+    def test_at_least_expected_modules_are_checked(self) -> None:
+        """Regression guard: the globs above must not silently match nothing.
+
+        A typo in ``_CORE_DIR`` or the package directories would make
+        every parametrized case above vacuously pass -- this pins that at
+        least ``pytusk.core.types``, ``pytusk.core.encoding``,
+        ``pytusk.core.chain``, and ``pytusk.core.certification`` were all
+        found (one module per package plus ``certification.py`` at a
+        minimum).
+        """
+        assert len(_below_client_modules()) >= 4

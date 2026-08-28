@@ -16,6 +16,25 @@ existing fields, with no modification required.
 
 import typing
 
+from pysui import SuiCommand, SuiRpcResult
+
+from pytusk.commands.walrus_command import WalrusCommand
+
+
+class ExecuteOnlyClient(typing.Protocol):
+    """Structural type for functions that only need ``execute()`` off a
+    client -- lets tests pass a minimal fake without casting it to the
+    concrete :class:`~pytusk.client.walrus_client.WalrusClient`."""
+
+    async def execute(
+        self,
+        *,
+        command: WalrusCommand | SuiCommand,
+        timeout: float | None = None,
+        headers: dict | None = None,
+        base_url: str | None = None,
+    ) -> SuiRpcResult: ...
+
 
 @typing.runtime_checkable
 class StageTimingsProtocol(typing.Protocol):

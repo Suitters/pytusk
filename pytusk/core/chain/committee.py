@@ -271,10 +271,13 @@ def protobuf_json_to_python(*, value: object) -> JsonValue:
     This is the only place in the committee path that touches the protobuf
     ``Value`` shape returned by ``GetDynamicFields``. Everything downstream
     works with plain dicts, lists, strings and numbers, so a change in the wire
-    rendering has one place to be fixed. (Note that ``pytusk.tusky.tusky_cmds_common``
-    and ``pytusk.tusky.tusky_cmds_query`` still walk protobuf structures by hand in
-    their blob-inspection helpers; that code predates this function and has not
-    been migrated onto it.)
+    rendering has one place to be fixed. :mod:`pytusk.core.chain.blob_fields`
+    also calls this function -- it is the only other place under
+    :mod:`pytusk.core` or :mod:`pytusk.tusky` that touches the protobuf
+    ``Value``/``struct_value`` shape at all, as of Plan #28 step 12, which
+    repointed ``pytusk.tusky.tusky_cmds_query`` (``blobs()``) and
+    ``pytusk.tusky.tusky_cmds_native_upload`` off their own hand-walks and
+    onto :mod:`pytusk.core.chain.blob_fields`.
 
     ASSUMPTION, load-bearing and unenforced: the protobuf runtime returns
     ``None`` for an UNSET oneof member. That is betterproto's behaviour, which

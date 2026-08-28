@@ -20,8 +20,7 @@ from pysui import GetCoins, GetObject, GetObjectsOwnedByAddress
 from pysui.sui.sui_bcs import bcs
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 
-from pytusk import WalrusClient
-from pytusk.core.chain import blob_deletable_and_end_epoch
+from pytusk import WalrusClient, blob_deletable_and_end_epoch
 from pytusk.tusky.tusky_cmds_common import (
     config_from_args,
     resolve_sender,

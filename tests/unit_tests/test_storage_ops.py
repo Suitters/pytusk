@@ -72,24 +72,19 @@ _SENDER = "0xactive"
 
 
 class _FakeValue:
-    """Stand-in for a protobuf ``Value``, with every oneof member defaulted.
+    """Stand-in for a protobuf ``Value`` where only the set field exists.
 
-    Differs deliberately from the equivalent fake in ``test_system_ops.py``
-    / ``test_move_field_parity.py``, which sets ONLY the fields passed and
-    lets the rest be absent. ``_storage_from_field_map`` reaches for
-    ``.string_value`` and ``.number_value`` by DIRECT attribute access
-    rather than ``getattr(..., default)``, so an absent attribute would
-    raise ``AttributeError`` here where real betterproto returns the
-    field's zero value. Defaulting all four members matches the real
-    message and keeps these tests exercising the parser's own branch
-    logic instead of the fake's shape.
+    Mirrors the fake used in ``test_system_ops.py`` / ``test_committee.py``
+    / ``test_move_field_parity.py``: an unset oneof member reads back as
+    absent entirely (``getattr(..., default)``), matching betterproto2's
+    behaviour. In betterproto2, unset members of a proto3 ``oneof`` are
+    always ``None``, never zero-valued -- that is what makes a oneof
+    discriminable. Defaulting them to ``""``/``0.0``/``False`` (the prior
+    shape of this fake) did not model the wire format at all; the parser
+    discriminates variants by ``is not None``, not by truthiness.
     """
 
     def __init__(self, **fields: object) -> None:
-        self.string_value: object = ""
-        self.number_value: object = 0.0
-        self.bool_value: object = False
-        self.struct_value: object = None
         for name, value in fields.items():
             setattr(self, name, value)
 

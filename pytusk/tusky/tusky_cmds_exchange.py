@@ -20,13 +20,7 @@ from pysui import GetAddressCoinBalances, GetCoins, GetObject
 from pysui.sui.sui_bcs import bcs
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 
-from pytusk import PytuskConfiguration, WalrusClient
-
-# Same rationale as tusky_cmds_common: a private helper reused across
-# modules rather than duplicated. tusky_cmds carried its own copy of this
-# until the duplication was consolidated -- the one-way dependency rule
-# forbids core importing tusky, not tusky importing core.
-from pytusk.core.ops.coins import matches_wal_coin_type
+from pytusk import PytuskConfiguration, WalrusClient, matches_wal_coin_type
 from pytusk.tusky.tusky_cmds_common import (
     config_from_args,
     resolve_sender,

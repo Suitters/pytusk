@@ -25,13 +25,19 @@ effects/result -- no I/O of its own -- and reads spend costs out of its
 balance changes. :mod:`pytusk.core.chain.blob_fields` extracts fields from an
 already-fetched Walrus ``Blob`` object; both moved here from the tusky CLI at
 Plan #28 step 10 under the placement rule, being domain logic an SDK user
-wants rather than CLI presentation.
+wants rather than CLI presentation. :mod:`pytusk.core.chain.coin_types`
+holds :func:`~pytusk.core.chain.coin_types.matches_wal_coin_type`, moved
+here from :mod:`pytusk.core.ops.coins` at Plan #28's architect review since
+it is client-free and :mod:`pytusk.core.chain.effects` needed it without a
+function-local import to dodge the ``chain -> ops -> client -> chain`` cycle.
 """
 
 from pytusk.core.chain.blob_fields import (
     blob_certified_epoch,
     blob_deletable_and_end_epoch,
+    blob_id_from_object,
 )
+from pytusk.core.chain.coin_types import matches_wal_coin_type
 from pytusk.core.chain.committee import (
     ChainReader,
     WalrusCommittee,
@@ -55,10 +61,12 @@ __all__ = [
     "WalrusCommitteeMember",
     "blob_certified_epoch",
     "blob_deletable_and_end_epoch",
+    "blob_id_from_object",
     "extract_balance_change_costs",
     "fetch_committee",
     "fetch_epoch",
     "find_created_object_id",
+    "matches_wal_coin_type",
     "pack_signers_bitmap",
     "require_success",
     "unpack_signers_bitmap",

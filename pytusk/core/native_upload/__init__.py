@@ -51,7 +51,6 @@ corruption or a malformed request, not a type error:
 """
 
 from pytusk.core.native_upload.certify import assert_certificate_epoch_current, certify
-from pytusk.core.native_upload.common import object_id_to_raw_bytes
 from pytusk.core.native_upload.confirm import collect_confirmations
 from pytusk.core.native_upload.fanout import (
     FanoutReport,
@@ -81,6 +80,5 @@ __all__ = [
     "assert_certificate_epoch_current",
     "certify",
     "collect_confirmations",
-    "object_id_to_raw_bytes",
     "upload_slivers",
 ]

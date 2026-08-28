@@ -25,24 +25,20 @@ from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 
 from pytusk import (
     BlobTooLargeError,
-    WalrusClient,
-    encode_blob,
-)
-from pytusk.core.encoding import encoded_blob_length
-from pytusk.core.ops import (
-    add_registration_sequence,
-    preflight_payment,
-    preflight_sponsor,
-)
-from pytusk.core.pipelines import store_blob_relay as _store_blob_relay_pipeline
-from pytusk.core.relay_upload import (
     RelayOutcome,
     RelayStageTimings,
     RelayUploadError,
+    TipComposition,
+    WalrusClient,
+    add_registration_sequence,
     build_auth_package,
+    encode_blob,
+    encoded_blob_length,
+    preflight_payment,
+    preflight_sponsor,
     quote_tip,
 )
-from pytusk.core.types import TipComposition
+from pytusk import store_blob_relay as _store_blob_relay_pipeline
 from pytusk.tusky.tusky_cmds_common import (
     config_from_args,
     read_file_bytes,
@@ -59,7 +55,7 @@ async def store_blob_relay(args: argparse.Namespace) -> None:
 
     Content comes from --content (UTF-8 text) or --file (raw bytes),
     whichever was given. In execute mode this delegates to the library's
-    :func:`~pytusk.core.relay_upload.store_blob_relay` convenience, which
+    :func:`~pytusk.core.pipelines.write.store_blob_relay` convenience, which
     bundles the relay tip with reserve_space+register_blob in one
     transaction, POSTs the blob to the relay, and certifies the result.
 

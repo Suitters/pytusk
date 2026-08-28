@@ -37,7 +37,13 @@ from pysui import (
     SuiRpcResult,
 )
 
-from pytusk import PytuskConfiguration, WalrusClient, resolve_package_id
+from pytusk import (
+    PytuskConfiguration,
+    WalrusClient,
+    extract_balance_change_costs,
+    resolve_package_id,
+)
+from pytusk import wal_balance_and_decimals as core_wal_balance_and_decimals
 
 # The domain half of what this module used to do itself. Plan #28 step 10
 # moved it into the library proper under the placement rule: matching a WAL
@@ -45,10 +51,6 @@ from pytusk import PytuskConfiguration, WalrusClient, resolve_package_id
 # balance changes are things an SDK user wants, not CLI presentation. What
 # stays here is the CLI's own error handling -- the library call raises, and
 # this module turns that into a message on stderr and a non-zero exit.
-from pytusk.core.chain import extract_balance_change_costs
-from pytusk.core.ops.coins import (
-    wal_balance_and_decimals as core_wal_balance_and_decimals,
-)
 from pytusk.tusky.tusky_format import format_token_amount
 
 

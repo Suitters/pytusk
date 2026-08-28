@@ -105,6 +105,38 @@ class TipConfig:
         return self.kind is not None
 
 
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class TipQuote:
+    """A relay's tip policy resolved against one specific blob.
+
+    :class:`TipConfig` says how a relay charges; this says what THIS upload
+    will actually cost, so a caller can show or approve the figure before
+    any transaction is built. It is also what tusky's simulate summary
+    reports, which needs no chain state and no registration.
+
+    Attributes:
+        address (str | None): Sui address the tip is transferred to, or
+            ``None`` when the relay requires no tip.
+        amount (int | None): The computed tip in MIST, or ``None`` when the
+            relay requires no tip.
+        kind (TipKind | None): The formula the amount came from, kept so a
+            caller can explain the figure rather than just quote it.
+    """
+
+    address: str | None
+    amount: int | None
+    kind: TipKind | None
+
+    @property
+    def requires_payment(self) -> bool:
+        """Whether this upload must pay a tip.
+
+        Returns:
+            bool: True when a tip must be paid, False for a ``no_tip`` relay.
+        """
+        return self.kind is not None
+
+
 FROM_GAS: str = "from_gas"
 """Sentinel for a tip's ``payment_coin``: split the tip from whatever funds
 the transaction.
@@ -183,8 +215,7 @@ class TipComposition:
 
     Attributes:
         relay_address (str): Sui address to transfer the tip to, from the
-            relay's tip config (:attr:`TipQuote.address` in
-            :mod:`pytusk.core.relay_upload.common`).
+            relay's tip config (:attr:`TipQuote.address`).
         tip_amount (int): Tip in MIST, as computed by
             :func:`~pytusk.core.relay_upload.tip.compute_tip`.
         auth_package (AuthPackage): Package binding this tip to one blob.
@@ -196,3 +227,28 @@ class TipComposition:
     tip_amount: int
     auth_package: AuthPackage
     payment_coin: str = FROM_GAS
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class TipResult:
+    """The outcome of a standalone tip payment.
+
+    Returned by :func:`~pytusk.core.relay_upload.tip.execute_tip`, which is
+    the composable escape hatch: the encapsulated pipeline bundles the tip
+    into Tx1 and never calls it. Its reason to exist is resuming -- paying a
+    fresh tip for an upload whose earlier attempt is no longer usable -- so
+    it carries the tokens a later POST needs, not merely a digest.
+
+    Attributes:
+        digest (str): Digest of the tip transaction, sent to the relay as
+            its ``tx_id`` query parameter.
+        nonce (str): Base64url nonce from the authentication package, sent
+            alongside the digest. The relay checks both.
+        relay_address (str): Sui address the tip was transferred to.
+        tip_amount (int): Tip paid, in MIST.
+    """
+
+    digest: str
+    nonce: str
+    relay_address: str
+    tip_amount: int

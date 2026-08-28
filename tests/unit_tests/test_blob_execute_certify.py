@@ -16,6 +16,7 @@ import types
 
 import pytest
 
+from pytusk import NativeUploadError, RelayCertifyTransactionError
 from pytusk.core.ops import blob_execute as ops_blob_execute
 from pytusk.core.ops.blob_execute import CertificationOutcome, submit_certification
 from pytusk.core.types import CertifyResult, Registration
@@ -68,6 +69,7 @@ async def _submit(**overrides: object) -> CertificationOutcome:
         "certificate": _certificate(),
         "package_id": "0xpkg",
         "system_object": "0xsystem",
+        "error_type": CertifyTransactionError,
     }
     kwargs.update(overrides)
     return await submit_certification(**kwargs)
@@ -244,3 +246,36 @@ class TestSubmitCertificationErrorConversion:
         assert excinfo.value.duration >= 0
         assert isinstance(excinfo.value.__cause__, ValueError)
         assert str(excinfo.value.__cause__) == original
+
+    async def test_error_type_names_the_calling_pipelines_own_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Guards backlog #32: ``submit_certification`` is the shared Tx2
+        stage for both the native and relay write paths, and the
+        ``error_type`` parameter is what keeps each pipeline's failures
+        named for its own path rather than forcing a relay caller to
+        receive a native-named exception.
+
+        Drives the same RuntimeError failure path as
+        ``test_runtimeerror_becomes_certify_transaction_error`` above, but
+        with ``error_type=RelayCertifyTransactionError`` -- the class a
+        relay caller actually passes -- to prove the parameter is honoured
+        rather than the failure always coming back as
+        ``CertifyTransactionError``.
+        """
+        original = "certify_blob transaction aborted on-chain: EWrongEpoch"
+
+        async def fake_execute_certify(**kwargs: object) -> CertifyResult:
+            raise RuntimeError(original)
+
+        monkeypatch.setattr(ops_blob_execute, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(
+            ops_blob_execute, "verify_certificate", lambda **kwargs: True
+        )
+
+        with pytest.raises(RelayCertifyTransactionError) as excinfo:
+            await _submit(error_type=RelayCertifyTransactionError)
+
+        assert not isinstance(excinfo.value, NativeUploadError)
+        assert excinfo.value.stage == "certify"
+        assert original in str(excinfo.value)

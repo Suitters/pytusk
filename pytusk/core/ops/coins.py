@@ -5,16 +5,21 @@
 
 """Client-driven WAL coin selection and validation.
 
-All three helpers here take a :class:`~pytusk.client.walrus_client.WalrusClient`
-(or, for :func:`matches_wal_coin_type`, the pinned coin-type string a client's
-config carries) -- none compose or submit a PTB, so they sit in
-:mod:`pytusk.core.ops` rather than a ``*_compose.py`` module.
+The three functions defined here each take a
+:class:`~pytusk.client.walrus_client.WalrusClient` -- none compose or submit
+a PTB, so they sit in :mod:`pytusk.core.ops` rather than a
+``*_compose.py`` module. :func:`~pytusk.core.chain.coin_types.matches_wal_coin_type`
+is re-exported here (imported, not defined) for callers within this module
+that match a coin_type string against the pinned WAL coin type; it moved to
+:mod:`pytusk.core.chain.coin_types` at Plan #28's architect review since it
+is client-free and belongs below ``pytusk/client/``.
 """
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 from pysui import GetAddressCoinBalances, GetCoinMetaData, GetCoins, GetObject
 
 from pytusk.client.walrus_client import WalrusClient
+from pytusk.core.chain.coin_types import matches_wal_coin_type
 
 __all__ = [
     "assert_coin_usable",
@@ -91,31 +96,6 @@ async def wal_balance_and_decimals(
             f"WAL coin metadata for {wal_entry.coin_type} has no decimals field."
         )
     return wal_entry, metadata.decimals
-
-
-def matches_wal_coin_type(*, coin_type: str, wal_coin_type: str) -> bool:
-    """Check whether a coin_type string identifies the WAL coin.
-
-    The single implementation. ``pytusk.tusky.tusky_cmds`` carried a
-    duplicate of this helper until it was consolidated here: the one-way
-    dependency rule forbids ``core`` importing ``tusky``, not ``tusky``
-    importing ``core``, and ``tusky`` already imports from ``pytusk``
-    freely. Uses an exact match against ``wal_coin_type`` when the active
-    network has a pinned value (currently mainnet only); falls back to a
-    substring match when unpinned (e.g. testnet, whose contracts are
-    redeployed and don't have a stable package address to pin against).
-
-    Args:
-        coin_type (str): The coin_type string to check.
-        wal_coin_type (str): The active network's pinned WAL coin type, or
-            "" if unpinned.
-
-    Returns:
-        bool: True if coin_type identifies the WAL coin.
-    """
-    if wal_coin_type:
-        return coin_type == wal_coin_type
-    return "::wal::WAL" in coin_type
 
 
 async def select_wal_payment_coin(*, client: WalrusClient, owner: str) -> str:

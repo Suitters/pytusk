@@ -12,29 +12,10 @@ require metadata before slivers, and the four different 32-byte identifier
 encodings in play across native upload.
 """
 
-from typing import Protocol
-
-from pysui import SuiCommand, SuiRpcResult
-
-from pytusk.commands.walrus_command import WalrusCommand
-from pytusk.core.encoding import (
-    object_id_to_raw_bytes,  # noqa: F401 -- back-compat re-export; moved to pytusk.core.encoding
-)
-
-
-class _ExecuteOnlyClient(Protocol):  # noqa: PYI046 -- consumed by sibling modules (fanout.py, confirm.py, certify.py), which ruff's single-file check can't see
-    """Structural type for functions that only need ``execute()`` off a
-    client -- lets tests pass a minimal fake without casting it to the
-    concrete :class:`~pytusk.client.walrus_client.WalrusClient`."""
-
-    async def execute(
-        self,
-        *,
-        command: WalrusCommand | SuiCommand,
-        timeout: float | None = None,
-        headers: dict | None = None,
-        base_url: str | None = None,
-    ) -> SuiRpcResult: ...
+# _ExecuteOnlyClient moved to pytusk.core.types (see
+# pytusk.core.types.protocols.ExecuteOnlyClient), shedding its leading
+# underscore since it is consumed by sibling modules (fanout.py, confirm.py,
+# certify.py) rather than being private to this module.
 
 
 # --- Progress heartbeat logging ------------------------------------------

@@ -60,7 +60,7 @@ from pytusk.core.certification import (
     min_weight_for_quorum,
 )
 from pytusk.core.chain import WalrusCommittee, WalrusCommitteeMember
-from pytusk.core.encoding import encode_blob
+from pytusk.core.encoding import encode_blob, object_id_to_raw_bytes
 from pytusk.core.native_upload import (
     CertifyTransactionError,
     ConfirmationCollectionError,
@@ -72,10 +72,8 @@ from pytusk.core.native_upload import (
     StageTimings,
     certify,
     collect_confirmations,
-    object_id_to_raw_bytes,
     upload_slivers,
 )
-from pytusk.core.native_upload import common as native_upload_common
 from pytusk.core.native_upload import confirm as native_upload_confirm
 from pytusk.core.native_upload import fanout as native_upload_fanout
 from pytusk.core.native_upload.confirm import _ConfirmProgress
@@ -90,6 +88,7 @@ from pytusk.core.pipelines import registration as pipelines_registration
 from pytusk.core.pipelines import store_blob_native
 from pytusk.core.pipelines import write as pipelines_write
 from pytusk.core.types import CertifyResult, Registration, RegistrationPendingError
+from pytusk.core.types.protocols import ExecuteOnlyClient
 
 # importlib.import_module, not `import pytusk.core.native_upload.certify as
 # native_upload_certify`: the package's __init__.py re-exports a function
@@ -1799,7 +1798,7 @@ class TestCertifyTx2Failure:
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
-                client=cast(native_upload_common._ExecuteOnlyClient, object()),
+                client=cast(ExecuteOnlyClient, object()),
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
@@ -1848,7 +1847,7 @@ class TestCertifyTx2Failure:
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
-                client=cast(native_upload_common._ExecuteOnlyClient, object()),
+                client=cast(ExecuteOnlyClient, object()),
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
@@ -2104,7 +2103,7 @@ class TestCertifySuccessDigests:
         )
 
         receipt = await certify(
-            client=cast(native_upload_common._ExecuteOnlyClient, object()),
+            client=cast(ExecuteOnlyClient, object()),
             committee=committee,
             blob_id=encoded.blob_id,
             registration=registration,

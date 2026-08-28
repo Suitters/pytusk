@@ -24,7 +24,6 @@ import sys
 import time
 from pathlib import Path
 
-import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 from pysui import GetObject
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 
@@ -36,20 +35,17 @@ from pytusk import (
     StageTimings,
     WalrusClient,
     add_certify,
+    add_registration_sequence,
+    blob_deletable_and_end_epoch,
+    blob_id_from_object,
     certify,
     collect_confirmations,
     encode_blob,
+    encoded_blob_length,
+    preflight_payment,
     upload_slivers,
 )
 from pytusk import store_blob_native as _store_blob_native_pipeline
-from pytusk.core.chain import blob_deletable_and_end_epoch
-
-# Imported directly from the submodule, not the pytusk top-level package:
-# this is an internal reuse of the same computation add_reserve_and_register
-# already performs (see its _encoded_storage_amount), not a new public
-# surface, so it is kept out of pytusk.__all__.
-from pytusk.core.encoding import encoded_blob_length
-from pytusk.core.ops import add_registration_sequence, preflight_payment
 from pytusk.tusky.tusky_cmds_common import (
     config_from_args,
     read_file_bytes,
@@ -59,36 +55,6 @@ from pytusk.tusky.tusky_cmds_common import (
     submit,
     walrus_package_id,
 )
-
-
-def _blob_id_bytes_from_object(obj: sui_prot.Object) -> bytes:
-    """Extract a Blob object's raw 32-byte Walrus blob ID from its on-chain u256 field.
-
-    Ported field-for-field from the ``blob_id`` parsing block in ``blobs()``:
-    the on-chain ``Blob.blob_id`` is a Move ``u256``, surfaced in JSON as a
-    decimal string, and is converted to raw bytes the same way
-    ``pytusk.core.encoding.blob_id_to_u256`` converts the other direction
-    (little-endian).
-
-    Args:
-        obj (sui_prot.Object): A fetched object expected to be a Walrus Blob.
-
-    Returns:
-        bytes: The raw 32-byte blob ID.
-
-    Raises:
-        ValueError: If the object's JSON view is missing its 'blob_id' field.
-    """
-    if not (obj.json and obj.json.struct_value):
-        raise ValueError(
-            f"Object {obj.object_id} has no JSON view; cannot determine blob_id."
-        )
-    fields = obj.json.struct_value.fields
-    blob_id_val = fields.get("blob_id")
-    if not (blob_id_val and blob_id_val.string_value):
-        raise ValueError(f"Object {obj.object_id} is missing its 'blob_id' field.")
-    return int(blob_id_val.string_value).to_bytes(32, byteorder="little")
-
 
 # --- tusky CLI logging configuration ------------------------------------
 # pytusk (the library, everything outside pytusk/tusky/) only ever emits
@@ -165,7 +131,7 @@ async def store_blob_native(args: argparse.Namespace) -> None:
     Content comes from --content (UTF-8 text) or --file (raw bytes), whichever
     was given. In execute mode (the full pipeline: reserve_space+register_blob,
     sliver fan-out, confirmation collection, certify_blob) this delegates to
-    the library's :func:`~pytusk.core.native_upload.store_blob_native`
+    the library's :func:`~pytusk.core.pipelines.write.store_blob_native`
     convenience. In simulate mode ONLY Tx1 (reserve_space+register_blob) is
     simulated -- a real simulation, unlike the rest of the pipeline, which is
     skipped because simulation never registers the blob on-chain, so storage
@@ -372,8 +338,8 @@ async def certify_blob(args: argparse.Namespace) -> None:
     (reserve_space+register_blob) but died before or during Tx2
     (certify_blob): given only the blob's Sui object ID, it re-derives the
     real Walrus blob ID from the on-chain Blob object's `blob_id` u256 field
-    (see :func:`_blob_id_bytes_from_object`), re-collects a fresh quorum of
-    storage-node confirmations, and certifies.
+    (see :func:`~pytusk.core.chain.blob_fields.blob_id_from_object`),
+    re-collects a fresh quorum of storage-node confirmations, and certifies.
 
     By default it does NOT re-upload slivers -- if the original sliver
     fan-out did not reach quorum, confirmation collection here will also
@@ -423,7 +389,7 @@ async def certify_blob(args: argparse.Namespace) -> None:
             print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
             sys.exit(1)
         try:
-            blob_id_bytes = _blob_id_bytes_from_object(obj)
+            blob_id_bytes = blob_id_from_object(obj=obj)
             deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
         except ValueError as exc:
             print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)

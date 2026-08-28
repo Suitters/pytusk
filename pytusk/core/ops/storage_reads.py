@@ -23,10 +23,10 @@ returns the storage intact) or by ``system::reserve_space`` /
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 from pysui import GetObjectsForType, GetObjectsOwnedByAddress
-from pysui.sui.sui_grpc.suimsgs.google import protobuf as pb
 
 from pytusk.client.walrus_client import WalrusClient
 from pytusk.config.tusk_config import NetworkType
+from pytusk.core.chain.committee import JsonValue, protobuf_json_to_python
 from pytusk.core.types.receipts import StorageObject
 
 __all__ = [
@@ -139,6 +139,48 @@ async def list_storage_objects(
     return storages
 
 
+def _converted_storage_fields(
+    *, obj: sui_prot.Object, missing_json_detail: str
+) -> dict[str, JsonValue]:
+    """Convert a fetched object's JSON view into a plain field mapping.
+
+    Mirrors :func:`pytusk.core.chain.blob_fields._converted_fields`: calls
+    :func:`~pytusk.core.chain.committee.protobuf_json_to_python` once on
+    ``obj.json``, so :func:`storage_from_object` and :func:`storage_from_blob`
+    both index plain Python afterward instead of hopping the raw protobuf
+    field tree by hand. Unlike ``blob_fields``' version, the "no JSON view"
+    check is not a separate attribute walk -- an object with no JSON view
+    converts to ``None`` rather than a dict, so checking the converted
+    SHAPE catches it too, without this module naming any raw protobuf
+    attribute itself. That shape knowledge stays confined to
+    :mod:`pytusk.core.chain.committee`.
+
+    Args:
+        obj (sui_prot.Object): A fetched object expected to be a Walrus
+            ``Storage`` or ``Blob``.
+        missing_json_detail (str): Fragment naming what the caller could not
+            read, folded into the "no JSON view" error message so each
+            public function in this module keeps its own wording.
+
+    Returns:
+        dict[str, JsonValue]: The object's top-level fields, as plain Python.
+
+    Raises:
+        ValueError: If the object has no JSON view (``obj.json`` unset, or
+            its underlying struct unset) -- an incomplete RPC response.
+    """
+    converted = protobuf_json_to_python(value=obj.json)
+    if not isinstance(converted, dict):
+        # ValueError, not TypeError -- this module's contract for a
+        # malformed object is ValueError, a missing JSON view included.
+        # Mirrors pytusk.core.chain.blob_fields.
+        raise ValueError(  # noqa: TRY004
+            f"Object {obj.object_id or '(unknown)'} has no JSON view; "
+            f"{missing_json_detail}."
+        )
+    return converted
+
+
 def storage_from_object(*, obj: sui_prot.Object) -> StorageObject:
     """Parse a fetched Sui object into a :class:`~pytusk.core.types.receipts.StorageObject`.
 
@@ -169,14 +211,10 @@ def storage_from_object(*, obj: sui_prot.Object) -> StorageObject:
         ValueError: If the object carries no JSON struct view, so its
             fields cannot be read at all.
     """
-    if not (obj.json and obj.json.struct_value):
-        raise ValueError(
-            f"Object {obj.object_id or '(unknown)'} has no JSON view; "
-            "its Storage fields cannot be read."
-        )
-    return _storage_from_field_map(
-        fields=obj.json.struct_value.fields, object_id=obj.object_id or ""
+    fields = _converted_storage_fields(
+        obj=obj, missing_json_detail="its Storage fields cannot be read"
     )
+    return _storage_from_field_map(fields=fields, object_id=obj.object_id or "")
 
 
 def storage_from_blob(*, obj: sui_prot.Object) -> StorageObject:
@@ -208,22 +246,23 @@ def storage_from_blob(*, obj: sui_prot.Object) -> StorageObject:
         ValueError: If the object carries no JSON view, or has no
             ``storage`` field.
     """
-    if not (obj.json and obj.json.struct_value):
-        raise ValueError(
-            f"Object {obj.object_id or '(unknown)'} has no JSON view; "
-            "its embedded Storage fields cannot be read."
-        )
-    storage_val = obj.json.struct_value.fields.get("storage")
-    if not (storage_val and storage_val.struct_value):
-        raise ValueError(
+    fields = _converted_storage_fields(
+        obj=obj, missing_json_detail="its embedded Storage fields cannot be read"
+    )
+    storage_val = fields.get("storage")
+    if not isinstance(storage_val, dict):
+        # ValueError, not TypeError -- this module's contract for a
+        # malformed object is ValueError, a wrong-shaped 'storage' field
+        # included. Mirrors pytusk.core.chain.blob_fields.
+        raise ValueError(  # noqa: TRY004
             f"Object {obj.object_id or '(unknown)'} has no 'storage' "
             "field; it may not be a Walrus Blob."
         )
-    return _storage_from_field_map(fields=storage_val.struct_value.fields, object_id="")
+    return _storage_from_field_map(fields=storage_val, object_id="")
 
 
 def _storage_from_field_map(
-    *, fields: dict[str, pb.Value], object_id: str
+    *, fields: dict[str, JsonValue], object_id: str
 ) -> StorageObject:
     """Build a :class:`~pytusk.core.types.receipts.StorageObject` from a
     Storage struct's field map.
@@ -239,7 +278,9 @@ def _storage_from_field_map(
     reservation as zero bytes.
 
     Args:
-        fields (dict[str, pb.Value]): The Storage struct's field map.
+        fields (dict[str, JsonValue]): The Storage struct's field map,
+            already converted to plain Python by
+            :func:`_converted_storage_fields`.
         object_id (str): Object ID to record, or ``""`` for a wrapped
             storage that has no independently addressable ID.
 
@@ -250,16 +291,14 @@ def _storage_from_field_map(
     end_val = fields.get("end_epoch")
     size_val = fields.get("storage_size")
 
-    if size_val is None:
-        storage_size = 0
-    elif size_val.string_value:
-        storage_size = int(size_val.string_value)
+    if isinstance(size_val, (str, int, float)):
+        storage_size = int(size_val)
     else:
-        storage_size = int(size_val.number_value or 0)
+        storage_size = 0
 
     return StorageObject(
         object_id=object_id,
-        start_epoch=int(start_val.number_value or 0) if start_val else 0,
-        end_epoch=int(end_val.number_value or 0) if end_val else 0,
+        start_epoch=int(start_val) if isinstance(start_val, (int, float)) else 0,
+        end_epoch=int(end_val) if isinstance(end_val, (int, float)) else 0,
         storage_size=storage_size,
     )

@@ -11,6 +11,31 @@ those packages import from here, never the other way round.
 """
 
 
+class ConfirmationMismatchError(ValueError):
+    """Raised when storage nodes returned differing confirmation messages.
+
+    The client passes exactly ONE node's ``serialized_message`` bytes,
+    verbatim, into ``certify_blob`` -- see
+    :class:`~pytusk.core.certification.NodeConfirmation`. If the
+    nodes being certified together do not agree on that message, there is no
+    single message the resulting certificate can be meaningful against, and
+    building one must fail before any signature work is wasted on it.
+    """
+
+
+class InvalidConfirmationError(ValueError):
+    """Raised when a node's signature fails verification against its key.
+
+    This means the storage node's committee public key, as resolved by the
+    caller, does not authenticate the signature it returned over the expected
+    confirmation message.
+    """
+
+
+class QuorumNotReachedError(RuntimeError):
+    """Raised when accumulated signer weight is below the quorum threshold."""
+
+
 class NativeUploadError(RuntimeError):
     """Base error for a failed stage of the native upload pipeline.
 
@@ -57,8 +82,8 @@ class ConfirmationCollectionError(NativeUploadError):
     """Raised when the confirmation-collection stage fails.
 
     Covers a quorum of storage-node confirmations not being gathered, and
-    also wraps :class:`~pytusk.core.certification.ConfirmationMismatchError`
-    and :class:`~pytusk.core.certification.InvalidConfirmationError` when
+    also wraps :class:`ConfirmationMismatchError` and
+    :class:`InvalidConfirmationError` when
     :func:`~pytusk.core.certification.build_certificate` rejects the
     collected confirmations -- see :func:`collect_confirmations`'s
     docstring.
@@ -153,6 +178,22 @@ class RelayCertificateParseError(RelayUploadError):
     ``signers`` as a JSON integer array, ``serialized_message`` as a plain
     integer array (not base64), and ``signature`` as a base64 string. A
     payload that does not match that mixed shape raises this.
+    """
+
+
+class RelayCertifyTransactionError(RelayUploadError):
+    """Raised when Tx2 (``certify_blob``) fails to submit, aborts on-chain,
+    fails pysui's pre-submission gas-estimation dry run, or when local
+    certificate verification rejects the certificate before Tx2 is even
+    attempted -- the relay path's counterpart to
+    :class:`CertifyTransactionError`.
+
+    Both exceptions are produced by the same shared Tx2 stage,
+    :func:`~pytusk.core.ops.blob_execute.submit_certification`, via its
+    ``error_type`` parameter: the native path passes
+    :class:`CertifyTransactionError` and the relay path passes this class,
+    so each pipeline reports the same failure under its own name rather
+    than the other's.
     """
 
 

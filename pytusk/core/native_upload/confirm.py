@@ -28,12 +28,10 @@ from pytusk.core.certification import (
     min_weight_for_quorum,
 )
 from pytusk.core.chain import WalrusCommittee, WalrusCommitteeMember
-from pytusk.core.native_upload.common import (
-    _HEARTBEAT_INTERVAL_SECONDS,
-    _ExecuteOnlyClient,
-    object_id_to_raw_bytes,
-)
+from pytusk.core.encoding import object_id_to_raw_bytes
+from pytusk.core.native_upload.common import _HEARTBEAT_INTERVAL_SECONDS
 from pytusk.core.types import ConfirmationCollectionError, Registration
+from pytusk.core.types.protocols import ExecuteOnlyClient
 
 _logger = logging.getLogger(__name__)
 
@@ -112,7 +110,7 @@ async def _confirm_heartbeat(*, progress: _ConfirmProgress, interval: float) -> 
 
 async def _confirm_node(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     committee: WalrusCommittee,
     member: WalrusCommitteeMember,
     blob_id: bytes,
@@ -230,7 +228,7 @@ def _confirmation_outcome_from_task(
 
 async def collect_confirmations(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     committee: WalrusCommittee,
     blob_id: bytes,
     registration: Registration,
