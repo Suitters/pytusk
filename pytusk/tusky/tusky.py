@@ -45,6 +45,7 @@ _DISPATCH = {
     "burn_blob": tusky_cmds_lifecycle.burn_blob,
     "store_blob_native": tusky_cmds_native_upload.store_blob_native,
     "certify_blob": tusky_cmds_native_upload.certify_blob,
+    "relay_configs": tusky_cmds_relay.relay_configs,
     "store_blob_relay": tusky_cmds_relay.store_blob_relay,
     "list_storage": tusky_cmds_storage.list_storage,
     "split_storage": tusky_cmds_storage.split_storage,

@@ -31,6 +31,7 @@ from pytusk.core.types import (
     AuthPackage,
     ConstTip,
     LinearTip,
+    TipCeilingExceededError,
     TipConfig,
     TipConfigError,
     TipKind,
@@ -39,6 +40,7 @@ from pytusk.core.types import (
 __all__ = [
     "FROM_GAS",
     "add_tip",
+    "assert_tip_within_ceiling",
     "build_auth_package",
     "compute_tip",
     "execute_tip",
@@ -124,6 +126,43 @@ def compute_tip(*, kind: TipKind, unencoded_length: int, n_shards: int) -> int:
             kibs = (encoded + 1023) // 1024
             return kind.base + kibs * kind.encoded_size_mul_per_kib
     raise TypeError(f"Unsupported tip kind: {type(kind).__name__}")
+
+
+def assert_tip_within_ceiling(*, quote: TipQuote, max_tip: int | None) -> None:
+    """Refuse a relay's quote that costs more than the caller will pay.
+
+    The single implementation of the ``max_tip`` ceiling, shared by
+    :func:`~pytusk.store_blob_relay` and tusky's ``store_blob_relay``
+    simulate branch. Simulate composes Tx1 itself rather than calling the
+    pipeline, so without one shared check each would carry its own
+    comparison and the two would drift.
+
+    A quote EQUAL to the ceiling is accepted: the ceiling is the most the
+    caller agreed to pay, not the first price refused. A ``no_tip`` relay
+    quotes ``amount=None`` and is accepted at any ceiling, zero included,
+    because nothing is charged.
+
+    Call this before composing anything. It raises rather than reporting on
+    a receipt because nothing has been spent at the point it runs.
+
+    Args:
+        quote (TipQuote): The relay's quote, as returned by
+            :func:`quote_tip`.
+        max_tip (int | None): Ceiling in MIST. ``None`` accepts any quote.
+
+    Raises:
+        TipCeilingExceededError: If the quoted tip exceeds ``max_tip``.
+    """
+    if max_tip is None or quote.amount is None or quote.amount <= max_tip:
+        return
+    raise TipCeilingExceededError(
+        message=(
+            f"Relay quoted a tip of {quote.amount} MIST, above the "
+            f"max_tip ceiling of {max_tip} MIST; nothing was composed, "
+            "signed, or spent"
+        ),
+        stage="fetch_tip_config",
+    )
 
 
 async def fetch_tip_config(*, client: WalrusClient, relay_url: str) -> TipConfig:

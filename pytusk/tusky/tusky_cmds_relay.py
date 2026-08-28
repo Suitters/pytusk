@@ -18,6 +18,7 @@ import asyncio
 import dataclasses
 import functools
 import json
+import os
 import sys
 import time
 
@@ -31,6 +32,7 @@ from pytusk import (
     TipComposition,
     WalrusClient,
     add_registration_sequence,
+    assert_tip_within_ceiling,
     build_auth_package,
     encode_blob,
     encoded_blob_length,
@@ -48,6 +50,102 @@ from pytusk.tusky.tusky_cmds_common import (
     submit,
     walrus_package_id,
 )
+
+
+def _priced_size(*, args: argparse.Namespace) -> int:
+    """Resolve the byte count to price from --size, --file, or --content.
+
+    ``--file`` is measured with ``os.path.getsize`` rather than read: this
+    command prices a hypothetical upload and never needs the bytes, so a
+    multi-gigabyte file costs a stat instead of a read. ``--content`` is
+    measured ENCODED, because the relay charges on bytes -- a non-ASCII
+    string measured by character count would be under-priced.
+
+    Args:
+        args (argparse.Namespace): Parsed `relay_configs` arguments. The
+            mutually exclusive group guarantees exactly one is set.
+
+    Returns:
+        int: Unencoded blob length in bytes.
+    """
+    if args.size is not None:
+        return args.size
+    if args.file:
+        return os.path.getsize(args.file)
+    return len(args.content.encode("utf-8"))
+
+
+async def relay_configs(args: argparse.Namespace) -> None:
+    """Print each configured relay and what it would charge for a blob.
+
+    Name, URL and the active marker come from PytuskConfig; the tip amount
+    and address are fetched live from each relay. The output distinguishes
+    them because a bad row is either a configuration problem or a relay
+    problem, and the reader needs to know which.
+
+    Relays are queried concurrently and independently. One unreachable
+    relay reports its own error on its own line rather than aborting the
+    listing -- which is precisely when this command earns its keep. Nothing
+    is spent here, so a failure is reported rather than raised.
+
+    Args:
+        args (argparse.Namespace): Parsed `relay_configs` subcommand
+            arguments.
+    """
+    config = config_from_args(args)
+    network = config.active_network
+    try:
+        relays = config.relays_for(network_name=network)
+        active = config.active_relay_for(network_name=network)
+    except ValueError as exc:
+        print(f"Cannot read relay configuration: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if args.size is not None and args.size < 0:
+        print("Error: --size must not be negative.", file=sys.stderr)
+        sys.exit(1)
+    size = _priced_size(args=args)
+    if not relays:
+        print(f"network {network}  relays 0")
+        return
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            committee = await client.committee()
+        except (RuntimeError, KeyError, TypeError, ValueError) as exc:
+            print(f"Cannot get Walrus committee: {exc}", file=sys.stderr)
+            sys.exit(1)
+        quotes = await asyncio.gather(
+            *(
+                quote_tip(
+                    client=client,
+                    relay_url=relay.relay_url,
+                    unencoded_length=size,
+                    n_shards=committee.n_shards,
+                )
+                for relay in relays
+            ),
+            return_exceptions=True,
+        )
+    print(
+        f"network {network}  relays {len(relays)}  "
+        f"active {active or '(none)'}  pricing {size} bytes"
+    )
+    for relay, quote in zip(relays, quotes):
+        marker = "*" if relay.relay_name == active else " "
+        if isinstance(quote, BaseException):
+            print(
+                f"{marker} {relay.relay_name}  {relay.relay_url}  "
+                f"UNREACHABLE: {quote}"
+            )
+        elif not quote.requires_payment:
+            print(
+                f"{marker} {relay.relay_name}  {relay.relay_url}  "
+                "no tip required"
+            )
+        else:
+            print(
+                f"{marker} {relay.relay_name}  {relay.relay_url}  "
+                f"{quote.amount} MIST to {quote.address}"
+            )
 
 
 async def store_blob_relay(args: argparse.Namespace) -> None:
@@ -113,6 +211,7 @@ async def store_blob_relay(args: argparse.Namespace) -> None:
                     sponsor=sponsor,
                     recipient=args.recipient,
                     tip_source=args.tip_source,
+                    max_tip=args.max_tip,
                 )
             except BlobTooLargeError as exc:
                 print(f"Error in encode: {exc}", file=sys.stderr)
@@ -198,6 +297,12 @@ async def store_blob_relay(args: argparse.Namespace) -> None:
                 unencoded_length=len(data),
                 n_shards=committee.n_shards,
             )
+            # Simulate honours --max-tip too: a ceiling exists to catch a
+            # relay quoting a price the caller will not pay, and a preview
+            # that stayed silent would hide exactly the misconfigured or
+            # hostile relay the flag exists to surface. Same helper the
+            # execute path reaches through store_blob_relay.
+            assert_tip_within_ceiling(quote=quote, max_tip=args.max_tip)
         except RelayUploadError as exc:
             print(f"Error in {exc.stage}: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -290,6 +395,7 @@ async def store_blob_relay(args: argparse.Namespace) -> None:
                 "required": quote.requires_payment,
                 "address": quote.address,
                 "amount_mist": quote.amount,
+                "max_mist": args.max_tip,
                 "source": args.tip_source,
             },
             "cost": {"sui": sui_cost, "wal": wal_cost},

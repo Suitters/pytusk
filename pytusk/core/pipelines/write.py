@@ -54,7 +54,12 @@ from pytusk.core.pipelines.registration import (
     PlainBlobRegistration,
     TippedBlobRegistration,
 )
-from pytusk.core.relay_upload.tip import FROM_GAS, build_auth_package, quote_tip
+from pytusk.core.relay_upload.tip import (
+    FROM_GAS,
+    assert_tip_within_ceiling,
+    build_auth_package,
+    quote_tip,
+)
 from pytusk.core.relay_upload.upload import DEFAULT_MAX_UPLOAD_ATTEMPTS
 from pytusk.core.types import (
     NativeBlobReceipt,
@@ -432,6 +437,7 @@ async def store_blob_relay(
     sponsor: str | None = None,
     recipient: str | None = None,
     tip_source: str = FROM_GAS,
+    max_tip: int | None = None,
     wal_payment_coin: str | None = None,
     max_upload_attempts: int = DEFAULT_MAX_UPLOAD_ATTEMPTS,
 ) -> RelayBlobReceipt:
@@ -493,6 +499,11 @@ async def store_blob_relay(
             whoever funds the transaction pays -- or a coin object id to split
             from. A coin id is verified against the resolved sender and
             sponsor before anything is built.
+        max_tip: Ceiling, in MIST, on the tip this call will pay. ``None``
+            accepts whatever the relay quotes. A quote above the ceiling
+            raises ``TipCeilingExceededError`` immediately, before the
+            payment pre-flight and before any PTB is composed, so nothing
+            is signed, submitted, or spent.
         wal_payment_coin: WAL coin funding storage. ``None`` auto-selects.
         max_upload_attempts: POST retry budget.
 
@@ -502,6 +513,8 @@ async def store_blob_relay(
 
     Raises:
         RelayUploadError: A contract violation caught before any spend.
+        TipCeilingExceededError: The relay's quoted tip exceeded ``max_tip``.
+            Nothing was composed, signed, or spent.
         ValueError: No relay resolved for the active network.
     """
     pipeline_start = time.monotonic()
@@ -554,6 +567,10 @@ async def store_blob_relay(
         n_shards=committee.n_shards,
     )
     tip_config_duration = time.monotonic() - tip_config_start
+
+    # Pre-spend ceiling. Shared with tusky's simulate branch, which composes
+    # Tx1 itself rather than calling this pipeline, so the two cannot drift.
+    assert_tip_within_ceiling(quote=quote, max_tip=max_tip)
 
     auth_package = build_auth_package(data=data) if quote.requires_payment else None
 

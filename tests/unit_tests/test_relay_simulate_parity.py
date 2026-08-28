@@ -219,6 +219,7 @@ def _base_relay_args(**overrides: object) -> argparse.Namespace:
         "file": None,
         "epochs": 5,
         "permanent": False,
+        "max_tip": None,
         "relay": None,
         "tip_source": FROM_GAS,
         "recipient": None,

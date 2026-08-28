@@ -456,6 +456,50 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_signing_args(p_store_blob_native)
     _add_config_args(p_store_blob_native)
 
+    # --- Upload relay commands (read-only) ---
+    p_relay_configs = subparsers.add_parser(
+        "relay_configs",
+        help="List configured upload relays and what each would charge.",
+        description=(
+            "List the upload relays configured for the active network and "
+            "what each would charge to store a blob of a given size. Name, "
+            "URL and which relay is active come from PytuskConfig; the tip "
+            "amount and address are fetched live from each relay. Relays "
+            "are queried concurrently and independently -- one unreachable "
+            "relay is reported on its own line rather than aborting the "
+            "listing."
+        ),
+    )
+    relay_size_group = p_relay_configs.add_mutually_exclusive_group(required=True)
+    relay_size_group.add_argument(
+        "--size",
+        dest="size",
+        type=int,
+        help=(
+            "Blob size in bytes to price. Mutually exclusive with --file "
+            "and --content."
+        ),
+    )
+    relay_size_group.add_argument(
+        "--file",
+        dest="file",
+        action=ValidateFile,
+        help=(
+            "Path to a file whose byte length is priced. The file is "
+            "measured, never read or uploaded. Mutually exclusive with "
+            "--size and --content."
+        ),
+    )
+    relay_size_group.add_argument(
+        "--content",
+        dest="content",
+        help=(
+            "UTF-8 text whose ENCODED byte length is priced. Mutually "
+            "exclusive with --size and --file."
+        ),
+    )
+    _add_config_args(p_relay_configs)
+
     # --- Upload relay commands (--mode + sender/sponsor apply) ---
     p_store_blob_relay = subparsers.add_parser(
         "store_blob_relay",
@@ -513,6 +557,17 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         ),
     )
     p_store_blob_relay.add_argument(
+        "--max-tip",
+        dest="max_tip",
+        type=int,
+        default=None,
+        help=(
+            "Refuse to proceed if the relay's quoted tip exceeds this many "
+            "MIST. Checked before anything is composed, signed, or spent -- "
+            "no transaction is submitted. Default: no ceiling."
+        ),
+    )
+    p_store_blob_relay.add_argument(
         "--recipient",
         dest="recipient",
         action=ValidateAddress,
@@ -537,7 +592,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         "certify_blob",
         help=(
             "Recover a registered blob's confirmation-collection and "
-            "certify stages after an interrupted native upload."
+            "certify stages after an interrupted upload (native or relay)."
         ),
         description=(
             "Recover the confirmation-collection and certify_blob stages for "

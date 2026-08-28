@@ -5,9 +5,18 @@
 
 """Unit tests for tusky command handlers.
 
-Currently covers only ``certify_blob``'s ``--recover`` mode (re-uploading
-slivers before collecting confirmations, for a blob whose sliver fan-out
-never ran).
+Handlers are exercised directly with locally-defined fakes, every
+collaborator monkeypatched, so only the handler's own orchestration is
+under test. Covers:
+
+- ``certify_blob``'s ``--recover`` mode (re-uploading slivers before
+  collecting confirmations, for a blob whose sliver fan-out never ran)
+- ``store_blob_native``'s simulate mode with an unsignable sponsor
+- ``tusky_cmds_storage``'s split predicates and ``_destroy_storage_batches``
+- ``relay_configs``: per-relay quoting and failure isolation
+
+Argument parsing and ``tusky_format`` rendering are deliberately not
+covered here.
 """
 
 import argparse
@@ -21,7 +30,14 @@ from pysui import SuiRpcResult
 from pytusk import NativeBlobReceipt, StageTimings, StorageObject
 from pytusk.core.encoding import EncodedBlob
 from pytusk.core.ops import blob_execute as blob_execute_module
-from pytusk.tusky import tusky_cmds_common, tusky_cmds_native_upload, tusky_cmds_storage
+from pytusk.core.relay_upload.common import TipQuote
+from pytusk.core.types import ConstTip
+from pytusk.tusky import (
+    tusky_cmds_common,
+    tusky_cmds_native_upload,
+    tusky_cmds_relay,
+    tusky_cmds_storage,
+)
 
 
 class _FakeValue:
@@ -703,3 +719,247 @@ class TestDestroyStorageBatches:
                 sponsor=None,
                 mode="execute",
             )
+
+
+class _FakeRelayEntry:
+    """Stand-in for a RelayConfig entry."""
+
+    def __init__(self, *, relay_name: str, relay_url: str) -> None:
+        self.relay_name = relay_name
+        self.relay_url = relay_url
+
+
+class _FakeRelayListConfig:
+    """PytuskConfiguration stub exposing only what relay_configs reads."""
+
+    def __init__(
+        self, *, relays: list[_FakeRelayEntry], active: str | None
+    ) -> None:
+        self.active_network = "testnet"
+        self._relays = relays
+        self._active = active
+
+    def relays_for(self, *, network_name: str) -> list[_FakeRelayEntry]:
+        """Return the network's configured relays."""
+        return list(self._relays)
+
+    def active_relay_for(self, *, network_name: str) -> str | None:
+        """Return the active relay's name, or None when none is set."""
+        return self._active
+
+
+class _FakeRelayListClient:
+    """WalrusClient stub: async context manager plus a committee read."""
+
+    def __init__(self) -> None:
+        self.committee_calls = 0
+
+    async def __aenter__(self) -> "_FakeRelayListClient":
+        """Enter the fake client's async context, returning itself."""
+        return self
+
+    async def __aexit__(
+        self, exc_type: object, exc_val: object, exc_tb: object
+    ) -> None:
+        """Exit the fake client's async context; nothing to clean up."""
+        return
+
+    async def committee(self) -> types.SimpleNamespace:
+        """Return a committee exposing only n_shards."""
+        self.committee_calls += 1
+        return types.SimpleNamespace(n_shards=1000)
+
+
+def _relay_configs_args(**overrides: object) -> argparse.Namespace:
+    """Build a Namespace with every attribute relay_configs reads."""
+    defaults: dict[str, object] = {"size": None, "file": None, "content": None}
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+def _patch_relay_configs(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    config: _FakeRelayListConfig,
+    quotes: dict[str, object],
+) -> list[dict]:
+    """Patch config resolution, client construction, and quote_tip.
+
+    ``quotes`` maps a relay URL to either a TipQuote to return or an
+    Exception to raise, so a test can make one relay fail while others
+    succeed. Returns the list that records every quote_tip call.
+    """
+    calls: list[dict] = []
+
+    async def _quote(**kwargs: Any) -> TipQuote:
+        calls.append(kwargs)
+        outcome = quotes[kwargs["relay_url"]]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(tusky_cmds_relay, "config_from_args", lambda args: config)
+    monkeypatch.setattr(
+        tusky_cmds_relay,
+        "WalrusClient",
+        lambda *, pytusk_config: _FakeRelayListClient(),
+    )
+    monkeypatch.setattr(tusky_cmds_relay, "quote_tip", _quote)
+    return calls
+
+
+class TestRelayConfigs:
+    """relay_configs lists every configured relay and prices each one."""
+
+    async def test_lists_each_relay_with_its_quote(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="mysten", relay_url="https://a.example"),
+                _FakeRelayEntry(relay_name="mine", relay_url="https://b.example"),
+            ],
+            active="mysten",
+        )
+        _patch_relay_configs(
+            monkeypatch=monkeypatch,
+            config=config,
+            quotes={
+                "https://a.example": TipQuote(
+                    address="0xa", amount=105, kind=ConstTip(amount=105)
+                ),
+                "https://b.example": TipQuote(
+                    address="0xb", amount=999, kind=ConstTip(amount=999)
+                ),
+            },
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(size=1024))
+        out = capsys.readouterr().out
+        assert "relays 2" in out
+        assert "active mysten" in out
+        assert "105 MIST to 0xa" in out
+        assert "999 MIST to 0xb" in out
+        # The active relay is marked and the other is not.
+        assert "* mysten" in out
+        assert "* mine" not in out
+
+    async def test_unreachable_relay_does_not_abort_the_listing(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        # The whole point of per-relay isolation: a dead relay is exactly
+        # when this command is most useful, so it must not take the rest
+        # of the listing down with it.
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="dead", relay_url="https://a.example"),
+                _FakeRelayEntry(relay_name="live", relay_url="https://b.example"),
+            ],
+            active="live",
+        )
+        _patch_relay_configs(
+            monkeypatch=monkeypatch,
+            config=config,
+            quotes={
+                "https://a.example": RuntimeError("connection refused"),
+                "https://b.example": TipQuote(
+                    address="0xb", amount=42, kind=ConstTip(amount=42)
+                ),
+            },
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(size=1024))
+        out = capsys.readouterr().out
+        assert "UNREACHABLE: connection refused" in out
+        assert "dead" in out
+        assert "42 MIST to 0xb" in out
+
+    async def test_no_tip_relay_is_rendered_as_such(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="free", relay_url="https://a.example")
+            ],
+            active="free",
+        )
+        _patch_relay_configs(
+            monkeypatch=monkeypatch,
+            config=config,
+            quotes={
+                "https://a.example": TipQuote(address=None, amount=None, kind=None)
+            },
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(size=1024))
+        assert "no tip required" in capsys.readouterr().out
+
+    async def test_no_active_relay_renders_none(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        # active_relay is legitimately None once the active relay is
+        # removed, so the summary must render that rather than assume one.
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="only", relay_url="https://a.example")
+            ],
+            active=None,
+        )
+        _patch_relay_configs(
+            monkeypatch=monkeypatch,
+            config=config,
+            quotes={
+                "https://a.example": TipQuote(
+                    address="0xa", amount=7, kind=ConstTip(amount=7)
+                )
+            },
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(size=1024))
+        out = capsys.readouterr().out
+        assert "active (none)" in out
+        assert "* only" not in out
+
+    async def test_no_relays_short_circuits_before_any_network_call(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config = _FakeRelayListConfig(relays=[], active=None)
+        calls = _patch_relay_configs(
+            monkeypatch=monkeypatch, config=config, quotes={}
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(size=1024))
+        assert "relays 0" in capsys.readouterr().out
+        assert calls == []
+
+    async def test_content_is_priced_by_encoded_byte_length(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        # The relay charges on bytes, so a non-ASCII string must be
+        # measured encoded -- len() on the str would under-price it.
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="only", relay_url="https://a.example")
+            ],
+            active="only",
+        )
+        calls = _patch_relay_configs(
+            monkeypatch=monkeypatch,
+            config=config,
+            quotes={
+                "https://a.example": TipQuote(
+                    address="0xa", amount=1, kind=ConstTip(amount=1)
+                )
+            },
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(content="héllo"))
+        assert calls[0]["unencoded_length"] == 6
+        assert "pricing 6 bytes" in capsys.readouterr().out
+
+    async def test_negative_size_exits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="only", relay_url="https://a.example")
+            ],
+            active="only",
+        )
+        _patch_relay_configs(monkeypatch=monkeypatch, config=config, quotes={})
+        with pytest.raises(SystemExit):
+            await tusky_cmds_relay.relay_configs(_relay_configs_args(size=-1))

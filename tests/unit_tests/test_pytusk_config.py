@@ -619,3 +619,66 @@ class TestRelayCrud:
             "mysten",
             "mine",
         ]
+
+
+class TestRelayAccessors:
+    """relays_for / active_relay_for."""
+
+    def test_relays_for_returns_configured_relays(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        relays = cfg.relays_for(network_name="testnet")
+        assert [relay.relay_name for relay in relays] == ["mysten"]
+        assert relays[0].relay_url == "https://upload-relay.testnet.walrus.space"
+
+    def test_relays_for_reflects_added_relay(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.add_relay(
+            network_name="testnet",
+            relay_name="mine",
+            relay_url="https://mine.example.com",
+        )
+        assert [
+            relay.relay_name for relay in cfg.relays_for(network_name="testnet")
+        ] == ["mysten", "mine"]
+
+    def test_relays_for_returns_a_copy(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        relays = cfg.relays_for(network_name="testnet")
+        relays.clear()
+        assert [
+            relay.relay_name for relay in cfg.relays_for(network_name="testnet")
+        ] == ["mysten"]
+
+    def test_relays_for_empty_when_all_removed(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.remove_relay(network_name="testnet", relay_name="mysten")
+        assert cfg.relays_for(network_name="testnet") == []
+
+    def test_relays_for_unknown_network(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        with pytest.raises(ValueError, match="not found in configuration"):
+            cfg.relays_for(network_name="nope")
+
+    def test_active_relay_for_returns_active_name(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        assert cfg.active_relay_for(network_name="testnet") == "mysten"
+
+    def test_active_relay_for_none_when_active_removed(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.remove_relay(network_name="testnet", relay_name="mysten")
+        assert cfg.active_relay_for(network_name="testnet") is None
+
+    def test_active_relay_for_follows_make_active(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        cfg.add_relay(
+            network_name="testnet",
+            relay_name="mine",
+            relay_url="https://mine.example.com",
+            make_active=True,
+        )
+        assert cfg.active_relay_for(network_name="testnet") == "mine"
+
+    def test_active_relay_for_unknown_network(self, tmp_path: Path) -> None:
+        cfg = PytuskConfiguration(from_cfg_path=str(tmp_path))
+        with pytest.raises(ValueError, match="not found in configuration"):
+            cfg.active_relay_for(network_name="nope")

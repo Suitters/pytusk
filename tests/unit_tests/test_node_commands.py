@@ -326,7 +326,8 @@ class TestBaseUrlResolution:
     is used here instead of a mock hierarchy. What IS mocked: WalrusClient
     _send (the actual httpx transport call) -- these tests only cover
     _dispatch_walrus's URL-resolution branching, not a live HTTP round
-    trip against a storage node, which belongs to integration tests.
+    trip against a storage node, which is uncovered since the integration
+    suite was deleted 2026-08-28.
     """
 
     @pytest.fixture

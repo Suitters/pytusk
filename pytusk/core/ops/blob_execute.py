@@ -51,8 +51,8 @@ a command's result is threaded directly into a later command's ``arguments``
 list (never fetched back as a standalone object), and the built PTB is
 signed and submitted with ``ExecuteTransaction(**txdict)``. Status is read
 from ``result_data.effects.status`` -- NOT
-``result_data.transaction.effects.status`` -- matching the confirmed pysui
-result shape used throughout ``tests/integration_tests/conftest.py``.
+``result_data.transaction.effects.status`` -- matching the pysui result
+shape confirmed against a live node.
 
 These are THIN CONVENIENCE WRAPPERS -- see
 :mod:`pytusk.core.ops.blob_compose`'s docstring for the "caller owns the

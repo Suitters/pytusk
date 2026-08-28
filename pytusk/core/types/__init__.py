@@ -26,6 +26,7 @@ from pytusk.core.types.errors import (
     RelayCertifyTransactionError,
     RelayUploadError,
     SliverUploadError,
+    TipCeilingExceededError,
     TipConfigError,
     TipPaymentError,
 )
@@ -90,6 +91,7 @@ __all__ = [
     "StageTimingsProtocol",
     "StorageObject",
     "StorageOpResult",
+    "TipCeilingExceededError",
     "TipComposition",
     "TipConfig",
     "TipConfigError",

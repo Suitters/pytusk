@@ -752,6 +752,43 @@ class PytuskConfiguration:
             f"Available relays: {available}."
         )
 
+    def relays_for(self, *, network_name: str) -> list[RelayConfig]:
+        """List the upload relays configured for a network.
+
+        Returns a new list, so adding to or removing from the result does
+        not alter the configuration.
+
+        Args:
+            network_name (str): Name of the network to list relays for.
+
+        Returns:
+            list[RelayConfig]: The network's relays in configured order,
+                empty when the network has none.
+
+        Raises:
+            ValueError: If network_name is not found.
+        """
+        return list(self._network_for(network_name=network_name).relays)
+
+    def active_relay_for(self, *, network_name: str) -> str | None:
+        """Name of a network's active upload relay, when it has one.
+
+        Returns None when the network has no active relay. That is a
+        legitimate state rather than an error: remove_relay clears
+        active_relay when the relay it names is the one being removed, so
+        no dangling pointer is left behind.
+
+        Args:
+            network_name (str): Name of the network to resolve against.
+
+        Returns:
+            str | None: Name of the active relay, or None when none is set.
+
+        Raises:
+            ValueError: If network_name is not found.
+        """
+        return self._network_for(network_name=network_name).active_relay
+
     def save(self) -> None:
         """Persist the current configuration to disk."""
         self._write_model(self._cfg_dir)

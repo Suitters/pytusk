@@ -48,9 +48,7 @@ async def resolve_package_id(*, client: WalrusClient, system_object: str) -> str
     """Read the current Walrus package ID from the configured System object.
 
     ``pytusk.tusky.tusky_cmds_common``'s ``walrus_package_id`` delegates to
-    this function directly; the same pattern is also used by
-    ``_ensure_wal``/``_cleanup_blobs`` in
-    ``tests/integration_tests/conftest.py``: the package ID is read from
+    this function directly. The package ID is read from
     ``System.package_id`` rather than assumed from a Blob's type-tag address,
     since the type-tag address can go stale after a package upgrade.
 

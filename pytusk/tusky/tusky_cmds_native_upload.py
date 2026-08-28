@@ -334,12 +334,15 @@ async def certify_blob(args: argparse.Namespace) -> None:
     """Recover the confirmation-collection and certify_blob stages for an
     already-registered blob.
 
-    This is the recovery entry point for a native upload that completed Tx1
-    (reserve_space+register_blob) but died before or during Tx2
-    (certify_blob): given only the blob's Sui object ID, it re-derives the
-    real Walrus blob ID from the on-chain Blob object's `blob_id` u256 field
-    (see :func:`~pytusk.core.chain.blob_fields.blob_id_from_object`),
-    re-collects a fresh quorum of storage-node confirmations, and certifies.
+    This is the recovery entry point for any upload -- native or relay --
+    that completed Tx1 (reserve_space+register_blob) but died before or
+    during Tx2 (certify_blob): given only the blob's Sui object ID, it
+    re-derives the real Walrus blob ID from the on-chain Blob object's
+    `blob_id` u256 field (see
+    :func:`~pytusk.core.chain.blob_fields.blob_id_from_object`), re-collects
+    a fresh quorum of storage-node confirmations, and certifies. It reads
+    only on-chain state, so it is provenance-blind: a blob registered by
+    the relay pipeline recovers identically to one registered natively.
 
     By default it does NOT re-upload slivers -- if the original sliver
     fan-out did not reach quorum, confirmation collection here will also

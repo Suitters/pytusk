@@ -25,6 +25,7 @@ from pytusk.core.types import (
     RelayUploadError,
     RelayUploadOutcome,
     RelayUploadResult,
+    TipCeilingExceededError,
 )
 
 _RELAY_URL = "https://relay.example"
@@ -596,3 +597,66 @@ class TestRelayResolution:
         client = _FakeClient()
         await store_blob_relay(client=client, data=b"x", epochs=1)
         assert client.config.relay_calls == [("testnet", None)]
+
+
+class TestMaxTip:
+    """The max_tip ceiling refuses an over-priced quote before any spend."""
+
+    async def test_quote_above_ceiling_raises(self, rec: _Recorder) -> None:
+        client = _FakeClient()
+        with pytest.raises(TipCeilingExceededError, match="above the max_tip"):
+            await store_blob_relay(client=client, data=b"x", epochs=1, max_tip=500)
+
+    async def test_nothing_is_spent_when_ceiling_exceeded(
+        self, rec: _Recorder
+    ) -> None:
+        client = _FakeClient()
+        with pytest.raises(TipCeilingExceededError):
+            await store_blob_relay(client=client, data=b"x", epochs=1, max_tip=500)
+        # The quote is the last thing that may run. Nothing that composes,
+        # signs, submits, or costs the caller anything may appear.
+        assert "quote" in rec.order
+        assert "preflight_payment" not in rec.order
+        assert "add_tip" not in rec.order
+        assert "register" not in rec.order
+        assert "upload" not in rec.order
+        assert "certify" not in rec.order
+        assert rec.add_tip == []
+        assert rec.register == []
+        assert rec.upload == []
+        assert rec.certify == []
+
+    async def test_quote_equal_to_ceiling_is_allowed(self, rec: _Recorder) -> None:
+        client = _FakeClient()
+        receipt = await store_blob_relay(
+            client=client, data=b"x", epochs=1, max_tip=1000
+        )
+        assert receipt.outcome is RelayOutcome.CERTIFIED
+
+    async def test_quote_below_ceiling_is_allowed(self, rec: _Recorder) -> None:
+        client = _FakeClient()
+        receipt = await store_blob_relay(
+            client=client, data=b"x", epochs=1, max_tip=2000
+        )
+        assert receipt.outcome is RelayOutcome.CERTIFIED
+
+    async def test_no_ceiling_by_default(self, rec: _Recorder) -> None:
+        client = _FakeClient()
+        receipt = await store_blob_relay(client=client, data=b"x", epochs=1)
+        assert receipt.outcome is RelayOutcome.CERTIFIED
+        assert receipt.tip_paid is True
+
+    async def test_free_relay_unaffected_by_a_zero_ceiling(
+        self, rec: _Recorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _free(**kwargs: Any) -> TipQuote:
+            rec.order.append("quote")
+            return TipQuote(address=None, amount=None, kind=None)
+
+        monkeypatch.setattr(pipeline_module, "quote_tip", _free)
+        client = _FakeClient()
+        receipt = await store_blob_relay(
+            client=client, data=b"x", epochs=1, max_tip=0
+        )
+        assert receipt.outcome is RelayOutcome.CERTIFIED
+        assert receipt.tip_paid is False

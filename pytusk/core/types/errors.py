@@ -155,6 +155,23 @@ class RelayUploadError(RuntimeError):
         self.duration = duration
 
 
+class TipCeilingExceededError(RelayUploadError):
+    """Raised when the relay's quoted tip exceeds the caller's ``max_tip``.
+
+    A refusal, not a failure. The relay answered correctly and the payer
+    may well be able to afford the tip -- the caller simply declined the
+    price. :func:`~pytusk.store_blob_relay` raises this as soon as the
+    quote comes back, before the payment pre-flight and before any PTB is
+    composed, so nothing is signed, submitted, or spent. Pre-spend, so it
+    raises rather than reporting the outcome on a
+    :class:`~pytusk.core.types.RelayBlobReceipt`.
+
+    Distinct from :class:`TipPaymentError`, which means composing or
+    paying the tip went wrong; here nothing went wrong. The quoted amount
+    and the ceiling that rejected it are both carried in the message.
+    """
+
+
 class TipConfigError(RelayUploadError):
     """Raised when ``GET /v1/tip-config`` fails or returns a payload that
     does not match Walrus's ``TipConfig`` shape."""

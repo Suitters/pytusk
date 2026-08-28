@@ -213,8 +213,8 @@ def require_success(
     """Check an ExecuteTransaction result's effects.status and return the effects.
 
     Status is read from ``result_data.effects.status`` -- NOT
-    ``result_data.transaction.effects.status`` -- per the confirmed pysui
-    result shape (``tests/integration_tests/conftest.py``'s ``_ensure_wal``).
+    ``result_data.transaction.effects.status`` -- per the pysui result
+    shape confirmed against a live node.
 
     Args:
         result_data (object): ``SuiRpcResult.result_data`` from a successful

@@ -25,7 +25,9 @@ real PTBs here: both submit real transactions via
 which need either a live node or an elaborate ``AsyncSuiTransaction`` mock
 that would fake coverage rather than prove behaviour (matching the scope
 note already recorded in ``test_system_ops.py``). Full PTB
-composition/execution for both remains deferred to integration tests.
+composition/execution for both is therefore UNCOVERED. The integration
+suite that once carried it was deleted 2026-08-28; verification is now a
+deliberate manual run against testnet.
 
 ``TestCertifyTx2Failure`` is a narrow exception to that boundary: it
 monkeypatches ``execute_certify``/``fetch_epoch`` (``certify()``'s only
