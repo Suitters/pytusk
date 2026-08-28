@@ -33,13 +33,13 @@ from pytusk import (
     storage_from_blob,
     storage_from_object,
 )
+from pytusk.core.chain import blob_certified_epoch
 from pytusk.tusky.tusky_cmds_common import (
-    _blob_certified_epoch,
-    _config_from_args,
-    _resolve_sender,
-    _resolve_sponsor,
-    _submit,
-    _walrus_package_id,
+    config_from_args,
+    resolve_sender,
+    resolve_sponsor,
+    submit,
+    walrus_package_id,
 )
 
 _MAX_STORAGE_OPS_PER_PTB = 100
@@ -424,7 +424,7 @@ async def _extend_candidate_blobs(
         if not (obj.object_type and "::blob::Blob" in obj.object_type):
             continue
         try:
-            certified_epoch = _blob_certified_epoch(obj=obj)
+            certified_epoch = blob_certified_epoch(obj=obj)
         except ValueError:
             continue
         if certified_epoch is None:
@@ -492,7 +492,7 @@ async def list_storage(args: argparse.Namespace) -> None:
         args (argparse.Namespace): Parsed `list_storage` subcommand
             arguments, carrying the `status` filter and `details` flag.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         owner = client.pysui_client.config.active_address
         try:
@@ -500,7 +500,7 @@ async def list_storage(args: argparse.Namespace) -> None:
         except RuntimeError as exc:
             print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
             sys.exit(1)
-        _, walrus_pkg = await _walrus_package_id(client=client)
+        _, walrus_pkg = await walrus_package_id(client=client)
         try:
             storages = await list_storage_objects(
                 client=client, owner=owner, package_id=walrus_pkg
@@ -618,13 +618,13 @@ async def split_storage(args: argparse.Namespace) -> None:
         args (argparse.Namespace): Parsed `split_storage` subcommand
             arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
@@ -632,7 +632,7 @@ async def split_storage(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         recipient = args.recipient or sender
-        _, walrus_pkg = await _walrus_package_id(client=client)
+        _, walrus_pkg = await walrus_package_id(client=client)
 
         txn: AsyncSuiTransaction = await client.transaction(
             initial_sender=sender, initial_sponsor=sponsor
@@ -656,7 +656,7 @@ async def split_storage(args: argparse.Namespace) -> None:
         await txn.transfer_objects(transfers=[storage], recipient=recipient)
 
         txdict = await txn.build_and_sign()
-        result = await _submit(client=client, txdict=txdict, mode=args.mode)
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
         if not result.is_ok():
             print(f"Error in split_storage: {result.result_string}", file=sys.stderr)
             sys.exit(1)
@@ -713,20 +713,20 @@ async def fuse_storage(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
             print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        _, walrus_pkg = await _walrus_package_id(client=client)
+        _, walrus_pkg = await walrus_package_id(client=client)
 
         skipped: list[StorageObject] = []
         if args.fuse_amount:
@@ -791,7 +791,7 @@ async def fuse_storage(args: argparse.Namespace) -> None:
                 second_storage_id=second_id,
             )
         txdict = await txn.build_and_sign()
-        result = await _submit(client=client, txdict=txdict, mode=args.mode)
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
         if not result.is_ok():
             print(f"Error in fuse_storage: {result.result_string}", file=sys.stderr)
             sys.exit(1)
@@ -883,7 +883,7 @@ async def _destroy_storage_batches(
                 storage_object_id=storage_id,
             )
         txdict = await txn.build_and_sign()
-        result = await _submit(client=client, txdict=txdict, mode=mode)
+        result = await submit(client=client, txdict=txdict, mode=mode)
         if not result.is_ok():
             print(
                 f"Error destroying batch {batch_num}/{total_batches} "
@@ -944,20 +944,20 @@ async def reclaim_storage(args: argparse.Namespace) -> None:
         args (argparse.Namespace): Parsed `reclaim_storage` subcommand
             arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
             print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        _, walrus_pkg = await _walrus_package_id(client=client)
+        _, walrus_pkg = await walrus_package_id(client=client)
 
         if args.all:
             try:
@@ -1014,13 +1014,13 @@ async def extend_blob_with_storage(args: argparse.Namespace) -> None:
         args (argparse.Namespace): Parsed `extend_blob_with_storage`
             subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
@@ -1046,7 +1046,7 @@ async def extend_blob_with_storage(args: argparse.Namespace) -> None:
         blob_end_epoch = blob_storage.end_epoch
 
         try:
-            certified_epoch = _blob_certified_epoch(obj=blob_obj)
+            certified_epoch = blob_certified_epoch(obj=blob_obj)
         except ValueError as exc:
             print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -1115,7 +1115,7 @@ async def extend_blob_with_storage(args: argparse.Namespace) -> None:
             print(f"Cannot extend: {reason}", file=sys.stderr)
             sys.exit(1)
 
-        system_obj_id, walrus_pkg = await _walrus_package_id(client=client)
+        system_obj_id, walrus_pkg = await walrus_package_id(client=client)
 
         txn: AsyncSuiTransaction = await client.transaction(
             initial_sender=sender, initial_sponsor=sponsor
@@ -1126,7 +1126,7 @@ async def extend_blob_with_storage(args: argparse.Namespace) -> None:
             type_arguments=[],
         )
         txdict = await txn.build_and_sign()
-        result = await _submit(client=client, txdict=txdict, mode=args.mode)
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
         if not result.is_ok():
             print(
                 f"Error in extend_blob_with_storage: {result.result_string}",

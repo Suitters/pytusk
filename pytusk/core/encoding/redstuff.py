@@ -23,8 +23,6 @@ shard, not by sliver-pair position), so pytusk has no need to re-derive the
 rotation and none of these helpers attempt it.
 """
 
-from __future__ import annotations
-
 import base64
 import dataclasses
 import math

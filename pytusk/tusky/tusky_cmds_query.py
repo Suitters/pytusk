@@ -19,11 +19,13 @@ import sys
 from pysui import GetCoins, GetObject, GetObjectsOwnedByAddress
 
 from pytusk import WalrusClient, storage_from_blob
+from pytusk.core.chain import (
+    blob_certified_epoch,
+    blob_deletable_and_end_epoch,
+)
 from pytusk.tusky.tusky_cmds_common import (
-    _blob_certified_epoch,
-    _blob_deletable_and_end_epoch,
-    _config_from_args,
-    _wal_balance_and_decimals,
+    config_from_args,
+    wal_balance_and_decimals,
 )
 
 
@@ -35,7 +37,7 @@ async def blobs(args: argparse.Namespace) -> None:
             including `deletable` ("any"/"true"/"false") and `status`
             ("any"/"active"/"expired") filters.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         current_epoch = await client.walrus_epoch()
         owner = client.pysui_client.config.active_address
@@ -112,7 +114,7 @@ async def expiry_report(args: argparse.Namespace) -> None:
         args (argparse.Namespace): Parsed `expiry_report` subcommand
             arguments, including an optional `address` override.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         current_epoch = await client.walrus_epoch()
         owner = args.address or client.pysui_client.config.active_address
@@ -130,8 +132,8 @@ async def expiry_report(args: argparse.Namespace) -> None:
     for obj in objects_result.result_data.objects:
         if not (obj.object_type and "::blob::Blob" in obj.object_type):
             continue
-        _, end_epoch = _blob_deletable_and_end_epoch(obj)
-        certified = _blob_certified_epoch(obj=obj) is not None
+        _, end_epoch = blob_deletable_and_end_epoch(obj=obj)
+        certified = blob_certified_epoch(obj=obj) is not None
         rows.append((obj.object_id, end_epoch, end_epoch - current_epoch, certified))
 
     if not rows:
@@ -165,7 +167,7 @@ async def blob(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `blob` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         result = await client.execute(command=GetObject(object_id=args.blobid))
     if not result.is_ok():
@@ -180,7 +182,7 @@ async def epoch(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `epoch` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
             current_epoch = await client.walrus_epoch()
@@ -200,7 +202,7 @@ async def committee(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `committee` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
             walrus_committee = await client.committee()
@@ -229,10 +231,10 @@ async def wal_coins(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `wal_coins` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         owner = args.address or client.pysui_client.config.active_address
-        wal_entry, decimals = await _wal_balance_and_decimals(
+        wal_entry, decimals = await wal_balance_and_decimals(
             client=client, owner=owner
         )
         coins_result = await client.execute_for_all(

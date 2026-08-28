@@ -11,27 +11,30 @@ is unit-testable without a relay: :func:`compute_tip` and
 ``GET``, and the quote convenience does both.
 """
 
-from __future__ import annotations
-
 import hashlib
 import secrets
 
 from pysui import ExecuteTransaction
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
-from pysui.sui.sui_common.txn_pure import PureInput
 
 from pytusk.client.walrus_client import WalrusClient
 from pytusk.commands.relay_commands import GetTipConfig
-from pytusk.core.utils import require_success
-from pytusk.core.relay_types import ConstTip, LinearTip, TipConfig, TipKind
+from pytusk.core.chain import require_success
+from pytusk.core.encoding import encoded_blob_length
+from pytusk.core.ops.tip_compose import add_tip
 from pytusk.core.relay_upload.common import (
-    AuthPackage,
-    TipConfigError,
-    TipPaymentError,
     TipQuote,
     TipResult,
 )
-from pytusk.core.encoding import encoded_blob_length
+from pytusk.core.types import (
+    FROM_GAS,
+    AuthPackage,
+    ConstTip,
+    LinearTip,
+    TipConfig,
+    TipConfigError,
+    TipKind,
+)
 
 __all__ = [
     "FROM_GAS",
@@ -43,14 +46,13 @@ __all__ = [
     "quote_tip",
 ]
 
-FROM_GAS: str = "from_gas"
-"""Sentinel for ``payment_coin``: split the tip from whatever funds the transaction.
-
-Deliberately a sentinel rather than passing pysui's gas argument directly.
-Under sponsorship the gas coin belongs to the SPONSOR, so defaulting to it
-silently bills a third party for the caller's tip. Naming ``FROM_GAS`` makes
-that an explicit choice; an explicit coin id is the alternative.
-"""
+# add_tip and FROM_GAS moved to pytusk.core.ops.tip_compose / pytusk.core.types
+# (see pytusk.core.types.tips) respectively -- add_tip is now the COMPOSE-layer
+# home for the tip PTB fragment, which must stay import-cycle-free of
+# pytusk.core.relay_upload (this package imports FROM pytusk.core.ops, not the
+# other way round). Both are re-imported here (rather than re-defined) purely
+# for backward compatibility -- existing callers import them from this module
+# and from pytusk.core.relay_upload directly.
 
 
 def build_auth_package(*, data: bytes) -> AuthPackage:
@@ -81,7 +83,7 @@ def build_auth_package(*, data: bytes) -> AuthPackage:
 def compute_tip(*, kind: TipKind, unencoded_length: int, n_shards: int) -> int:
     """Compute the tip, in MIST, that a relay charges for one upload.
 
-    A :class:`~pytusk.core.relay_upload.common.LinearTip` scales with the
+    A :class:`~pytusk.core.types.LinearTip` scales with the
     ENCODED blob length, not with the unencoded length passed here -- the
     unencoded length is only an input to that calculation. This is why the
     committee read must precede the tip quote: the encoded length is a
@@ -187,82 +189,6 @@ async def quote_tip(
         ),
         kind=config.kind,
     )
-
-
-async def add_tip(
-    *,
-    txn: AsyncSuiTransaction,
-    relay_address: str,
-    tip_amount: int,
-    auth_package: AuthPackage,
-    payment_coin: str = FROM_GAS,
-) -> None:
-    """Compose a relay tip payment into a caller-owned transaction.
-
-    PURE PTB COMPOSITION -- makes no network calls, builds nothing, signs
-    nothing, submits nothing.
-
-    MUST BE THE FIRST THING ADDED TO ``txn``. The relay locates the
-    authentication package by a hard positional read of transaction input
-    zero::
-
-        let Some(CallArg::Pure(bytes)) = ptb.inputs.first() else {
-            return Err(WalrusUploadRelayError::MissingAuthPackage);
-        };
-
-    (``walrus-upload-relay/src/utils.rs``). ``ptb.inputs`` is flat and
-    transaction-global, so ANY other input registered first displaces the
-    package and the relay rejects the upload -- after the tip has been
-    paid. Command count and command ORDER are unconstrained; only input
-    zero is. This function therefore refuses to compose into a transaction
-    that already holds inputs or commands, rather than producing a PTB that
-    looks valid and fails at the relay.
-
-    The 72-byte package is registered as a pure input that NO command
-    consumes. That is deliberate and matches both reference clients: Walrus's
-    Rust SDK does ``pt_builder.pure(auth_package.to_hashed_nonce())?`` under
-    the comment "The first input is the authentication package", and the
-    TypeScript SDK calls ``transaction.pure(authPayload)`` as a bare
-    statement. The bytes are never executed -- the relay only inspects them
-    off-chain.
-
-    The payload must be EXACTLY 72 bytes with no length prefix, since the
-    relay does ``bcs::from_bytes::<HashedAuthPackage>`` on it directly.
-    ``PureInput.as_input`` dispatches ``bytes`` to ``list(arg)``, which
-    emits the bytes verbatim -- passing a ``vector<u8>``-serialised value
-    instead would prepend a ULEB128 length and be rejected.
-
-    Args:
-        txn (AsyncSuiTransaction): Caller's transaction, which must be empty.
-        relay_address (str): Sui address to transfer the tip to, from the
-            relay's tip config.
-        tip_amount (int): Tip in MIST, as computed by :func:`compute_tip`.
-        auth_package (AuthPackage): Package binding this tip to one blob.
-        payment_coin (str): :data:`FROM_GAS` to split from whatever funds
-            the transaction, or an explicit coin object id.
-
-    Returns:
-        None.
-
-    Raises:
-        TipPaymentError: If ``txn`` already holds any input or command, so
-            the authentication package could not be input zero.
-    """
-    if txn.builder.inputs or txn.builder.commands:
-        raise TipPaymentError(
-            message=(
-                "add_tip must be the first composition on a transaction: the "
-                "relay reads the authentication package at input 0, and this "
-                f"transaction already holds {len(txn.builder.inputs)} input(s) "
-                f"and {len(txn.builder.commands)} command(s)."
-            ),
-            stage="add_tip",
-        )
-
-    txn.builder.input_pure(PureInput.as_input(auth_package.bcs))
-    source = txn.gas if payment_coin == FROM_GAS else payment_coin
-    split = await txn.split_coin(coin=source, amounts=[tip_amount])
-    await txn.transfer_objects(transfers=[split], recipient=relay_address)
 
 
 async def execute_tip(

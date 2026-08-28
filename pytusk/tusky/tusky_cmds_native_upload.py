@@ -33,34 +33,31 @@ from pytusk import (
     CertifyTransactionError,
     NativeUploadError,
     Registration,
-    RegistrationPendingError,
     StageTimings,
     WalrusClient,
     add_certify,
-    add_reserve_and_register,
     certify,
     collect_confirmations,
     encode_blob,
-    select_wal_payment_coin,
     upload_slivers,
 )
 from pytusk import store_blob_native as _store_blob_native_pipeline
+from pytusk.core.chain import blob_deletable_and_end_epoch
 
 # Imported directly from the submodule, not the pytusk top-level package:
 # this is an internal reuse of the same computation add_reserve_and_register
 # already performs (see its _encoded_storage_amount), not a new public
 # surface, so it is kept out of pytusk.__all__.
 from pytusk.core.encoding import encoded_blob_length
+from pytusk.core.ops import add_registration_sequence, preflight_payment
 from pytusk.tusky.tusky_cmds_common import (
-    _blob_deletable_and_end_epoch,
-    _config_from_args,
-    _format_token_amount,
-    _read_file_bytes,
-    _resolve_sender,
-    _resolve_sponsor,
-    _simulate_cost_from_balance_changes,
-    _submit,
-    _walrus_package_id,
+    config_from_args,
+    read_file_bytes,
+    resolve_sender,
+    resolve_sponsor,
+    simulate_cost_from_balance_changes,
+    submit,
+    walrus_package_id,
 )
 
 
@@ -199,20 +196,20 @@ async def store_blob_native(args: argparse.Namespace) -> None:
 
     if args.file:
         try:
-            data = await asyncio.to_thread(_read_file_bytes, args.file)
+            data = await asyncio.to_thread(read_file_bytes, args.file)
         except OSError as exc:
             print(f"Error reading file {args.file}: {exc}", file=sys.stderr)
             sys.exit(1)
     else:
         data = args.content.encode("utf-8")
 
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
@@ -236,16 +233,12 @@ async def store_blob_native(args: argparse.Namespace) -> None:
             except NativeUploadError as exc:
                 print(f"Error in {exc.stage}: {exc}", file=sys.stderr)
                 sys.exit(1)
-            except RegistrationPendingError as exc:
-                # Tx1 SUCCEEDED on-chain and storage is already paid for --
-                # this is transient (checkpoint finality/read-back lag), not
-                # a lost transaction. exc's own message already carries the
-                # object_id/resume guidance (see RegistrationPendingError's
-                # docstring); deliberately NOT printed with the generic
-                # "Error in register (Tx1)" prefix used below, since that
-                # would mislabel a successful Tx1 as a failure.
-                print(str(exc), file=sys.stderr)
-                sys.exit(1)
+            # RegistrationPendingError is no longer caught here: the
+            # pipeline converts it, at its own boundary, into a
+            # NativeBlobReceipt with certified=False and failed_stage set
+            # ("register_finality" or "register_readback") -- handled by
+            # the receipt.failed_stage branch below like any other
+            # partial/failed receipt.
             except (RuntimeError, KeyError, TypeError, ValueError) as exc:
                 # Everything before registration (committee/epoch reads,
                 # package-ID resolution, WAL coin selection, and Tx1 itself)
@@ -285,9 +278,14 @@ async def store_blob_native(args: argparse.Namespace) -> None:
             sys.exit(1)
         encode_duration = time.monotonic() - encode_start
 
-        system_obj_id, walrus_pkg = await _walrus_package_id(client=client)
+        system_obj_id, walrus_pkg = await walrus_package_id(client=client)
         try:
-            payment_coin = await select_wal_payment_coin(client=client, owner=sender)
+            resolved_wal_coin = await preflight_payment(
+                client=client,
+                sender=sender,
+                sponsor=sponsor,
+                wal_payment_coin=None,
+            )
         except RuntimeError as exc:
             print(f"Error selecting WAL payment coin: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -296,23 +294,32 @@ async def store_blob_native(args: argparse.Namespace) -> None:
         txn: AsyncSuiTransaction = await client.transaction(
             initial_sender=sender, initial_sponsor=sponsor
         )
-        blob = await add_reserve_and_register(  # pylint: disable=redefined-outer-name
+        # No sponsor-signability preflight here -- matches
+        # execute_reserve_and_register, which deliberately skips it: a
+        # sponsor absent from the active PysuiConfiguration may sign this
+        # transaction out-of-band, which is a legitimate pattern here, not
+        # an error (see execute_reserve_and_register's docstring).
+        # add_registration_sequence composes reserve_space+register_blob
+        # and the transfer that consumes the new Blob -- tip=None, since
+        # the native path never bundles a relay tip.
+        await add_registration_sequence(
             txn=txn,
-            package_id=walrus_pkg,
-            system_object=system_obj_id,
             encoded=encoded,
             epochs=args.epochs,
             deletable=not args.permanent,
-            payment_coin=payment_coin,
+            package_id=walrus_pkg,
+            system_object=system_obj_id,
+            recipient=sender,
+            wal_payment_coin=resolved_wal_coin,
+            tip=None,
         )
         # Tx1 always transfers the newly registered Blob to the sender --
-        # matching pytusk.core.system_ops.execute_reserve_and_register.
+        # matching pytusk.core.ops.blob_execute.execute_reserve_and_register.
         # --recipient (when given) is handled by Tx2 (certify_blob), which
         # this simulate mode does NOT model (see the "notice" field below),
         # so it plays no part in this Tx1-only cost estimate.
-        await txn.transfer_objects(transfers=[blob], recipient=sender)
         txdict = await txn.build_and_sign()
-        result = await _submit(client=client, txdict=txdict, mode="simulate")
+        result = await submit(client=client, txdict=txdict, mode="simulate")
         register_tx1_duration = time.monotonic() - register_tx1_start
         if not result.is_ok():
             print(f"Error in register (Tx1): {result.result_string}", file=sys.stderr)
@@ -325,7 +332,7 @@ async def store_blob_native(args: argparse.Namespace) -> None:
             unencoded_length=encoded.unencoded_length, n_shards=encoded.n_shards
         )
         transaction = getattr(result.result_data, "transaction", None)
-        sui_cost, wal_cost = await _simulate_cost_from_balance_changes(
+        sui_cost, wal_cost = await simulate_cost_from_balance_changes(
             client=client, transaction=transaction
         )
         timings = StageTimings(
@@ -390,14 +397,14 @@ async def certify_blob(args: argparse.Namespace) -> None:
         print("Error: --content/--file require --recover.", file=sys.stderr)
         sys.exit(1)
 
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         pipeline_start = time.monotonic()
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
@@ -417,7 +424,7 @@ async def certify_blob(args: argparse.Namespace) -> None:
             sys.exit(1)
         try:
             blob_id_bytes = _blob_id_bytes_from_object(obj)
-            deletable, end_epoch = _blob_deletable_and_end_epoch(obj)
+            deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
         except ValueError as exc:
             print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -433,7 +440,7 @@ async def certify_blob(args: argparse.Namespace) -> None:
         if args.recover:
             if args.file:
                 try:
-                    data = await asyncio.to_thread(_read_file_bytes, args.file)
+                    data = await asyncio.to_thread(read_file_bytes, args.file)
                 except OSError as exc:
                     print(f"Error reading file {args.file}: {exc}", file=sys.stderr)
                     sys.exit(1)
@@ -474,7 +481,7 @@ async def certify_blob(args: argparse.Namespace) -> None:
             deletable=deletable,
             digest="",  # Tx1's digest is not known in this recovery flow.
         )
-        system_obj_id, walrus_pkg = await _walrus_package_id(client=client)
+        system_obj_id, walrus_pkg = await walrus_package_id(client=client)
         staking_object = client.config.network.staking_object
 
         confirmations_start = time.monotonic()
@@ -556,7 +563,7 @@ async def certify_blob(args: argparse.Namespace) -> None:
             certificate=certificate,
         )
         txdict = await txn.build_and_sign()
-        result = await _submit(client=client, txdict=txdict, mode="simulate")
+        result = await submit(client=client, txdict=txdict, mode="simulate")
         certify_tx2_duration = time.monotonic() - certify_tx2_start
         if not result.is_ok():
             print(f"Error in certify (Tx2): {result.result_string}", file=sys.stderr)

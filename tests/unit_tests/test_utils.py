@@ -3,14 +3,14 @@
 
 # -*- coding: utf-8 -*-
 
-"""Unit tests for shared Sui/Walrus helpers in pytusk.core.utils."""
+"""Unit tests for shared Sui/Walrus helpers in pytusk.core.ops.coins."""
 
 import types
 
 import pytest
 from pysui import SuiRpcResult
 
-from pytusk.core.utils import assert_coin_usable
+from pytusk.core.ops.coins import assert_coin_usable
 
 
 class _FakeCoinClient:

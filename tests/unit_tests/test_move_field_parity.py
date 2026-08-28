@@ -3,40 +3,33 @@
 
 # -*- coding: utf-8 -*-
 
-"""Drift guard between the deliberately duplicated blob-field parsers.
+"""Behavioural tests for helpers that read Walrus Move object fields.
 
-``pytusk.core.system_ops`` and ``pytusk.tusky.tusky_cmds_common`` each carry
-their own copy of the blob-field parser (``_end_epoch_and_deletable`` /
-``_blob_deletable_and_end_epoch``). That duplication is DELIBERATE -- see
-both functions' own docstrings -- to preserve a one-way dependency
-(``tusky`` depends on ``core``, not the reverse), not an oversight to be
-refactored away. What was previously missing is any automated signal that
-the two copies have drifted apart. This module's job is to be that signal:
-it imports BOTH copies directly and asserts they agree on every case. A
-future Walrus contract upgrade that changes the Blob object's JSON field
-layout is exactly the kind of change likely to touch only one copy by
-accident -- this file turns that mistake into a failing test instead of a
-silent divergence.
+This file began as a DRIFT GUARD between deliberately duplicated parsers:
+``pytusk.core.ops.blob_execute`` and ``pytusk.tusky.tusky_cmds_common`` each
+carried their own copy of the blob-field parser, kept apart to preserve a
+one-way dependency (``tusky`` depends on ``core``, not the reverse), and this
+module asserted the two agreed on every case.
 
-``_matches_wal_coin_type`` was duplicated the same way until the
-``tusky_cmds`` copy was consolidated into :mod:`pytusk.core.utils` -- the
-one-way rule forbids ``core`` importing ``tusky``, not the reverse. Its
-parity check is therefore gone, but the behavioural cases that check
-introduced are kept below: they remain that helper's only direct unit
-test, and they now assert concrete expected values rather than mere
-agreement between two copies.
+Both duplications are now gone. ``matches_wal_coin_type`` was consolidated
+into what is now :mod:`pytusk.core.ops.coins`; the blob-field parser was
+consolidated into :func:`~pytusk.core.chain.blob_fields.blob_deletable_and_end_epoch`
+at Plan #28 step 11, once step 10 had moved the CLI's copy into ``core`` and
+dissolved the dependency argument for keeping two.
+
+With one implementation of each, a parity assertion would compare a function
+to itself. What is kept here is the BEHAVIOURAL coverage those parity cases
+carried -- concrete expected values and the error cases -- which remains
+worth having and is not duplicated elsewhere for the value cases below.
 """
 
 import pytest
 
-from pytusk.core.system_ops import (
-    _end_epoch_and_deletable,
+from pytusk.core.chain import (
+    blob_deletable_and_end_epoch,
 )
-from pytusk.core.utils import (
-    _matches_wal_coin_type,
-)
-from pytusk.tusky.tusky_cmds_common import (
-    _blob_deletable_and_end_epoch,
+from pytusk.core.ops.coins import (
+    matches_wal_coin_type,
 )
 
 
@@ -88,7 +81,7 @@ def _blob_object(
 
 
 class TestMatchesWalCoinType:
-    """Behavioural cases for the single ``_matches_wal_coin_type``.
+    """Behavioural cases for the single ``matches_wal_coin_type``.
 
     These began as a parity check against a ``tusky_cmds`` duplicate. That
     duplicate is gone, but the cases are kept -- they are still this
@@ -115,73 +108,30 @@ class TestMatchesWalCoinType:
     ) -> None:
         """Pinned networks match exactly; unpinned fall back to substring."""
         assert (
-            _matches_wal_coin_type(coin_type=coin_type, wal_coin_type=wal_coin_type)
+            matches_wal_coin_type(coin_type=coin_type, wal_coin_type=wal_coin_type)
             is expected
         )
 
 
-class TestEndEpochAndDeletableParity:
-    """Drift guard for ``_end_epoch_and_deletable`` vs
-    ``_blob_deletable_and_end_epoch``.
+class TestBlobFieldValues:
+    """Concrete field values read from a Blob object's JSON view.
 
-    The two copies DELIBERATELY return their fields in opposite tuple
-    order (matching each function's own name: end_epoch-first vs
-    deletable-first) -- every comparison below normalizes that before
-    asserting equality, so this file is not itself broken by that
-    intentional difference.
+    The error cases these once asserted in parallel now live in
+    ``test_system_ops.py``'s ``TestEndEpochAndDeletable``. What is kept here
+    is the value coverage that has no counterpart there -- notably
+    ``end_epoch=0``, which must be reported as the integer 0 and never
+    confused with "absent".
     """
 
     @pytest.mark.parametrize(
         ("end_epoch", "deletable"),
         [(42.0, True), (100.0, False), (0.0, True)],
     )
-    def test_agrees_on_happy_path(self, end_epoch: float, deletable: bool) -> None:
+    def test_reads_expected_values(self, end_epoch: float, deletable: bool) -> None:
+        """Both fields are read back exactly as the object carries them."""
         obj = _blob_object(end_epoch=end_epoch, deletable=deletable)
-        core_result = _end_epoch_and_deletable(obj)  # type: ignore[arg-type]
-        tusky_result = _blob_deletable_and_end_epoch(obj)  # type: ignore[arg-type]
-        assert core_result == (tusky_result[1], tusky_result[0])
-
-    def test_agrees_on_no_json_view_error(self) -> None:
-        obj = _FakeObject(object_id="0xblob", json=None)
-        with pytest.raises(ValueError):
-            _end_epoch_and_deletable(obj)  # type: ignore[arg-type]
-        with pytest.raises(ValueError):
-            _blob_deletable_and_end_epoch(obj)  # type: ignore[arg-type]
-
-    def test_agrees_on_missing_storage_field_error(self) -> None:
-        obj = _FakeObject(
-            object_id="0xblob",
-            json=_FakeJson(
-                struct_value=_FakeStruct(
-                    fields={"deletable": _FakeValue(bool_value=True)}
-                )
-            ),
+        actual_deletable, actual_end_epoch = blob_deletable_and_end_epoch(
+            obj=obj  # type: ignore[arg-type]
         )
-        with pytest.raises(ValueError):
-            _end_epoch_and_deletable(obj)  # type: ignore[arg-type]
-        with pytest.raises(ValueError):
-            _blob_deletable_and_end_epoch(obj)  # type: ignore[arg-type]
-
-    def test_agrees_on_missing_end_epoch_error(self) -> None:
-        obj = _FakeObject(
-            object_id="0xblob",
-            json=_FakeJson(
-                struct_value=_FakeStruct(
-                    fields={
-                        "storage": _FakeValue(struct_value=_FakeStruct(fields={})),
-                        "deletable": _FakeValue(bool_value=True),
-                    }
-                )
-            ),
-        )
-        with pytest.raises(ValueError):
-            _end_epoch_and_deletable(obj)  # type: ignore[arg-type]
-        with pytest.raises(ValueError):
-            _blob_deletable_and_end_epoch(obj)  # type: ignore[arg-type]
-
-    def test_agrees_on_missing_deletable_error(self) -> None:
-        obj = _blob_object(deletable=None)
-        with pytest.raises(ValueError):
-            _end_epoch_and_deletable(obj)  # type: ignore[arg-type]
-        with pytest.raises(ValueError):
-            _blob_deletable_and_end_epoch(obj)  # type: ignore[arg-type]
+        assert actual_end_epoch == int(end_epoch)
+        assert actual_deletable is deletable

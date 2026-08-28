@@ -10,14 +10,12 @@ one object arrive in three different encodings, which is why this lives in
 its own module rather than inline in the pipeline.
 """
 
-from __future__ import annotations
-
 import binascii
 
 from pytusk.core.certification import Certificate, pack_signers_bitmap
-from pytusk.core.committee import WalrusCommittee
+from pytusk.core.chain import WalrusCommittee
 from pytusk.core.encoding import decode_standard_base64
-from pytusk.core.relay_upload.common import RelayCertificateParseError
+from pytusk.core.types import RelayCertificateParseError
 
 __all__ = [
     "parse_relay_certificate",

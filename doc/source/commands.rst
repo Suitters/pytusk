@@ -13,9 +13,10 @@ The WalrusCommand ABC
 :py:class:`~pytusk.WalrusCommand` is an abstract, keyword-only
 (``kw_only=True``) dataclass. Each concrete command overrides:
 
-* ``_endpoint_role`` — a ``ClassVar[str]``, either ``"aggregator"``
-  (reads) or ``"publisher"`` (writes). Selects which Walrus daemon
-  endpoint the command is sent to.
+* ``endpoint_role`` — a ``ClassVar[str]``. Values include
+  ``"aggregator"`` (reads), ``"publisher"`` (writes), and
+  ``"storage_node"`` (operations sent directly to an individual storage
+  node). Selects which Walrus endpoint the command is sent to.
 * ``http_method() -> str`` — the HTTP verb to use.
 * ``url_path(base_url: str) -> str`` — the full request URL.
 * ``parse_response(response: httpx.Response) -> SuiRpcResult`` — turns
@@ -29,14 +30,15 @@ and may optionally override (empty/``None`` by default):
 
 :py:meth:`WalrusClient.execute() <pytusk.WalrusClient.execute>` reads
 ``http_method()``, selects the aggregator or publisher base URL per
-``_endpoint_role``, builds the URL via ``url_path()``, gathers
+``endpoint_role``, builds the URL via ``url_path()``, gathers
 ``query_params()``/``request_body()``/``form_files()``, makes the HTTP
 request, and returns ``parse_response(response)``.
 
 Response types
 ----------------
 
-Each command's ``parse_response()`` returns one of these dataclasses:
+Every command's ``parse_response()`` returns a ``SuiRpcResult``. The
+dataclass below is the payload carried on its ``result_data`` attribute:
 
 * :py:class:`~pytusk.BlobData` — raw blob content
 * :py:class:`~pytusk.BlobSlice` — a partial byte range of a blob
@@ -45,6 +47,12 @@ Each command's ``parse_response()`` returns one of these dataclasses:
   deletable flag for a newly stored blob
 * :py:class:`~pytusk.QuiltReceipt` — quilt ID, patch keys, cost, expiry,
   and object ID for a newly stored quilt
+* :py:class:`~pytusk.SliverAck` — acknowledgement that a storage node
+  accepted a sliver PUT
+* :py:class:`~pytusk.MetadataAck` — acknowledgement that a storage node
+  accepted a blob-metadata PUT
+* :py:class:`~pytusk.SignedConfirmation` — a storage node's signed
+  confirmation that it holds a blob's slivers
 
 Command Reference
 --------------------
@@ -58,27 +66,37 @@ Command Reference
      - Notes
    * - :py:class:`~pytusk.ReadBlob`
      - Read a blob by its Walrus blob ID.
-     - Returns :py:class:`~pytusk.BlobData`.
+     - Result data: :py:class:`~pytusk.BlobData`.
    * - :py:class:`~pytusk.ReadBlobPartial`
      - Read a byte range from a blob.
-     - Returns :py:class:`~pytusk.BlobSlice`.
+     - Result data: :py:class:`~pytusk.BlobSlice`.
    * - :py:class:`~pytusk.ReadBlobByObjectId`
      - Read a blob by its Sui object ID.
-     - Returns :py:class:`~pytusk.BlobData`.
+     - Result data: :py:class:`~pytusk.BlobData`.
    * - :py:class:`~pytusk.ReadQuiltPatch`
      - Read a single patch from a quilt by quilt ID and patch key.
-     - Returns :py:class:`~pytusk.QuiltPatch`.
+     - Result data: :py:class:`~pytusk.QuiltPatch`.
    * - :py:class:`~pytusk.ConcatBlobs`
      - Read and concatenate multiple blobs into a single response.
-     - Returns :py:class:`~pytusk.BlobData`. Uses the ``v1alpha`` endpoint.
+     - Result data: :py:class:`~pytusk.BlobData`. Uses the ``v1alpha`` endpoint.
    * - :py:class:`~pytusk.StoreBlob`
      - Store a blob on Walrus.
-     - Returns :py:class:`~pytusk.BlobReceipt`. Deletable by default —
+     - Result data: :py:class:`~pytusk.BlobReceipt`. Deletable by default —
        pass ``permanent=True`` to disable.
    * - :py:class:`~pytusk.StoreQuilt`
      - Store a collection of named blobs (a quilt) on Walrus.
-     - Returns :py:class:`~pytusk.QuiltReceipt`. Deletable by default —
+     - Result data: :py:class:`~pytusk.QuiltReceipt`. Deletable by default —
        pass ``permanent=True`` to disable.
+   * - :py:class:`~pytusk.PutMetadata`
+     - Store a blob's Red Stuff metadata at a storage node.
+     - Result data: :py:class:`~pytusk.MetadataAck`. Must succeed before
+       the node will accept any sliver PUT for that blob.
+   * - :py:class:`~pytusk.PutSliver`
+     - Store a primary or secondary sliver at a storage node.
+     - Result data: :py:class:`~pytusk.SliverAck`.
+   * - :py:class:`~pytusk.GetStorageConfirmation`
+     - Fetch a storage node's signed confirmation for a blob's slivers.
+     - Result data: :py:class:`~pytusk.SignedConfirmation`.
 
 Read Commands
 ----------------
@@ -96,7 +114,7 @@ Read a blob by its Walrus blob ID.
 * ``skip_consistency_check: bool = False`` — skip integrity verification.
   Only safe when the writer is known and trusted.
 
-Returns :py:class:`~pytusk.BlobData`.
+Result data: :py:class:`~pytusk.BlobData`.
 
 .. code-block:: python
 
@@ -126,7 +144,7 @@ Read a byte range from a blob.
 * ``start: int`` — first byte offset (inclusive).
 * ``length: int`` — number of bytes to read.
 
-Returns :py:class:`~pytusk.BlobSlice`.
+Result data: :py:class:`~pytusk.BlobSlice`.
 
 .. code-block:: python
 
@@ -158,7 +176,7 @@ Read a blob by its Sui object ID, rather than its Walrus blob ID.
 * ``strict_consistency_check: bool = False``
 * ``skip_consistency_check: bool = False``
 
-Returns :py:class:`~pytusk.BlobData`.
+Result data: :py:class:`~pytusk.BlobData`.
 
 .. code-block:: python
 
@@ -189,7 +207,7 @@ Read a single patch from a quilt by quilt ID and patch key.
 * ``quilt_id: str`` — Walrus quilt identifier.
 * ``patch_key: str`` — key identifying the patch within the quilt.
 
-Returns :py:class:`~pytusk.QuiltPatch`.
+Result data: :py:class:`~pytusk.QuiltPatch`.
 
 .. code-block:: python
 
@@ -222,7 +240,7 @@ given.
 * ``strict_consistency_check: bool = False``
 * ``skip_consistency_check: bool = False``
 
-Returns :py:class:`~pytusk.BlobData`. Uses the Walrus ``v1alpha`` API.
+Result data: :py:class:`~pytusk.BlobData`. Uses the Walrus ``v1alpha`` API.
 
 .. code-block:: python
 
@@ -267,7 +285,7 @@ Store a blob on Walrus.
   v1.35 and has no effect, so this command does not send it —
   ``permanent`` is the only lever that controls persistence.
 
-Returns :py:class:`~pytusk.BlobReceipt`.
+Result data: :py:class:`~pytusk.BlobReceipt`.
 
 .. code-block:: python
 
@@ -310,7 +328,7 @@ Store a quilt — a collection of named blobs — on Walrus.
   before expiry. Quilts are deletable by default (Walrus v1.33+),
   matching :py:class:`~pytusk.StoreBlob`'s persistence semantics.
 
-Returns :py:class:`~pytusk.QuiltReceipt`.
+Result data: :py:class:`~pytusk.QuiltReceipt`.
 
 .. code-block:: python
 
@@ -336,3 +354,60 @@ Returns :py:class:`~pytusk.QuiltReceipt`.
                 print(receipt.quilt_id, receipt.patch_keys)
 
     asyncio.run(main())
+
+Storage Node Commands
+---------------------
+
+Detail for the commands sent directly to an individual storage node.
+The base URL for these is a specific node's address resolved from the
+committee, not an aggregator or publisher daemon.
+
+PutMetadata
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Store a blob's Red Stuff metadata at a storage node. A node requires this
+metadata before it will accept any sliver PUT for the same blob — a node
+that has not received it rejects every sliver PUT with HTTP 400
+``FAILED_PRECONDITION`` / ``METADATA_NOT_FOUND``.
+
+* ``blob_id: bytes`` — raw 32-byte blob ID.
+* ``metadata_bcs: bytes`` — BCS-encoded Walrus ``BlobMetadata`` payload.
+
+Result data: :py:class:`~pytusk.MetadataAck`.
+
+PutSliver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Store a primary or secondary sliver at a storage node.
+
+* ``blob_id: bytes`` — raw 32-byte blob ID.
+* ``sliver_pair_index: int`` — sliver-pair index to store at.
+* ``sliver_type: str`` — ``"primary"`` or ``"secondary"``, lowercase.
+  These literals are the upstream ``Axis`` serde values; the wire format
+  is case-sensitive and accepts nothing else.
+* ``data: bytes`` — raw BCS-encoded sliver bytes.
+
+Result data: :py:class:`~pytusk.SliverAck`.
+
+GetStorageConfirmation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Fetch a storage node's signed confirmation that it holds a blob's
+slivers. The permanent and deletable forms are two separate upstream
+routes — the object ID travels in the URL path, not as a query
+parameter.
+
+* ``blob_id: bytes`` — raw 32-byte blob ID.
+* ``object_id: str | None = None`` — Sui object ID of the deletable
+  ``Blob`` object. ``None`` selects the permanent-blob route.
+* ``wait_for_registration: bool = True`` — when True, the node long-polls
+  until it observes the on-chain registration event before responding.
+  This is server-side long-polling that replaces client-side backoff for
+  the registration-propagation race.
+* ``wait_millis: int | None = None`` — upper bound in milliseconds for
+  the node's long-poll wait. Omitted from the request when ``None``.
+
+The result's ``serialized_message`` is passed VERBATIM into
+``certify_blob``; the client never reconstructs it.
+
+Result data: :py:class:`~pytusk.SignedConfirmation`.

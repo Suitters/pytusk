@@ -16,7 +16,74 @@ from pytusk.commands.walrus_command import (
     BlobSlice,
     QuiltPatch,
     WalrusCommand,
+    http_failure_message,
 )
+
+
+def _consistency_params(
+    *, strict_consistency_check: bool, skip_consistency_check: bool
+) -> dict[str, Any]:
+    """Build the integrity-check query parameters shared by three read commands.
+
+    ``ReadBlob``, ``ReadBlobByObjectId`` and ``ConcatBlobs`` all accept the
+    same pair of flags and encode them identically. Held in one function so a
+    correction to a parameter NAME cannot be applied to one command and missed
+    on the other two -- the drift this was copy-pasted into being. The other
+    two read commands do not carry these flags at all, which is why this is a
+    helper the three call rather than behaviour inherited by all five.
+
+    Args:
+        strict_consistency_check (bool): Force strict integrity verification.
+        skip_consistency_check (bool): Skip integrity verification entirely.
+
+    Returns:
+        dict[str, Any]: Only the flags that are set; an unset flag is omitted
+            rather than sent as ``"false"``.
+    """
+    params: dict[str, Any] = {}
+    if strict_consistency_check:
+        params["strict_consistency_check"] = "true"
+    if skip_consistency_check:
+        params["skip_consistency_check"] = "true"
+    return params
+
+
+def _content_result(
+    *,
+    response: httpx.Response,
+    content_type: type[BlobData] | type[BlobSlice] | type[QuiltPatch],
+    context: str,
+) -> SuiRpcResult:
+    """Wrap a read response as a ``SuiRpcResult``, or report its failure.
+
+    Every read command differs only in which content dataclass it builds and
+    which identity it reports on failure, so those are the two parameters.
+    Collapsing the five copies into this function means the error branch has
+    a SINGLE definition -- the three content types stay distinct in the
+    public API, but how a failed read is reported is decided in one place.
+
+    Failures are reported through
+    :func:`~pytusk.commands.walrus_command.http_failure_message`, the one
+    idiom every Walrus command shares as of Plan #28 step 11. These commands
+    previously returned a bare ``response.text``, which gave a caller no
+    status code, no URL, no AIP-193 reason -- and no way to tell WHICH read
+    failed when several were in flight.
+
+    Args:
+        response (httpx.Response): The aggregator's response.
+        content_type: The dataclass to wrap successful content in.
+        context (str): Identifying detail for the failure message, e.g.
+            ``"blob_id=..."``.
+
+    Returns:
+        SuiRpcResult: The content on success; on an HTTP error, a failed
+            result carrying the diagnostic message.
+    """
+    if response.is_error:
+        return SuiRpcResult(
+            False, http_failure_message(response=response, context=context)
+        )
+    return SuiRpcResult(True, "", content_type(content=response.content))
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -44,17 +111,17 @@ class ReadBlob(WalrusCommand):
         return f"{base_url}/v1/blobs/{self.blob_id}"
 
     def query_params(self) -> dict[str, Any]:
-        params: dict[str, Any] = {}
-        if self.strict_consistency_check:
-            params["strict_consistency_check"] = "true"
-        if self.skip_consistency_check:
-            params["skip_consistency_check"] = "true"
-        return params
+        return _consistency_params(
+            strict_consistency_check=self.strict_consistency_check,
+            skip_consistency_check=self.skip_consistency_check,
+        )
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
-        if response.is_error:
-            return SuiRpcResult(False, response.text)
-        return SuiRpcResult(True, "", BlobData(content=response.content))
+        return _content_result(
+            response=response,
+            content_type=BlobData,
+            context=f"blob_id={self.blob_id}",
+        )
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -83,9 +150,13 @@ class ReadBlobPartial(WalrusCommand):
         return {"start": self.start, "length": self.length}
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
-        if response.is_error:
-            return SuiRpcResult(False, response.text)
-        return SuiRpcResult(True, "", BlobSlice(content=response.content))
+        return _content_result(
+            response=response,
+            content_type=BlobSlice,
+            context=(
+                f"blob_id={self.blob_id} start={self.start} length={self.length}"
+            ),
+        )
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -113,17 +184,17 @@ class ReadBlobByObjectId(WalrusCommand):
         return f"{base_url}/v1/blobs/by-object-id/{self.object_id}"
 
     def query_params(self) -> dict[str, Any]:
-        params: dict[str, Any] = {}
-        if self.strict_consistency_check:
-            params["strict_consistency_check"] = "true"
-        if self.skip_consistency_check:
-            params["skip_consistency_check"] = "true"
-        return params
+        return _consistency_params(
+            strict_consistency_check=self.strict_consistency_check,
+            skip_consistency_check=self.skip_consistency_check,
+        )
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
-        if response.is_error:
-            return SuiRpcResult(False, response.text)
-        return SuiRpcResult(True, "", BlobData(content=response.content))
+        return _content_result(
+            response=response,
+            content_type=BlobData,
+            context=f"object_id={self.object_id}",
+        )
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -147,9 +218,11 @@ class ReadQuiltPatch(WalrusCommand):
         return f"{base_url}/v1/blobs/by-quilt-id/{self.quilt_id}/{self.patch_key}"
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
-        if response.is_error:
-            return SuiRpcResult(False, response.text)
-        return SuiRpcResult(True, "", QuiltPatch(content=response.content))
+        return _content_result(
+            response=response,
+            content_type=QuiltPatch,
+            context=f"quilt_id={self.quilt_id} patch_key={self.patch_key}",
+        )
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -178,13 +251,17 @@ class ConcatBlobs(WalrusCommand):
 
     def query_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {"ids": ",".join(self.ids)}
-        if self.strict_consistency_check:
-            params["strict_consistency_check"] = "true"
-        if self.skip_consistency_check:
-            params["skip_consistency_check"] = "true"
+        params.update(
+            _consistency_params(
+                strict_consistency_check=self.strict_consistency_check,
+                skip_consistency_check=self.skip_consistency_check,
+            )
+        )
         return params
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
-        if response.is_error:
-            return SuiRpcResult(False, response.text)
-        return SuiRpcResult(True, "", BlobData(content=response.content))
+        return _content_result(
+            response=response,
+            content_type=BlobData,
+            context=f"ids={','.join(self.ids)}",
+        )

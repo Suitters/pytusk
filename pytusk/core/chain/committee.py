@@ -27,10 +27,12 @@ never hidden inside these functions.
 Chain access is expressed as the :class:`ChainReader` protocol rather than a
 concrete client, so this module has no dependency on ``WalrusClient``. The
 dependency points one way: clients may know about committees, committees never
-know about clients.
+know about clients. This is also why this module lives in
+:mod:`pytusk.core.chain` rather than :mod:`pytusk.core.ops`:
+:mod:`pytusk.client.walrus_client` imports :class:`WalrusCommittee` and
+:func:`fetch_committee`/:func:`fetch_epoch` from this package, so anything
+here that itself imported ``WalrusClient`` would be a real import cycle.
 """
-
-from __future__ import annotations
 
 import base64
 import dataclasses
@@ -41,10 +43,10 @@ from typing import Protocol, TypeAlias
 from pysui import GetDynamicFields, SuiCommand, SuiRpcResult
 from pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 import DynamicField
 
-# pack_signers_bitmap/unpack_signers_bitmap now live in certification.py (the
-# certify_blob wire-format module) and are re-exported here so Part 1's
-# published public surface (pytusk.core.committee.pack_signers_bitmap /
-# unpack_signers_bitmap) does not break.
+# pack_signers_bitmap/unpack_signers_bitmap live in certification.py (the
+# certify_blob wire-format module) and are re-exported here so the published
+# public surface (pytusk.core.chain.pack_signers_bitmap /
+# unpack_signers_bitmap, previously pytusk.core.committee.*) does not break.
 from pytusk.core.certification import pack_signers_bitmap, unpack_signers_bitmap
 
 __all__ = [

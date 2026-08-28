@@ -9,8 +9,6 @@ See :mod:`pytusk.core.native_upload` (the package's ``__init__.py``) for the
 full native upload pipeline description and stage ordering.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import dataclasses
@@ -20,14 +18,14 @@ import time
 
 from pytusk.commands.node_commands import PutMetadata, PutSliver
 from pytusk.core.certification import min_weight_for_quorum
-from pytusk.core.committee import WalrusCommittee, WalrusCommitteeMember
+from pytusk.core.chain import WalrusCommittee, WalrusCommitteeMember
 from pytusk.core.encoding import EncodedBlob, blob_id_to_url_base64
 from pytusk.core.native_upload.common import (
     _HEARTBEAT_INTERVAL_SECONDS,
     _HEARTBEAT_SLOWEST_NODES,
-    SliverUploadError,
     _ExecuteOnlyClient,
 )
+from pytusk.core.types import SliverUploadError
 
 _logger = logging.getLogger(__name__)
 
@@ -88,7 +86,7 @@ class NodeUploadOutcome:
         node_id (str): On-chain object ID of the node's staking pool.
         position (int): The node's committee position (the
             ``signers_bitmap`` index -- see
-            :class:`~pytusk.core.committee.WalrusCommittee`).
+            :class:`~pytusk.core.chain.committee.WalrusCommittee`).
         weight (int): This node's shard count, reported once regardless of
             how many shards it holds.
         succeeded (bool): True only if every sliver this node holds --

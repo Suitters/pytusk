@@ -30,8 +30,6 @@ into its own error/boolean contract (``InvalidConfirmationError`` in
 do not let a raw ``ValueError`` from the extension leak through either path.
 """
 
-from __future__ import annotations
-
 import dataclasses
 import logging
 from collections.abc import Iterable, Sequence

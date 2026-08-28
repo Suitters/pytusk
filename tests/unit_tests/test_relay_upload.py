@@ -11,9 +11,9 @@ import pytest
 from pysui import SuiRpcResult
 
 from pytusk.commands.relay_commands import RelayUploadAck
-from pytusk.core.relay_types import RelayUploadOutcome
 from pytusk.core.relay_upload import upload as upload_module
 from pytusk.core.relay_upload.upload import upload_to_relay
+from pytusk.core.types import RelayUploadOutcome
 
 _RELAY = "https://relay.example.com"
 

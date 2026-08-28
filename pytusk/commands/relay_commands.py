@@ -19,8 +19,11 @@ from typing import Any, ClassVar
 import httpx
 from pysui import SuiRpcResult
 
-from pytusk.commands.walrus_command import WalrusCommand
-from pytusk.core.relay_types import (
+from pytusk.commands.walrus_command import (
+    WalrusCommand,
+    http_failure_message,
+)
+from pytusk.core.types import (
     ConstTip,
     LinearTip,
     RelayUploadOutcome,
@@ -146,7 +149,10 @@ class GetTipConfig(WalrusCommand):
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
         if response.is_error:
-            return SuiRpcResult(False, f"HTTP {response.status_code}: {response.text}")
+            return SuiRpcResult(
+                False,
+                http_failure_message(response=response, context="tip_config"),
+            )
         try:
             return SuiRpcResult(True, "", _parse_tip_config(payload=response.json()))
         except ValueError as exc:
@@ -216,7 +222,15 @@ class UploadRelayBlob(WalrusCommand):
         if response.is_error:
             return SuiRpcResult(
                 False,
-                f"HTTP {response.status_code}: {response.text}",
+                http_failure_message(
+                    response=response, context=f"blob_id={self.blob_id}"
+                ),
+                # The ack deliberately keeps `relay_message=response.text` --
+                # the RAW body, not the formatted diagnostic. The pipeline
+                # surfaces this field on a RelayBlobReceipt for someone
+                # resuming an upload, where what the relay ACTUALLY said is
+                # the useful thing; the formatted message goes to
+                # result_string for the log.
                 RelayUploadAck(
                     outcome=RelayUploadOutcome.REFUSED,
                     blob_id=None,

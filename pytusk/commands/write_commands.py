@@ -15,6 +15,7 @@ from pytusk.commands.walrus_command import (
     BlobReceipt,
     QuiltReceipt,
     WalrusCommand,
+    http_failure_message,
 )
 
 
@@ -62,7 +63,13 @@ class StoreBlob(WalrusCommand):
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
         if response.is_error:
-            return SuiRpcResult(False, f"HTTP {response.status_code}: {response.text}")
+            return SuiRpcResult(
+                False,
+                http_failure_message(
+                    response=response,
+                    context=f"epochs={self.epochs} permanent={self.permanent}",
+                ),
+            )
         data = response.json()
         if "newlyCreated" in data:
             nc = data["newlyCreated"]
@@ -131,7 +138,16 @@ class StoreQuilt(WalrusCommand):
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
         if response.is_error:
-            return SuiRpcResult(False, f"HTTP {response.status_code}: {response.text}")
+            return SuiRpcResult(
+                False,
+                http_failure_message(
+                    response=response,
+                    context=(
+                        f"files={len(self.files)} epochs={self.epochs} "
+                        f"permanent={self.permanent}"
+                    ),
+                ),
+            )
         data = response.json()
         blob_result = data.get("blobStoreResult", {})
         stored_blobs = data.get("storedQuiltBlobs", [])

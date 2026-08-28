@@ -9,18 +9,17 @@ import base64
 import hashlib
 
 import pytest
-
-from pytusk.core.encoding import encoded_blob_length
 from pysui import SuiRpcResult
 
-from pytusk.core.relay_types import ConstTip, LinearTip, TipConfig
-from pytusk.core.relay_upload.common import AuthPackage, TipConfigError
+from pytusk.core.encoding import encoded_blob_length
+from pytusk.core.relay_upload.common import AuthPackage
 from pytusk.core.relay_upload.tip import (
     build_auth_package,
     compute_tip,
     fetch_tip_config,
     quote_tip,
 )
+from pytusk.core.types import ConstTip, LinearTip, TipConfig, TipConfigError
 
 _SHA256_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 

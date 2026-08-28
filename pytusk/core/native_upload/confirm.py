@@ -9,8 +9,6 @@ See :mod:`pytusk.core.native_upload` (the package's ``__init__.py``) for the
 full native upload pipeline description and stage ordering.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import functools
@@ -29,14 +27,13 @@ from pytusk.core.certification import (
     confirmation_message,
     min_weight_for_quorum,
 )
-from pytusk.core.committee import WalrusCommittee, WalrusCommitteeMember
+from pytusk.core.chain import WalrusCommittee, WalrusCommitteeMember
 from pytusk.core.native_upload.common import (
     _HEARTBEAT_INTERVAL_SECONDS,
-    ConfirmationCollectionError,
     _ExecuteOnlyClient,
     object_id_to_raw_bytes,
 )
-from pytusk.core.system_ops import Registration
+from pytusk.core.types import ConfirmationCollectionError, Registration
 
 _logger = logging.getLogger(__name__)
 

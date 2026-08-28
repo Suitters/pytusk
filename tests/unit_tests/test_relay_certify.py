@@ -10,9 +10,9 @@ import base64
 import pytest
 
 from pytusk.core.certification import unpack_signers_bitmap
-from pytusk.core.committee import WalrusCommittee, WalrusCommitteeMember
-from pytusk.core.relay_upload.common import RelayCertificateParseError
+from pytusk.core.chain import WalrusCommittee, WalrusCommitteeMember
 from pytusk.core.relay_upload.relay_certify import parse_relay_certificate
+from pytusk.core.types import RelayCertificateParseError
 
 _SIGNATURE_BYTES = b"aggregate-signature-bytes"
 _SIGNATURE_B64 = base64.b64encode(_SIGNATURE_BYTES).decode("ascii")

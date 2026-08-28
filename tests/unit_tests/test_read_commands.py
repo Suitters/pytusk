@@ -27,11 +27,34 @@ def mock_response(
     is_error: bool = False,
     text: str = "",
     content: bytes = b"",
+    status_code: int | None = None,
+    reason_phrase: str | None = None,
 ) -> MagicMock:
+    """Build a stand-in for an aggregator response.
+
+    Carries more than the three fields the success path reads, because as of
+    Plan #28 step 11 the read commands report failures through
+    ``http_failure_message``, which also reads ``status_code``,
+    ``reason_phrase``, ``request.url`` and the AIP-193 error envelope from
+    ``json()``. ``MagicMock(spec=...)`` raises on any attribute the real
+    class has but the double does not set, so a thinner double fails the
+    error path rather than silently returning a Mock.
+
+    ``json()`` raises by default: an aggregator error body is plain text, not
+    the AIP-193 envelope storage nodes return, so ``error_reason`` correctly
+    finds no reason and the message carries no ``(reason=...)`` suffix.
+    """
     r: MagicMock = MagicMock(spec=httpx.Response)
     r.is_error = is_error
     r.text = text
     r.content = content
+    r.status_code = status_code if status_code is not None else (404 if is_error else 200)
+    r.reason_phrase = (
+        reason_phrase if reason_phrase is not None else ("Not Found" if is_error else "OK")
+    )
+    r.request = MagicMock(spec=httpx.Request)
+    r.request.url = f"{AGG}/v1/blobs/abc"
+    r.json.side_effect = ValueError("response body is not JSON")
     return r
 
 

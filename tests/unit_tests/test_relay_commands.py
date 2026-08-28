@@ -16,7 +16,7 @@ from pytusk.commands.relay_commands import (
     RelayUploadAck,
     UploadRelayBlob,
 )
-from pytusk.core.relay_types import (
+from pytusk.core.types import (
     ConstTip,
     LinearTip,
     RelayUploadOutcome,

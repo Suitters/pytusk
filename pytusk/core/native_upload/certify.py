@@ -9,23 +9,20 @@ See :mod:`pytusk.core.native_upload` (the package's ``__init__.py``) for the
 full native upload pipeline description and stage ordering.
 """
 
-from __future__ import annotations
-
 import dataclasses
-import time
 
-from pytusk.core.certification import Certificate, verify_certificate
-from pytusk.core.committee import WalrusCommittee, fetch_committee, fetch_epoch
+from pytusk.core.certification import Certificate
+from pytusk.core.chain import WalrusCommittee, fetch_committee, fetch_epoch
 from pytusk.core.encoding import blob_id_to_url_base64
-from pytusk.core.native_upload.common import (
-    CertifyTransactionError,
+from pytusk.core.native_upload.common import _ExecuteOnlyClient
+from pytusk.core.native_upload.confirm import collect_confirmations
+from pytusk.core.ops.blob_execute import submit_certification
+from pytusk.core.types import (
     EpochMismatchError,
     NativeBlobReceipt,
+    Registration,
     StageTimings,
-    _ExecuteOnlyClient,
 )
-from pytusk.core.native_upload.confirm import collect_confirmations
-from pytusk.core.system_ops import Registration, execute_certify
 
 
 async def assert_certificate_epoch_current(
@@ -40,9 +37,9 @@ async def assert_certificate_epoch_current(
     were collected and when Tx2 is submitted, the committee may have
     reordered and the certificate's bitmap positions no longer identify the
     same nodes -- ``certify_blob`` would abort. This performs a single
-    cheap epoch read (:func:`~pytusk.core.committee.fetch_epoch`) so a
+    cheap epoch read (:func:`~pytusk.core.chain.committee.fetch_epoch`) so a
     caller composing Tx2 by hand via
-    :func:`~pytusk.core.system_ops.add_certify` can check freshness
+    :func:`~pytusk.core.ops.blob_compose.add_certify` can check freshness
     before submitting, rather than discovering the mismatch from an
     on-chain abort after gas is spent.
 
@@ -57,7 +54,7 @@ async def assert_certificate_epoch_current(
         client (WalrusClient): Client used to read the live epoch.
         committee (WalrusCommittee): The committee ``certificate`` (the one
             about to be submitted via
-            :func:`~pytusk.core.system_ops.add_certify`) was built
+            :func:`~pytusk.core.ops.blob_compose.add_certify`) was built
             against.
         staking_object (str): Object ID of the configured Walrus staking
             object.
@@ -66,7 +63,7 @@ async def assert_certificate_epoch_current(
         EpochMismatchError: If the live on-chain epoch differs from
             ``committee.epoch``.
         RuntimeError: Propagated from
-            :func:`~pytusk.core.committee.fetch_epoch` if the epoch
+            :func:`~pytusk.core.chain.committee.fetch_epoch` if the epoch
             cannot be read.
     """
     current_epoch = await fetch_epoch(reader=client, staking_object=staking_object)
@@ -101,7 +98,7 @@ async def certify(
     """Submit Tx2 (``certify_blob``), refetching on an epoch mismatch.
 
     Before submitting, the current on-chain epoch is re-read via the cheap
-    :func:`~pytusk.core.committee.fetch_epoch`. If it differs from
+    :func:`~pytusk.core.chain.committee.fetch_epoch`. If it differs from
     ``committee.epoch``, that is treated as REFETCH-AND-RETRY, not a
     signature failure: the committee is refetched, confirmations are
     re-collected via :func:`collect_confirmations`, and the bitmap is
@@ -127,14 +124,14 @@ async def certify(
         sender (str | None): Address to sign Tx2 as. Defaults to the active
             address when ``None``. Must be the current owner of the ``Blob``
             being certified -- see
-            :func:`~pytusk.core.system_ops.execute_reserve_and_register`'s
+            :func:`~pytusk.core.ops.blob_execute.execute_reserve_and_register`'s
             docstring for why Tx1 always transfers it there.
         sponsor (str | None): Address to sponsor Tx2's gas as, or ``None``
             for no sponsorship.
         recipient (str | None): Sui address to transfer the now-certified
             ``Blob`` to, in the same PTB, immediately after
             ``certify_blob`` -- passed straight through to
-            :func:`~pytusk.core.system_ops.execute_certify`. When ``None``
+            :func:`~pytusk.core.ops.blob_execute.execute_certify`. When ``None``
             (the default), no transfer happens and the ``Blob`` stays with
             ``sender``.
         max_attempts (int): Maximum number of epoch checks before giving up.
@@ -157,7 +154,7 @@ async def certify(
             aborts on-chain, or fails pysui's pre-submission gas-estimation
             dry run. pysui signals these with TWO DIFFERENT exception
             types, and both must be caught here: a submission failure or
-            on-chain abort inside :func:`~pytusk.core.system_ops.execute_certify`
+            on-chain abort inside :func:`~pytusk.core.ops.blob_execute.execute_certify`
             itself raises a bare ``RuntimeError``, while a gas-estimation/
             simulate failure inside ``txn.build_and_sign()`` -- which
             ``execute_certify`` calls before ever submitting -- raises
@@ -167,7 +164,7 @@ async def certify(
             this call's own ``certify_tx2`` duration attached as
             ``duration``. ``NativeUploadError`` (this exception's own base
             class) is a ``RuntimeError`` subclass, but ``execute_certify``
-            cannot itself raise one -- ``system_ops`` deliberately has no
+            cannot itself raise one -- ``pytusk.core.ops`` deliberately has no
             dependency on ``native_upload`` (see that module's docstring) --
             so this ``except`` clause cannot double-wrap an
             already-wrapped ``NativeUploadError``. Also raised, with
@@ -214,49 +211,26 @@ async def certify(
             registration=registration,
         )
 
-    signer_public_keys = [
-        current_committee.members[position].public_key
-        for position in current_certificate.signer_positions
-    ]
-    if not verify_certificate(
-        certificate=current_certificate, public_keys=signer_public_keys
-    ):
-        raise CertifyTransactionError(
-            message=(
-                "Local certificate verification failed -- the aggregate "
-                "signature does not verify against the committee public "
-                "keys for its signer positions; refusing to submit Tx2"
-            ),
-            stage="certify",
-        )
-
-    certify_tx2_start = time.monotonic()
-    try:
-        result = await execute_certify(
-            client=client,
-            registration=registration,
-            certificate=current_certificate,
-            package_id=package_id,
-            system_object=system_object,
-            sender=sender,
-            sponsor=sponsor,
-            recipient=recipient,
-        )
-    except (RuntimeError, ValueError) as exc:
-        raise CertifyTransactionError(
-            message=str(exc),
-            stage="certify",
-            duration=time.monotonic() - certify_tx2_start,
-        ) from exc
-    finally:
-        certify_tx2_duration = time.monotonic() - certify_tx2_start
+    outcome = await submit_certification(
+        client=client,
+        committee=current_committee,
+        registration=registration,
+        certificate=current_certificate,
+        package_id=package_id,
+        system_object=system_object,
+        sender=sender,
+        sponsor=sponsor,
+        recipient=recipient,
+    )
     return NativeBlobReceipt(
         blob_id=blob_id_to_url_base64(blob_id=blob_id),
-        object_id=result.object_id,
-        certified=result.certified,
+        object_id=outcome.result.object_id,
+        certified=outcome.result.certified,
         end_epoch=registration.end_epoch,
         failed_stage=None,
         timings=dataclasses.replace(
-            incoming_timings, certify_tx2=certify_tx2_duration
+            incoming_timings, certify_tx2=outcome.duration
         ),
+        register_tx_digest=registration.digest,
+        certify_tx_digest=outcome.result.digest,
     )

@@ -9,6 +9,10 @@ transaction purposes, then walks through the Walrus-specific PTBs
 ``pytusk`` builds internally for blob lifecycle and WAL/SUI exchange
 operations.
 
+Every example on this page imports from the top-level package —
+``from pytusk import ...``. All public names are re-exported there;
+submodule paths are internal and may move between releases.
+
 PytuskConfiguration and PysuiConfiguration
 --------------------------------------------
 
@@ -551,13 +555,13 @@ instead, following this flow:
 
 1. Get a ``WalrusClient`` and open a transaction (your own sender/sponsor).
 2. Add Tx1's move_calls via
-   :py:func:`~pytusk.core.system_ops.add_reserve_and_register`.
+   :py:func:`~pytusk.add_reserve_and_register`.
 3. Transfer (or otherwise consume) the ``Blob`` command result it returns
    — it is an **unconsumed object result**, and the PTB aborts at
    execution if it is not transferred or fed into a further move_call.
 4. Simulate or execute, as you choose.
 5. Observe the outcome and collect what Tx2 needs: the created ``Blob``'s
-   object ID (via :py:func:`~pytusk.core.utils.find_created_object_id`,
+   object ID (via :py:func:`~pytusk.find_created_object_id`,
    reading directly off the ``TransactionEffects`` you already hold — no
    extra round trip) and its ``storage.end_epoch``/``deletable`` (read back
    via ``GetObject``, the same JSON shape ``tusky blob`` prints — see
@@ -565,7 +569,7 @@ instead, following this flow:
 6. Off-chain: fan slivers out to the committee and collect confirmations.
 7. Get a **new** transaction from the client — same or different
    sender/sponsor — and add Tx2's move_call via
-   :py:func:`~pytusk.core.system_ops.add_certify`.
+   :py:func:`~pytusk.add_certify`.
 8. Simulate or execute.
 
 .. code-block:: python

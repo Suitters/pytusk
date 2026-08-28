@@ -26,12 +26,12 @@ from pytusk import PytuskConfiguration, WalrusClient
 # modules rather than duplicated. tusky_cmds carried its own copy of this
 # until the duplication was consolidated -- the one-way dependency rule
 # forbids core importing tusky, not tusky importing core.
-from pytusk.core.utils import _matches_wal_coin_type
+from pytusk.core.ops.coins import matches_wal_coin_type
 from pytusk.tusky.tusky_cmds_common import (
-    _config_from_args,
-    _resolve_sender,
-    _resolve_sponsor,
-    _submit,
+    config_from_args,
+    resolve_sender,
+    resolve_sponsor,
+    submit,
 )
 
 
@@ -65,15 +65,15 @@ async def exchange_for_wal(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `exchange_for_wal` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     _require_testnet_exchange(config=config, command_name="exchange_for_wal")
 
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
@@ -107,7 +107,7 @@ async def exchange_for_wal(args: argparse.Namespace) -> None:
         await txn.transfer_objects(transfers=[wal_coin], recipient=sender)
         txdict = await txn.build_and_sign()
 
-        result = await _submit(client=client, txdict=txdict, mode=args.mode)
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
 
     if not result.is_ok():
         print(f"Error in exchange_for_wal: {result.result_string}", file=sys.stderr)
@@ -135,15 +135,15 @@ async def exchange_for_sui(args: argparse.Namespace) -> None:
         args (argparse.Namespace): Parsed `exchange_for_sui` subcommand
             arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     _require_testnet_exchange(config=config, command_name="exchange_for_sui")
 
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
@@ -177,7 +177,7 @@ async def exchange_for_sui(args: argparse.Namespace) -> None:
                 entry
                 for entry in balances_result.result_data.balances
                 if entry.coin_type
-                and _matches_wal_coin_type(
+                and matches_wal_coin_type(
                     coin_type=entry.coin_type, wal_coin_type=wal_coin_type
                 )
             ),
@@ -265,7 +265,7 @@ async def exchange_for_sui(args: argparse.Namespace) -> None:
         await txn.transfer_objects(transfers=[sui_coin], recipient=sender)
         txdict = await txn.build_and_sign()
 
-        result = await _submit(client=client, txdict=txdict, mode=args.mode)
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
 
     if not result.is_ok():
         print(f"Error in exchange_for_sui: {result.result_string}", file=sys.stderr)

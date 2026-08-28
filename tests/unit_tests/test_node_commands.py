@@ -20,8 +20,8 @@ from pytusk.commands.node_commands import (
     PutSliver,
     SignedConfirmation,
     SliverAck,
-    error_reason,
 )
+from pytusk.commands.walrus_command import error_reason
 from pytusk.core.encoding import blob_id_to_url_base64
 
 BASE_URL = "https://node-1.example.com:9185"

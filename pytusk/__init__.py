@@ -18,7 +18,6 @@ from pytusk.commands.node_commands import (
     PutSliver,
     SignedConfirmation,
     SliverAck,
-    error_reason,
 )
 
 # Read commands
@@ -30,6 +29,13 @@ from pytusk.commands.read_commands import (
     ReadQuiltPatch,
 )
 
+# Relay commands (upload-relay tip config and blob upload)
+from pytusk.commands.relay_commands import (
+    GetTipConfig,
+    RelayUploadAck,
+    UploadRelayBlob,
+)
+
 # Command base and response types
 from pytusk.commands.walrus_command import (
     BlobData,
@@ -38,6 +44,8 @@ from pytusk.commands.walrus_command import (
     QuiltPatch,
     QuiltReceipt,
     WalrusCommand,
+    error_reason,
+    http_failure_message,
 )
 
 # Write commands
@@ -69,14 +77,21 @@ from pytusk.core.certification import (
     verify_confirmation,
 )
 
-# Committee
-from pytusk.core.committee import (
+# Chain (committee resolution/epoch, transaction-effects inspection --
+# client-free)
+from pytusk.core.chain import (
+    BalanceChangeCosts,
     ChainReader,
     WalrusCommittee,
     WalrusCommitteeMember,
+    blob_certified_epoch,
+    blob_deletable_and_end_epoch,
+    extract_balance_change_costs,
     fetch_committee,
     fetch_epoch,
+    find_created_object_id,
     pack_signers_bitmap,
+    require_success,
     unpack_signers_bitmap,
 )
 
@@ -118,53 +133,55 @@ from pytusk.core.native_upload import (
     certify,
     collect_confirmations,
     object_id_to_raw_bytes,
-    store_blob_native,
     upload_slivers,
 )
 
 # Storage-object lifecycle (split, fuse, reclaim, listing; same
-# caller-owns-the-transaction model -- see pytusk.core.storage_ops's
-# module docstring)
-from pytusk.core.storage_ops import (
-    SplitResult,
-    StorageObject,
-    StorageOpResult,
+# caller-owns-the-transaction model -- see pytusk.core.ops's module
+# docstring)
+# System operations (Tx1 reserve_space+register_blob and Tx2 certify_blob
+# PTB composition; the caller owns the transaction lifecycle -- see
+# pytusk.core.ops's module docstring)
+# Shared ops helpers (chain resolution, finality, WAL coin selection --
+# client-taking)
+from pytusk.core.ops import (
+    DEFAULT_FINALITY_MAX_ATTEMPTS,
+    DEFAULT_FINALITY_MAX_DELAY,
+    add_certify,
     add_destroy_storage,
     add_fuse,
+    add_reserve_and_register,
     add_split_by_epoch,
     add_split_by_size,
+    execute_certify,
     execute_destroy_storage,
     execute_fuse,
+    execute_reserve_and_register,
     execute_split_by_epoch,
     execute_split_by_size,
     fuse_incompatibility,
     fuse_periods_incompatibility,
     list_storage_objects,
+    matches_wal_coin_type,
+    resolve_package_id,
+    select_wal_payment_coin,
     storage_from_blob,
     storage_from_object,
     validate_fuse_pair,
+    wait_for_finality,
+    wal_balance_and_decimals,
 )
 
-# System operations (Tx1 reserve_space+register_blob and Tx2 certify_blob
-# PTB composition; the caller owns the transaction lifecycle -- see
-# pytusk.core.system_ops's module docstring)
-from pytusk.core.system_ops import (
+# End-to-end write pipelines (the compose functions that own stage order and
+# receipt construction -- see pytusk.core.pipelines's module docstring)
+from pytusk.core.pipelines import store_blob_native
+from pytusk.core.types import (
     CertifyResult,
     Registration,
     RegistrationPendingError,
-    add_certify,
-    add_reserve_and_register,
-    execute_certify,
-    execute_reserve_and_register,
-)
-from pytusk.core.utils import (
-    DEFAULT_FINALITY_MAX_ATTEMPTS,
-    DEFAULT_FINALITY_MAX_DELAY,
-    find_created_object_id,
-    require_success,
-    resolve_package_id,
-    select_wal_payment_coin,
-    wait_for_finality,
+    SplitResult,
+    StorageObject,
+    StorageOpResult,
 )
 from pytusk.version import __version__
 
@@ -178,10 +195,11 @@ from pytusk.version import __version__
 # setup, destinations, and rotation for their own process.
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
-# __all__ is deliberately grouped by source module (mirrors the import blocks
-# above) rather than alphabetically sorted; ruff's auto-fix would flatten it
-# into one global alpha sort and scatter these grouping comments onto
-# unrelated entries.
+# `__all__` is deliberately grouped by source module rather than alphabetically
+# sorted; ruff's auto-fix would flatten it into one global alpha sort and
+# scatter these grouping comments onto unrelated entries. Note that the groups
+# are NOT in the same order as the import blocks above -- only the grouping is
+# shared, not the ordering.
 __all__ = [  # noqa: RUF022
     "__version__",
     # Configuration
@@ -192,13 +210,19 @@ __all__ = [  # noqa: RUF022
     # Client
     "WalrusClient",
     "get_walrus_epoch",
-    # Committee
+    # Chain (client-free)
+    "BalanceChangeCosts",
     "ChainReader",
     "WalrusCommittee",
     "WalrusCommitteeMember",
+    "blob_certified_epoch",
+    "blob_deletable_and_end_epoch",
+    "extract_balance_change_costs",
     "fetch_committee",
     "fetch_epoch",
+    "find_created_object_id",
     "pack_signers_bitmap",
+    "require_success",
     "unpack_signers_bitmap",
     # Command base and response types
     "WalrusCommand",
@@ -207,12 +231,18 @@ __all__ = [  # noqa: RUF022
     "QuiltPatch",
     "BlobReceipt",
     "QuiltReceipt",
+    "error_reason",
+    "http_failure_message",
     # Read commands
     "ReadBlob",
     "ReadBlobPartial",
     "ReadBlobByObjectId",
     "ReadQuiltPatch",
     "ConcatBlobs",
+    # Relay commands
+    "GetTipConfig",
+    "RelayUploadAck",
+    "UploadRelayBlob",
     # Write commands
     "StoreBlob",
     "StoreQuilt",
@@ -223,7 +253,6 @@ __all__ = [  # noqa: RUF022
     "SliverAck",
     "MetadataAck",
     "SignedConfirmation",
-    "error_reason",
     # Encoding
     "RS2_ENCODING_TYPE",
     "RS2_MAX_SYMBOL_SIZE",
@@ -281,14 +310,14 @@ __all__ = [  # noqa: RUF022
     "add_reserve_and_register",
     "execute_certify",
     "execute_reserve_and_register",
-    # Shared helpers (pytusk.core.utils)
+    # Shared ops helpers (client-taking)
     "DEFAULT_FINALITY_MAX_ATTEMPTS",
     "DEFAULT_FINALITY_MAX_DELAY",
-    "find_created_object_id",
-    "require_success",
+    "matches_wal_coin_type",
     "resolve_package_id",
     "select_wal_payment_coin",
     "wait_for_finality",
+    "wal_balance_and_decimals",
     # Native upload orchestration
     "CertifyTransactionError",
     "ConfirmationCollectionError",

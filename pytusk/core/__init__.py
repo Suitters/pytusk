@@ -9,9 +9,9 @@ Domain logic for the Walrus protocol: RedStuff encoding and blob-ID
 derivation (``encoding``), BLS confirmation and certificate handling
 (``certification``), the committee and epoch model (``committee``),
 Move-call composition and PTB submission against the Walrus contracts
-(``system_ops``), and native upload orchestration (``native_upload``).
+(``ops``), and native upload orchestration (``native_upload``).
 ``encoding``, ``certification``, and ``committee`` are pure/local -- no
-network calls. ``system_ops`` and ``native_upload`` DO make live calls
+network calls. ``ops`` and ``native_upload`` DO make live calls
 through a :class:`~pytusk.client.walrus_client.WalrusClient`, in addition
 to composing pure PTBs (see each module's own docstring for the
 pure-vs-live split within it).

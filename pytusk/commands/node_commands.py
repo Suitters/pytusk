@@ -21,116 +21,23 @@ from typing import ClassVar
 import httpx
 from pysui import SuiRpcResult
 
-from pytusk.commands.walrus_command import WalrusCommand
+from pytusk.commands.walrus_command import (
+    WalrusCommand,
+    http_failure_message,
+)
 from pytusk.core.encoding import blob_id_to_url_base64, decode_standard_base64
 
 _VALID_SLIVER_TYPES = ("primary", "secondary")
 
-# --- STORAGE-NODE ERROR-BODY DIAGNOSTICS --------------------------------
-# Captures and truncates storage-node HTTP error bodies so failures are
-# diagnosable from the log line alone -- this is how INVALID_CONTENT_TYPE
-# and NOT_REGISTERED failures were identified against live nodes. This
-# bound keeps a flood of identical failure bodies (one per rejected
-# sliver, across ~100 nodes) from blowing up the log; a truncated body is
-# still diagnostic, an 8000-line log is not.
-# ------------------------------------------------------------------------
-_MAX_ERROR_BODY_CHARS: int = 512
+# The error-body diagnostics that used to live here -- `_MAX_ERROR_BODY_CHARS`,
+# `_response_body_for_log`, `http_failure_message` and `error_reason` -- moved
+# to `pytusk.commands.walrus_command` at Plan #28 step 11, when the read,
+# write and relay modules adopted the same idiom. This module imports only
+# `http_failure_message`, the one helper it still uses. `error_reason` is no
+# longer reachable through this module: `pytusk/__init__.py` re-exports it
+# directly from `walrus_command`. Its AIP-193 contract is unchanged.
 
 
-def _response_body_for_log(*, response: httpx.Response) -> str:
-    """Render an HTTP response body for diagnostic logging.
-
-    Falls back to a safe ``repr`` of the raw bytes if the body cannot be
-    decoded as text (a binary or otherwise undecodable payload must never
-    raise out of a logging path), and truncates the result to
-    ``_MAX_ERROR_BODY_CHARS`` characters, appending an explicit truncation
-    marker when cut.
-
-    Args:
-        response (httpx.Response): The raw HTTP response.
-
-    Returns:
-        str: The (possibly truncated) response body, safe to log.
-    """
-    try:
-        body = response.text
-    except Exception:  # noqa: BLE001 - logging must never raise
-        body = repr(response.content)
-    if len(body) > _MAX_ERROR_BODY_CHARS:
-        body = f"{body[:_MAX_ERROR_BODY_CHARS]}...[truncated]"
-    return body
-
-
-def _http_failure_message(*, response: httpx.Response, context: str) -> str:
-    """Build a diagnostic failure message from a non-2xx storage-node response.
-
-    Combines the HTTP status code and reason phrase, the request URL, the
-    caller-supplied identifying context (e.g. blob/sliver identity), the
-    AIP-193 ``reason`` detail when present (see :func:`error_reason`), and
-    the truncated response body -- everything needed to diagnose a
-    storage-node rejection from the log line alone, without re-running the
-    request.
-
-    Args:
-        response (httpx.Response): The raw HTTP response.
-        context (str): Caller-supplied identifying context, e.g.
-            ``"blob_id=... sliver_pair_index=... sliver_type=..."``.
-
-    Returns:
-        str: The combined diagnostic message.
-    """
-    reason = error_reason(response=response)
-    reason_suffix = f" (reason={reason})" if reason else ""
-    try:
-        url = str(response.request.url)
-    except RuntimeError:
-        url = "<unknown url>"
-    body = _response_body_for_log(response=response)
-    return (
-        f"HTTP {response.status_code} {response.reason_phrase} for {url} "
-        f"[{context}]{reason_suffix}: {body}"
-    )
-
-
-def error_reason(*, response: httpx.Response) -> str | None:
-    """Parse the AIP-193 error envelope and return the first ``reason``.
-
-    Storage-node error bodies look like::
-
-        {"error": {"code": 400, "status": "FAILED_PRECONDITION",
-                    "details": [{"@type": "ErrorInfo",
-                                  "reason": "NOT_REGISTERED",
-                                  "domain": "..."}]}}
-
-    CRITICAL: ``NOT_REGISTERED`` and ``MISSING_SLIVERS`` BOTH arrive as
-    HTTP 400 with status ``FAILED_PRECONDITION`` -- callers must branch on
-    this ``reason`` string returned here, NEVER on the HTTP status code
-    alone, to tell the two conditions apart.
-
-    Args:
-        response (httpx.Response): The raw HTTP response.
-
-    Returns:
-        str | None: The first ``ErrorInfo`` detail's ``reason``, or None if
-        the body has no parseable error envelope.
-    """
-    try:
-        body = response.json()
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(body, dict):
-        return None
-    error = body.get("error")
-    if not isinstance(error, dict):
-        return None
-    details = error.get("details")
-    if not isinstance(details, list):
-        return None
-    for detail in details:
-        if isinstance(detail, dict) and "reason" in detail:
-            reason = detail["reason"]
-            return reason if isinstance(reason, str) else None
-    return None
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -241,7 +148,7 @@ class PutSliver(WalrusCommand):
                 f"sliver_type={self.sliver_type}"
             )
             return SuiRpcResult(
-                False, _http_failure_message(response=response, context=context)
+                False, http_failure_message(response=response, context=context)
             )
         return SuiRpcResult(
             True,
@@ -301,7 +208,7 @@ class PutMetadata(WalrusCommand):
         if response.is_error:
             context = f"blob_id={blob_id_to_url_base64(blob_id=self.blob_id)}"
             return SuiRpcResult(
-                False, _http_failure_message(response=response, context=context)
+                False, http_failure_message(response=response, context=context)
             )
         return SuiRpcResult(
             True,
@@ -368,7 +275,7 @@ class GetStorageConfirmation(WalrusCommand):
                 f"object_id={self.object_id!r}"
             )
             return SuiRpcResult(
-                False, _http_failure_message(response=response, context=context)
+                False, http_failure_message(response=response, context=context)
             )
 
         try:
