@@ -11,11 +11,11 @@ signer-bitmap packing, quorum arithmetic, storage-confirmation verification,
 and BLS aggregation.
 
 CRITICAL ARCHITECTURAL CONSTRAINT: this module must never import from
-``pytusk.core.committee``. ``committee.py`` imports the signer-bitmap
+``pytusk.core.chain.committee``. ``committee.py`` imports the signer-bitmap
 functions FROM here for backward-compatible re-export, and a cycle must not
-be allowed to form. This module may depend on ``pytusk.core.encoding`` (a
-one-way dependency, not a cycle) and on ``pysui_fastcrypto`` and the standard
-library -- nothing else in pytusk.
+be allowed to form. This module may depend on ``pytusk.core.encoding`` and
+``pytusk.core.types.errors`` (one-way dependencies, not cycles) and on
+``pysui_fastcrypto`` and the standard library -- nothing else in pytusk.
 
 BLS FAILURE-MODE NOTE: ``pysui_fastcrypto``'s BLS functions (``bls_verify``,
 ``bls_aggregate``, ``bls_aggregate_verify``) have TWO distinct failure modes,
@@ -30,8 +30,6 @@ into its own error/boolean contract (``InvalidConfirmationError`` in
 do not let a raw ``ValueError`` from the extension leak through either path.
 """
 
-from __future__ import annotations
-
 import dataclasses
 import logging
 from collections.abc import Iterable, Sequence
@@ -41,6 +39,12 @@ from pysui_fastcrypto import (
     bls_aggregate_verify,
     bls_confirmation_bytes,
     bls_verify,
+)
+
+from pytusk.core.types.errors import (
+    ConfirmationMismatchError,
+    InvalidConfirmationError,
+    QuorumNotReachedError,
 )
 
 _logger = logging.getLogger(__name__)
@@ -62,37 +66,13 @@ __all__ = [
 ]
 
 
-class ConfirmationMismatchError(ValueError):
-    """Raised when storage nodes returned differing confirmation messages.
-
-    The client passes exactly ONE node's ``serialized_message`` bytes,
-    verbatim, into ``certify_blob`` -- see :class:`NodeConfirmation`. If the
-    nodes being certified together do not agree on that message, there is no
-    single message the resulting certificate can be meaningful against, and
-    building one must fail before any signature work is wasted on it.
-    """
-
-
-class InvalidConfirmationError(ValueError):
-    """Raised when a node's signature fails verification against its key.
-
-    This means the storage node's committee public key, as resolved by the
-    caller, does not authenticate the signature it returned over the expected
-    confirmation message.
-    """
-
-
-class QuorumNotReachedError(RuntimeError):
-    """Raised when accumulated signer weight is below the quorum threshold."""
-
-
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class NodeConfirmation:
     """A single storage node's signed confirmation of a stored blob.
 
     ``position`` is the node's COMMITTEE POSITION -- the index within the
     committee ordering that ``signers_bitmap`` indexes (see
-    ``pytusk.core.committee.WalrusCommittee``) -- and is neither the node's
+    ``pytusk.core.chain.committee.WalrusCommittee``) -- and is neither the node's
     ID nor a shard index. ``serialized_message`` is taken verbatim from the
     node's response and is NEVER reconstructed by the client; it is what
     :func:`build_certificate` compares across nodes and what ultimately flows

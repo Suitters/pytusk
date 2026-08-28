@@ -15,7 +15,7 @@ import argparse
 import sys
 
 from pytusk import BlobData, QuiltPatch, ReadBlob, ReadQuiltPatch, WalrusClient
-from pytusk.tusky.tusky_cmds_common import _config_from_args
+from pytusk.tusky.tusky_cmds_common import config_from_args
 
 
 async def read_blob(args: argparse.Namespace) -> None:
@@ -24,7 +24,7 @@ async def read_blob(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `read_blob` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         result = await client.execute(command=ReadBlob(blob_id=args.blobid))
     if not result.is_ok():
@@ -42,7 +42,7 @@ async def read_quilt(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `read_quilt` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         result = await client.execute(
             command=ReadQuiltPatch(quilt_id=args.quilt_id, patch_key=args.patch_key)

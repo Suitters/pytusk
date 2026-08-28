@@ -6,12 +6,132 @@
 """WalrusCommand ABC and response dataclasses."""
 
 import dataclasses
+import json
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
 import httpx
 from dataclasses_json import DataClassJsonMixin
 from pysui import SuiRpcResult
+
+# --- HTTP ERROR-BODY DIAGNOSTICS ----------------------------------------
+# Captures and truncates HTTP error bodies so failures are diagnosable from
+# the log line alone -- this is how INVALID_CONTENT_TYPE and NOT_REGISTERED
+# failures were identified against live storage nodes. This bound keeps a
+# flood of identical failure bodies (one per rejected sliver, across ~100
+# nodes) from blowing up the log; a truncated body is still diagnostic, an
+# 8000-line log is not.
+#
+# These live on the base module rather than in node_commands, where they
+# were written, because at Plan #28 step 11 every command module converged
+# on this one failure idiom. Read, write and relay commands each had their
+# own thinner variant; a helper shared by all four modules belongs beside
+# the ABC they all import, not inside one peer module the others would have
+# to reach sideways into.
+# ------------------------------------------------------------------------
+_MAX_ERROR_BODY_CHARS: int = 512
+
+
+def _response_body_for_log(*, response: httpx.Response) -> str:
+    """Render an HTTP response body for diagnostic logging.
+
+    Falls back to a safe ``repr`` of the raw bytes if the body cannot be
+    decoded as text (a binary or otherwise undecodable payload must never
+    raise out of a logging path), and truncates the result to
+    ``_MAX_ERROR_BODY_CHARS`` characters, appending an explicit truncation
+    marker when cut.
+
+    Args:
+        response (httpx.Response): The raw HTTP response.
+
+    Returns:
+        str: The (possibly truncated) response body, safe to log.
+    """
+    try:
+        body = response.text
+    except Exception:  # noqa: BLE001 - logging must never raise
+        body = repr(response.content)
+    if len(body) > _MAX_ERROR_BODY_CHARS:
+        body = f"{body[:_MAX_ERROR_BODY_CHARS]}...[truncated]"
+    return body
+
+
+def http_failure_message(*, response: httpx.Response, context: str) -> str:
+    """Build a diagnostic failure message from a non-2xx response.
+
+    Combines the HTTP status code and reason phrase, the request URL, the
+    caller-supplied identifying context (e.g. blob/sliver identity), the
+    AIP-193 ``reason`` detail when present (see :func:`error_reason`), and
+    the truncated response body -- everything needed to diagnose a rejection
+    from the log line alone, without re-running the request.
+
+    THE SINGLE FAILURE IDIOM for every Walrus command. Renamed from
+    ``_http_failure_message`` and made public at Plan #28 step 11, when the
+    read, write and relay modules adopted it: a symbol crossing a module
+    boundary does not keep a leading underscore.
+
+    Args:
+        response (httpx.Response): The raw HTTP response.
+        context (str): Caller-supplied identifying context, e.g.
+            ``"blob_id=... sliver_pair_index=... sliver_type=..."``. Each
+            command supplies the identity a reader needs to tell WHICH
+            request failed, which a status code alone cannot.
+
+    Returns:
+        str: The combined diagnostic message.
+    """
+    reason = error_reason(response=response)
+    reason_suffix = f" (reason={reason})" if reason else ""
+    try:
+        url = str(response.request.url)
+    except RuntimeError:
+        url = "<unknown url>"
+    body = _response_body_for_log(response=response)
+    return (
+        f"HTTP {response.status_code} {response.reason_phrase} for {url} "
+        f"[{context}]{reason_suffix}: {body}"
+    )
+
+
+def error_reason(*, response: httpx.Response) -> str | None:
+    """Parse the AIP-193 error envelope and return the first ``reason``.
+
+    Storage-node error bodies look like::
+
+        {"error": {"code": 400, "status": "FAILED_PRECONDITION",
+                    "details": [{"@type": "ErrorInfo",
+                                  "reason": "NOT_REGISTERED",
+                                  "domain": "..."}]}}
+
+    CRITICAL: ``NOT_REGISTERED`` and ``MISSING_SLIVERS`` BOTH arrive as
+    HTTP 400 with status ``FAILED_PRECONDITION`` -- callers must branch on
+    this ``reason`` string returned here, NEVER on the HTTP status code
+    alone, to tell the two conditions apart.
+
+    Args:
+        response (httpx.Response): The raw HTTP response.
+
+    Returns:
+        str | None: The first ``ErrorInfo`` detail's ``reason``, or None if
+        the body has no parseable error envelope.
+    """
+    try:
+        body = response.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return None
+    details = error.get("details")
+    if not isinstance(details, list):
+        return None
+    for detail in details:
+        if isinstance(detail, dict) and "reason" in detail:
+            reason = detail["reason"]
+            return reason if isinstance(reason, str) else None
+    return None
 
 
 @dataclasses.dataclass(kw_only=True)

@@ -12,12 +12,15 @@ never ran).
 
 import argparse
 import types
+from typing import Any
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 import pytest
 from pysui import SuiRpcResult
 
 from pytusk import NativeBlobReceipt, StageTimings, StorageObject
+from pytusk.core.encoding import EncodedBlob
+from pytusk.core.ops import blob_execute as blob_execute_module
 from pytusk.tusky import tusky_cmds_common, tusky_cmds_native_upload, tusky_cmds_storage
 
 
@@ -99,7 +102,7 @@ class _FakeWalrusClient:
 
     Implements only what certify_blob's --recover path touches: object
     fetch, committee, and the config/pysui_client attributes
-    ``_resolve_sender`` and ``_walrus_package_id`` read.
+    ``resolve_sender`` and ``walrus_package_id`` read.
     """
 
     def __init__(self, *, blob_object: _FakeObject, n_shards: int = 7) -> None:
@@ -299,6 +302,193 @@ class TestCertifyBlobRecover:
         assert len(upload_calls) == 1
         captured = capsys.readouterr()
         assert '"certified": true' in captured.out
+
+
+class _FakeNativeSimulateTxn:
+    """Recording fake for ``AsyncSuiTransaction`` covering ``store_blob_native``'s
+    simulate-mode Tx1 composition. No tip is ever composed on the native
+    path, so unlike the relay-side fakes this needs no real
+    ``ProgrammableTransactionBuilder`` -- only ``move_call``/
+    ``transfer_objects``/``build_and_sign``, exactly what
+    ``add_registration_sequence(tip=None)`` calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def move_call(
+        self, *, target: str, arguments: list[object], type_arguments: list[object]
+    ) -> str:
+        self.calls.append(("move_call", {"target": target, "arguments": arguments}))
+        return "result"
+
+    async def transfer_objects(self, *, transfers: list[object], recipient: str) -> None:
+        self.calls.append(("transfer_objects", {"transfers": transfers, "recipient": recipient}))
+
+    async def build_and_sign(self) -> dict[str, bytes]:
+        return {"tx_bytestr": b"fake"}
+
+
+class _FakePysuiConfigNoSponsorCheck:
+    """``PysuiConfiguration`` stub whose ``keypair_for_address`` raises if
+    it is EVER called -- used to prove store_blob_native's simulate branch
+    never performs a sponsor-signability preflight, matching
+    ``execute_reserve_and_register``'s own deliberate omission (see
+    ``TestExecuteReserveAndRegisterSponsorPreflightSkipped`` in
+    ``test_system_ops.py``)."""
+
+    def __init__(self, *, active_address: str) -> None:
+        self.active_address = active_address
+
+    def keypair_for_address(self, *, address: str) -> object:
+        raise AssertionError(
+            "keypair_for_address must not be called on the native "
+            "store_blob_native simulate path -- a sponsor absent from "
+            "local config may legitimately sign out-of-band."
+        )
+
+    def alias_for_address(self, *, address: str) -> str:
+        """No-op address validation -- every 0x-address is accepted."""
+        return address
+
+
+class _FakeNativeSimulateClient:
+    """``WalrusClient``-shaped async context manager for
+    ``store_blob_native``'s simulate mode."""
+
+    def __init__(self, *, active_address: str) -> None:
+        self.config = types.SimpleNamespace(
+            active_network="testnet",
+            network=types.SimpleNamespace(
+                system_object="0xsystem", wal_coin_type="0x2::wal::WAL"
+            ),
+        )
+        self.pysui_client = types.SimpleNamespace(
+            config=_FakePysuiConfigNoSponsorCheck(active_address=active_address)
+        )
+        self.txns: list[_FakeNativeSimulateTxn] = []
+
+    async def __aenter__(self) -> "_FakeNativeSimulateClient":
+        """Enter the fake client's async context, returning itself."""
+        return self
+
+    async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        """Exit the fake client's async context; nothing to clean up."""
+        return
+
+    async def committee(self) -> types.SimpleNamespace:
+        """Return a minimal object exposing only ``n_shards``."""
+        return types.SimpleNamespace(n_shards=1000)
+
+    async def transaction(self, **kwargs: Any) -> _FakeNativeSimulateTxn:
+        """Open (and record) a fake composable transaction."""
+        txn = _FakeNativeSimulateTxn()
+        self.txns.append(txn)
+        return txn
+
+
+def _base_native_args(**overrides: object) -> argparse.Namespace:
+    """Build a complete argparse.Namespace for store_blob_native, with
+    defaults for every attribute the handler and its helpers read."""
+    defaults: dict[str, object] = {
+        "content": "hello world",
+        "file": None,
+        "epochs": 3,
+        "permanent": False,
+        "recipient": None,
+        "full_json": False,
+        "log_file": None,
+        "verbose": False,
+        "sender": None,
+        "sponsor": None,
+        "mode": "simulate",
+        "from_cfg_path": None,
+        "active_network": None,
+        "pysui_config_path": None,
+        "pysui_group_name": None,
+        "pysui_profile_name": None,
+        "pysui_address": None,
+        "pysui_alias": None,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+class TestStoreBlobNativeSimulateSkipsSponsorPreflight:
+    """``store_blob_native``'s simulate branch composes Tx1 via
+    ``add_registration_sequence(tip=None)`` and ``preflight_payment``, but
+    deliberately does NOT call ``preflight_sponsor`` -- matching
+    ``execute_reserve_and_register``, which never validates sponsor
+    signability because a sponsor may legitimately sign out-of-band with
+    no local keypair. This mirrors ``TestExecuteReserveAndRegisterSponsorPreflightSkipped``
+    (``test_system_ops.py``) at the CLI layer."""
+
+    async def test_unsignable_sponsor_still_completes_simulate(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A --sponsor absent from local config (keypair_for_address would
+        raise AssertionError if ever consulted -- see
+        ``_FakePysuiConfigNoSponsorCheck``) must NOT be rejected: simulate
+        completes normally and prints its cost summary, proof no
+        sponsor-signability check ran anywhere in this path."""
+        encoded = EncodedBlob(
+            blob_id=b"\x01" * 32,
+            root_hash=b"\x02" * 32,
+            unencoded_length=11,
+            n_shards=1000,
+            slivers=(),
+            metadata_bcs=b"",
+        )
+        client = _FakeNativeSimulateClient(active_address="0xsender")
+
+        monkeypatch.setattr(
+            tusky_cmds_native_upload, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_native_upload, "WalrusClient", lambda *, pytusk_config: client
+        )
+        monkeypatch.setattr(
+            tusky_cmds_native_upload,
+            "encode_blob",
+            lambda *, data, n_shards: encoded,
+        )
+
+        async def _fake_walrus_package_id(*, client: object) -> tuple[str, str]:
+            return "0xsystem", "0xpkg"
+
+        monkeypatch.setattr(
+            tusky_cmds_native_upload, "walrus_package_id", _fake_walrus_package_id
+        )
+
+        async def _fake_select_wal_payment_coin(*, client: object, owner: str) -> str:
+            return "0xwal"
+
+        monkeypatch.setattr(
+            blob_execute_module, "select_wal_payment_coin", _fake_select_wal_payment_coin
+        )
+
+        async def _fake_submit(*, client: object, txdict: dict, mode: str) -> SuiRpcResult:
+            return SuiRpcResult(True, "", types.SimpleNamespace())
+
+        monkeypatch.setattr(tusky_cmds_native_upload, "submit", _fake_submit)
+
+        async def _fake_cost(
+            *, client: object, transaction: object
+        ) -> tuple[dict, dict]:
+            return {}, {}
+
+        monkeypatch.setattr(
+            tusky_cmds_native_upload, "simulate_cost_from_balance_changes", _fake_cost
+        )
+
+        args = _base_native_args(sponsor="0xstranger")
+
+        await tusky_cmds_native_upload.store_blob_native(args)
+
+        captured = capsys.readouterr()
+        assert '"mode": "simulate"' in captured.out
+        assert len(client.txns) == 1
+        kinds = [kind for kind, _ in client.txns[0].calls]
+        assert kinds == ["move_call", "move_call", "transfer_objects"]
 
 
 class TestSplitByEpochApplicable:

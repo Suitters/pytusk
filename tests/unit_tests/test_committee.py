@@ -10,7 +10,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from pytusk.core.committee import (
+from pytusk.core.chain.committee import (
     JsonValue,
     WalrusCommittee,
     WalrusCommitteeMember,

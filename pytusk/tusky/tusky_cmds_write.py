@@ -17,7 +17,7 @@ import os
 import sys
 
 from pytusk import StoreBlob, StoreQuilt, WalrusClient
-from pytusk.tusky.tusky_cmds_common import _config_from_args, _read_file_bytes
+from pytusk.tusky.tusky_cmds_common import config_from_args, read_file_bytes
 
 
 async def store_blob(args: argparse.Namespace) -> None:
@@ -33,14 +33,14 @@ async def store_blob(args: argparse.Namespace) -> None:
     """
     if args.file:
         try:
-            data = await asyncio.to_thread(_read_file_bytes, args.file)
+            data = await asyncio.to_thread(read_file_bytes, args.file)
         except OSError as exc:
             print(f"Error reading file {args.file}: {exc}", file=sys.stderr)
             sys.exit(1)
     else:
         data = args.content.encode("utf-8")
 
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         recipient = args.recipient or client.pysui_client.config.active_address
         result = await client.execute(
@@ -76,7 +76,7 @@ async def store_quilt(args: argparse.Namespace) -> None:
             print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
             sys.exit(1)
         try:
-            files[key] = await asyncio.to_thread(_read_file_bytes, path)
+            files[key] = await asyncio.to_thread(read_file_bytes, path)
         except OSError as exc:
             print(f"Error reading file {path}: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -85,7 +85,7 @@ async def store_quilt(args: argparse.Namespace) -> None:
             print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
             sys.exit(1)
         try:
-            files[key] = await asyncio.to_thread(_read_file_bytes, path)
+            files[key] = await asyncio.to_thread(read_file_bytes, path)
         except OSError as exc:
             print(f"Error reading file {path}: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -102,7 +102,7 @@ async def store_quilt(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         recipient = args.recipient or client.pysui_client.config.active_address
         result = await client.execute(

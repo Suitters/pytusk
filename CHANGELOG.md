@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - Unpublished
+
+### Added
+
+### Fixed
+
+### Changed
+
+- Codebase refactored for scalable growth
+- `error_reason` moved to `pytusk.commands.walrus_command`; no longer importable from `pytusk.commands.node_commands`
+- `submit_certification` now requires an `error_type` argument
+- Post-registration failures return a receipt instead of raising, so a paid registration is never surfaced as an exception
+- Relay upload attempts validated before any spend
+- Relay certify failures raise `RelayCertifyTransactionError` rather than the native-named `CertifyTransactionError`
+- Fixed undefined `RelayUploadOutcome` in relay upload
+- Relay pipeline, relay commands, receipt protocols and chain/ops helpers now exported from `pytusk`
+
+### Removed
+
 ## [0.4.0] - 2026-08-26
 
 ### Added

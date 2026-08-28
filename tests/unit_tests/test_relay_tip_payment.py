@@ -14,13 +14,13 @@ from pysui.sui.sui_common.txn_pure import PureInput
 from pysui.sui.sui_common.txn_transaction_builder import ProgrammableTransactionBuilder
 
 from pytusk.core.relay_upload import tip as tip_module
-from pytusk.core.relay_upload.common import TipPaymentError
 from pytusk.core.relay_upload.tip import (
     FROM_GAS,
     add_tip,
     build_auth_package,
     execute_tip,
 )
+from pytusk.core.types import TipPaymentError
 
 _RELAY_ADDRESS = "0xrelay"
 _GAS_SENTINEL = "GAS-SENTINEL"

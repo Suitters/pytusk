@@ -27,10 +27,12 @@ never hidden inside these functions.
 Chain access is expressed as the :class:`ChainReader` protocol rather than a
 concrete client, so this module has no dependency on ``WalrusClient``. The
 dependency points one way: clients may know about committees, committees never
-know about clients.
+know about clients. This is also why this module lives in
+:mod:`pytusk.core.chain` rather than :mod:`pytusk.core.ops`:
+:mod:`pytusk.client.walrus_client` imports :class:`WalrusCommittee` and
+:func:`fetch_committee`/:func:`fetch_epoch` from this package, so anything
+here that itself imported ``WalrusClient`` would be a real import cycle.
 """
-
-from __future__ import annotations
 
 import base64
 import dataclasses
@@ -41,10 +43,10 @@ from typing import Protocol, TypeAlias
 from pysui import GetDynamicFields, SuiCommand, SuiRpcResult
 from pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 import DynamicField
 
-# pack_signers_bitmap/unpack_signers_bitmap now live in certification.py (the
-# certify_blob wire-format module) and are re-exported here so Part 1's
-# published public surface (pytusk.core.committee.pack_signers_bitmap /
-# unpack_signers_bitmap) does not break.
+# pack_signers_bitmap/unpack_signers_bitmap live in certification.py (the
+# certify_blob wire-format module) and are re-exported here so the published
+# public surface (pytusk.core.chain.pack_signers_bitmap /
+# unpack_signers_bitmap, previously pytusk.core.committee.*) does not break.
 from pytusk.core.certification import pack_signers_bitmap, unpack_signers_bitmap
 
 __all__ = [
@@ -269,10 +271,13 @@ def protobuf_json_to_python(*, value: object) -> JsonValue:
     This is the only place in the committee path that touches the protobuf
     ``Value`` shape returned by ``GetDynamicFields``. Everything downstream
     works with plain dicts, lists, strings and numbers, so a change in the wire
-    rendering has one place to be fixed. (Note that ``pytusk.tusky.tusky_cmds_common``
-    and ``pytusk.tusky.tusky_cmds_query`` still walk protobuf structures by hand in
-    their blob-inspection helpers; that code predates this function and has not
-    been migrated onto it.)
+    rendering has one place to be fixed. :mod:`pytusk.core.chain.blob_fields`
+    also calls this function -- it is the only other place under
+    :mod:`pytusk.core` or :mod:`pytusk.tusky` that touches the protobuf
+    ``Value``/``struct_value`` shape at all, as of Plan #28 step 12, which
+    repointed ``pytusk.tusky.tusky_cmds_query`` (``blobs()``) and
+    ``pytusk.tusky.tusky_cmds_native_upload`` off their own hand-walks and
+    onto :mod:`pytusk.core.chain.blob_fields`.
 
     ASSUMPTION, load-bearing and unenforced: the protobuf runtime returns
     ``None`` for an UNSET oneof member. That is betterproto's behaviour, which

@@ -20,7 +20,7 @@ from pysui import (
 
 from pytusk.commands.walrus_command import WalrusCommand
 from pytusk.config.tusk_config import PytuskConfiguration
-from pytusk.core.committee import WalrusCommittee, fetch_committee, fetch_epoch
+from pytusk.core.chain import WalrusCommittee, fetch_committee, fetch_epoch
 
 _DEFAULT_TIMEOUT: httpx.Timeout = httpx.Timeout(
     connect=5.0, read=300.0, write=300.0, pool=60.0

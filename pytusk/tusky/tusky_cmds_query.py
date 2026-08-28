@@ -13,17 +13,21 @@ tusky.py drives them via asyncio.run.
 """
 
 import argparse
-import base64
 import sys
 
 from pysui import GetCoins, GetObject, GetObjectsOwnedByAddress
 
-from pytusk import WalrusClient, storage_from_blob
+from pytusk import (
+    WalrusClient,
+    blob_certified_epoch,
+    blob_deletable_and_end_epoch,
+    blob_id_from_object,
+    blob_id_to_url_base64,
+    storage_from_blob,
+)
 from pytusk.tusky.tusky_cmds_common import (
-    _blob_certified_epoch,
-    _blob_deletable_and_end_epoch,
-    _config_from_args,
-    _wal_balance_and_decimals,
+    config_from_args,
+    wal_balance_and_decimals,
 )
 
 
@@ -35,7 +39,7 @@ async def blobs(args: argparse.Namespace) -> None:
             including `deletable` ("any"/"true"/"false") and `status`
             ("any"/"active"/"expired") filters.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         current_epoch = await client.walrus_epoch()
         owner = client.pysui_client.config.active_address
@@ -53,41 +57,37 @@ async def blobs(args: argparse.Namespace) -> None:
     for obj in objects_result.result_data.objects:
         if not (obj.object_type and "::blob::Blob" in obj.object_type):
             continue
-        if not (obj.json and obj.json.struct_value):
-            continue
-        fields = obj.json.struct_value.fields
 
-        end_epoch = 0
-        storage_val = fields.get("storage")
-        if storage_val and storage_val.struct_value:
-            end_epoch_val = storage_val.struct_value.fields.get("end_epoch")
-            end_epoch = int(end_epoch_val.number_value) if end_epoch_val else 0
+        # blobs() lists everything a user owns, so one object with an
+        # incomplete/malformed JSON view (e.g. a partial RPC response)
+        # must degrade its own row rather than abort the whole listing --
+        # unlike expiry_report(), which is strict by design. Each field
+        # extraction below is guarded independently and falls back to the
+        # same defaults the pre-refactor hand-walked code used.
+        try:
+            deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
+        except ValueError:
+            deletable, end_epoch = False, 0
         status = "expired" if end_epoch <= current_epoch else "active"
-
-        deletable_val = fields.get("deletable")
-        deletable = bool(deletable_val and deletable_val.bool_value)
 
         if args.deletable != "any" and str(deletable).lower() != args.deletable:
             continue
         if args.status != "any" and status != args.status:
             continue
 
-        blob_id_b64 = ""
-        blob_id_val = fields.get("blob_id")
-        if blob_id_val and blob_id_val.string_value:
-            try:
-                blob_id_b64 = (
-                    base64.urlsafe_b64encode(
-                        int(blob_id_val.string_value).to_bytes(32, byteorder="little")
-                    )
-                    .rstrip(b"=")
-                    .decode()
-                )
-            except (ValueError, OverflowError):
-                blob_id_b64 = "(unparseable)"
+        try:
+            blob_id_b64 = blob_id_to_url_base64(blob_id=blob_id_from_object(obj=obj))
+        except (ValueError, OverflowError):
+            blob_id_b64 = "(unparseable)"
 
         found = True
-        blob_size = storage_from_blob(obj=obj).storage_size
+        try:
+            blob_size = storage_from_blob(obj=obj).storage_size
+        except ValueError:
+            # Same missing-JSON-view/missing-'storage'-field cases that
+            # blob_deletable_and_end_epoch() already tolerated above would
+            # otherwise raise here too and still abort the listing.
+            blob_size = 0
         print(
             f"{obj.object_id}  blob_id={blob_id_b64}  "
             f"deletable={deletable}  end_epoch={end_epoch}  status={status}  "
@@ -112,7 +112,7 @@ async def expiry_report(args: argparse.Namespace) -> None:
         args (argparse.Namespace): Parsed `expiry_report` subcommand
             arguments, including an optional `address` override.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         current_epoch = await client.walrus_epoch()
         owner = args.address or client.pysui_client.config.active_address
@@ -130,8 +130,8 @@ async def expiry_report(args: argparse.Namespace) -> None:
     for obj in objects_result.result_data.objects:
         if not (obj.object_type and "::blob::Blob" in obj.object_type):
             continue
-        _, end_epoch = _blob_deletable_and_end_epoch(obj)
-        certified = _blob_certified_epoch(obj=obj) is not None
+        _, end_epoch = blob_deletable_and_end_epoch(obj=obj)
+        certified = blob_certified_epoch(obj=obj) is not None
         rows.append((obj.object_id, end_epoch, end_epoch - current_epoch, certified))
 
     if not rows:
@@ -165,7 +165,7 @@ async def blob(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `blob` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         result = await client.execute(command=GetObject(object_id=args.blobid))
     if not result.is_ok():
@@ -180,7 +180,7 @@ async def epoch(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `epoch` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
             current_epoch = await client.walrus_epoch()
@@ -200,7 +200,7 @@ async def committee(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `committee` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
             walrus_committee = await client.committee()
@@ -229,10 +229,10 @@ async def wal_coins(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `wal_coins` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         owner = args.address or client.pysui_client.config.active_address
-        wal_entry, decimals = await _wal_balance_and_decimals(
+        wal_entry, decimals = await wal_balance_and_decimals(
             client=client, owner=owner
         )
         coins_result = await client.execute_for_all(

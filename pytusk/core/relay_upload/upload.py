@@ -11,15 +11,12 @@ standalone use is resuming a paid-but-unfinished upload. A resuming caller
 must not have to reimplement the retry rule to avoid re-POSTing wrongly.
 """
 
-from __future__ import annotations
-
 import asyncio
 import time
 
 from pytusk.client.walrus_client import WalrusClient
 from pytusk.commands.relay_commands import UploadRelayBlob
-from pytusk.core.relay_types import RelayUploadOutcome
-from pytusk.core.relay_upload.common import RelayUploadResult
+from pytusk.core.types import RelayUploadOutcome, RelayUploadResult
 
 __all__ = [
     "DEFAULT_MAX_UPLOAD_ATTEMPTS",

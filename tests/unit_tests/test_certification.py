@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-import pytusk.core.committee as committee_module
+import pytusk.core.chain.committee as committee_module
 from pytusk.core.certification import (
     Certificate,
     ConfirmationMismatchError,

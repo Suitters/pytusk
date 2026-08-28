@@ -10,16 +10,22 @@ from typing import Any
 
 import pytest
 
-from pytusk.core.relay_types import ConstTip, RelayUploadOutcome
-from pytusk.core.relay_upload import pipeline as pipeline_module
-from pytusk.core.relay_upload.common import (
+from pytusk.core.ops import blob_execute as ops_blob_execute
+from pytusk.core.pipelines import delivery as delivery_module
+from pytusk.core.pipelines import registration as registration_module
+from pytusk.core.pipelines import write as pipeline_module
+from pytusk.core.pipelines.write import store_blob_relay
+from pytusk.core.relay_upload.common import TipQuote
+from pytusk.core.types import (
+    FROM_GAS,
+    ConstTip,
+    RegistrationPendingError,
     RelayCertificateParseError,
     RelayOutcome,
     RelayUploadError,
+    RelayUploadOutcome,
     RelayUploadResult,
-    TipQuote,
 )
-from pytusk.core.relay_upload.pipeline import store_blob_relay
 
 _RELAY_URL = "https://relay.example"
 
@@ -91,6 +97,8 @@ class _Recorder:
         self.order: list[str] = []
         self.add_tip: list[dict] = []
         self.register: list[dict] = []
+        self.preflight_sponsor_calls: list[dict] = []
+        self.preflight_payment_calls: list[dict] = []
         self.upload: list[dict] = []
         self.certify: list[dict] = []
         self.coin_checks: list[dict] = []
@@ -130,14 +138,59 @@ def rec(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
         recorder.order.append("quote")
         return TipQuote(address="0xrelay", amount=1000, kind=ConstTip(amount=1000))
 
-    async def _add_tip(**kwargs: Any) -> None:
-        recorder.order.append("add_tip")
-        recorder.add_tip.append(kwargs)
-
-    async def _add_register(**kwargs: Any) -> str:
+    async def _add_registration_sequence(**kwargs: Any) -> None:
+        tip = kwargs.get("tip")
+        if tip is not None:
+            recorder.order.append("add_tip")
+            recorder.add_tip.append(
+                {
+                    "relay_address": tip.relay_address,
+                    "tip_amount": tip.tip_amount,
+                    "auth_package": tip.auth_package,
+                    "payment_coin": tip.payment_coin,
+                }
+            )
         recorder.order.append("register")
         recorder.register.append(kwargs)
-        return "BLOB-ARG"
+
+    async def _preflight_sponsor(**kwargs: Any) -> None:
+        recorder.order.append("preflight_sponsor")
+        recorder.preflight_sponsor_calls.append(kwargs)
+        sponsor = kwargs.get("sponsor")
+        if sponsor is not None:
+            try:
+                kwargs["client"].pysui_client.config.keypair_for_address(
+                    address=sponsor
+                )
+            except ValueError as exc:
+                raise RelayUploadError(
+                    message=(
+                        f"Sponsor {sponsor} is not signable in the active "
+                        "PysuiConfiguration. The encapsulated relay pipeline "
+                        "must be able to sign the certify transaction, which "
+                        "cannot be pre-built for external signing. Use the "
+                        "composable relay functions for external sponsors."
+                    ),
+                    stage="preflight",
+                ) from exc
+
+    async def _preflight_payment(**kwargs: Any) -> str:
+        recorder.order.append("preflight_payment")
+        recorder.preflight_payment_calls.append(kwargs)
+        sponsor = kwargs.get("sponsor")
+        tip_source = kwargs.get("tip_source")
+        if tip_source is not None and tip_source != FROM_GAS:
+            owners = {kwargs["sender"]}
+            if sponsor is not None:
+                owners.add(sponsor)
+            recorder.coin_checks.append(
+                {
+                    "coin_id": tip_source,
+                    "owners": owners,
+                    "minimum_balance": kwargs.get("tip_minimum_balance", 0),
+                }
+            )
+        return kwargs.get("wal_payment_coin") or "0xwal"
 
     async def _exec_reg(**kwargs: Any) -> types.SimpleNamespace:
         recorder.order.append("exec_reg")
@@ -145,9 +198,30 @@ def rec(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
             object_id="0xblob",
             blob_id=b"\x01" * 32,
             end_epoch=42,
-            deletable=False,
+            # Mirrors the real read-back rather than hard-coding False. The
+            # created Blob's deletable flag reflects what Tx1 ACTUALLY
+            # registered, which is what add_registration_sequence was told to
+            # compose -- execute_registration_txn itself is never passed the
+            # flag. The relay is told the blob object id based on this
+            # chain-read value, not on the caller's request, so a fixture
+            # that never varied it would let the two silently disagree.
+            deletable=(
+                recorder.register[-1]["deletable"] if recorder.register else False
+            ),
             digest="0xtx1",
         )
+
+    async def _exec_plain_reg(**kwargs: Any) -> types.SimpleNamespace:
+        # The no-tip relay write registers through PlainBlobRegistration,
+        # which reaches execute_reserve_and_register -- a single call that
+        # both composes and submits -- rather than the
+        # add_registration_sequence / execute_registration_txn pair the
+        # tipped path uses. It is recorded as the same "register" step so
+        # assertions about what Tx1 registered need not know which
+        # registration variant ran.
+        recorder.order.append("register")
+        recorder.register.append(kwargs)
+        return await _exec_reg(**kwargs)
 
     async def _upload(**kwargs: Any) -> RelayUploadResult:
         recorder.order.append("upload")
@@ -156,7 +230,11 @@ def rec(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
 
     def _parse(**kwargs: Any) -> object:
         recorder.order.append("parse")
-        return object()
+        # Shaped like a real Certificate rather than a bare object: the
+        # shared Tx2 stage reads signer_positions to look up the signers'
+        # public keys for its local verification. Empty means no lookup,
+        # which keeps this fixture free of a committee member list.
+        return types.SimpleNamespace(signer_positions=())
 
     async def _certify(**kwargs: Any) -> types.SimpleNamespace:
         recorder.order.append("certify")
@@ -168,28 +246,45 @@ def rec(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
     async def _resolve_pkg(**kwargs: Any) -> str:
         return "0xpkg"
 
-    async def _select_wal(**kwargs: Any) -> str:
-        return "0xwal"
-
-    async def _assert_coin(**kwargs: Any) -> None:
-        recorder.coin_checks.append(kwargs)
-
     monkeypatch.setattr(pipeline_module, "encode_blob", _encode)
     monkeypatch.setattr(pipeline_module, "quote_tip", _quote)
-    monkeypatch.setattr(pipeline_module, "add_tip", _add_tip)
-    monkeypatch.setattr(pipeline_module, "add_reserve_and_register", _add_register)
-    monkeypatch.setattr(pipeline_module, "execute_registration_txn", _exec_reg)
-    monkeypatch.setattr(pipeline_module, "upload_to_relay", _upload)
-    monkeypatch.setattr(pipeline_module, "parse_relay_certificate", _parse)
-    monkeypatch.setattr(pipeline_module, "execute_certify", _certify)
+    monkeypatch.setattr(
+        registration_module, "add_registration_sequence", _add_registration_sequence
+    )
+    monkeypatch.setattr(pipeline_module, "preflight_sponsor", _preflight_sponsor)
+    monkeypatch.setattr(pipeline_module, "preflight_payment", _preflight_payment)
+    monkeypatch.setattr(registration_module, "execute_registration_txn", _exec_reg)
+    # BOTH registration variants are stubbed. The tipped path reaches the
+    # compose/execute pair above; the no-tip path reaches
+    # execute_reserve_and_register below. Patching only one would let a test
+    # that switches paths silently run real chain code against a fake client.
+    monkeypatch.setattr(
+        registration_module, "execute_reserve_and_register", _exec_plain_reg
+    )
+    monkeypatch.setattr(delivery_module, "upload_to_relay", _upload)
+    monkeypatch.setattr(delivery_module, "parse_relay_certificate", _parse)
+    monkeypatch.setattr(ops_blob_execute, "execute_certify", _certify)
+    monkeypatch.setattr(
+        ops_blob_execute, "verify_certificate", lambda **kwargs: True
+    )
     monkeypatch.setattr(pipeline_module, "resolve_package_id", _resolve_pkg)
-    monkeypatch.setattr(pipeline_module, "select_wal_payment_coin", _select_wal)
-    monkeypatch.setattr(pipeline_module, "assert_coin_usable", _assert_coin)
     return recorder
 
 
 class TestSponsorPrecondition:
-    """An unsignable sponsor is refused before anything is spent."""
+    """An unsignable sponsor is refused before Tx1 is opened -- and before
+    ANY encode or network work, restoring the original fail-fast ordering.
+
+    The check runs via the standalone ``preflight_sponsor``
+    (``pytusk.core.ops.blob_execute``), called FIRST in the pipeline --
+    before ``encode``, ``quote_tip``, or anything else -- unlike the
+    tip-coin/WAL-coin resolution (``preflight_payment``), which genuinely
+    needs the tip quote and so cannot run this early. See
+    ``preflight_sponsor``'s docstring. What is guaranteed here is that
+    NOTHING is ever built, encoded, quoted, or spent: ``encode_blob`` and
+    ``quote_tip`` are never called, ``client.transaction`` is never called,
+    and no PTB command is ever composed.
+    """
 
     async def test_unsignable_sponsor_raises(self, rec: _Recorder) -> None:
         client = _FakeClient()
@@ -209,12 +304,16 @@ class TestSponsorPrecondition:
         assert excinfo.value.stage == "preflight"
 
     async def test_unsignable_sponsor_builds_nothing(self, rec: _Recorder) -> None:
+        """Fail-fast regression guard: the sponsor check must be the VERY
+        FIRST thing the pipeline does. If a future change ever moves it
+        after ``encode``/``quote`` again, ``rec.order`` will contain more
+        than just ``preflight_sponsor`` and this assertion catches it."""
         client = _FakeClient()
         with pytest.raises(RelayUploadError):
             await store_blob_relay(
                 client=client, data=b"x", epochs=1, sponsor="0xstranger"
             )
-        assert rec.order == []
+        assert rec.order == ["preflight_sponsor"]
         assert client.txn_kwargs == {}
 
     async def test_signable_sponsor_proceeds(self, rec: _Recorder) -> None:
@@ -332,7 +431,7 @@ class TestOutcomeMapping:
                 outcome=RelayUploadOutcome.REFUSED, certificate=None
             )
 
-        monkeypatch.setattr(pipeline_module, "upload_to_relay", _refused)
+        monkeypatch.setattr(delivery_module, "upload_to_relay", _refused)
         client = _FakeClient()
         receipt = await store_blob_relay(client=client, data=b"x", epochs=1)
         assert receipt.outcome is RelayOutcome.REJECTED
@@ -347,7 +446,7 @@ class TestOutcomeMapping:
                 outcome=RelayUploadOutcome.UNANSWERED, certificate=None
             )
 
-        monkeypatch.setattr(pipeline_module, "upload_to_relay", _unanswered)
+        monkeypatch.setattr(delivery_module, "upload_to_relay", _unanswered)
         client = _FakeClient()
         receipt = await store_blob_relay(client=client, data=b"x", epochs=1)
         assert receipt.outcome is RelayOutcome.RESUMABLE
@@ -361,12 +460,62 @@ class TestOutcomeMapping:
                 outcome=RelayUploadOutcome.UNANSWERED, certificate=None
             )
 
-        monkeypatch.setattr(pipeline_module, "upload_to_relay", _unanswered)
+        monkeypatch.setattr(delivery_module, "upload_to_relay", _unanswered)
         client = _FakeClient()
         receipt = await store_blob_relay(client=client, data=b"x", epochs=1)
-        assert receipt.register_tip_tx_digest == "0xtx1"
+        assert receipt.register_tx_digest == "0xtx1"
         assert receipt.blob_id == "BLOBID"
         assert receipt.nonce is not None
+
+
+class TestRegistrationPendingErrorConvertedToReceipt:
+    """A post-spend ``RegistrationPendingError`` from
+    ``execute_registration_txn`` must reach the caller as RETURN DATA, not
+    as a raise -- converted at the pipeline boundary
+    (``pytusk/core/pipelines/write.py``) into a ``RelayBlobReceipt``
+    with ``outcome=RelayOutcome.RESUMABLE``."""
+
+    async def _run_with_pending_error(
+        self, rec: _Recorder, monkeypatch: pytest.MonkeyPatch, stage: str
+    ) -> object:
+        async def _pending(**kwargs: Any) -> None:
+            raise RegistrationPendingError(
+                digest="0xtx1",
+                object_id="0xblob",
+                detail="boom",
+                stage=stage,
+            )
+
+        monkeypatch.setattr(registration_module, "execute_registration_txn", _pending)
+        client = _FakeClient()
+        return await store_blob_relay(client=client, data=b"x", epochs=1)
+
+    async def test_register_finality_stage_is_resumable(
+        self, rec: _Recorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A finality-wait timeout must return a RESUMABLE receipt, not raise."""
+        receipt = await self._run_with_pending_error(rec, monkeypatch, "register_finality")
+
+        assert receipt.outcome is RelayOutcome.RESUMABLE
+        assert receipt.certified is False
+        assert receipt.failed_stage == "register_finality"
+        assert receipt.register_tx_digest == "0xtx1"
+        assert receipt.object_id == "0xblob"
+        assert receipt.end_epoch is None
+
+    async def test_register_readback_stage_is_resumable(
+        self, rec: _Recorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A read-back failure (after finality landed) must return a
+        RESUMABLE receipt, not raise."""
+        receipt = await self._run_with_pending_error(rec, monkeypatch, "register_readback")
+
+        assert receipt.outcome is RelayOutcome.RESUMABLE
+        assert receipt.certified is False
+        assert receipt.failed_stage == "register_readback"
+        assert receipt.register_tx_digest == "0xtx1"
+        assert receipt.object_id == "0xblob"
+        assert receipt.end_epoch is None
 
 
 class TestCertifyFailure:
@@ -378,7 +527,7 @@ class TestCertifyFailure:
         async def _boom(**kwargs: Any) -> None:
             raise RuntimeError("certify exploded")
 
-        monkeypatch.setattr(pipeline_module, "execute_certify", _boom)
+        monkeypatch.setattr(ops_blob_execute, "execute_certify", _boom)
         client = _FakeClient()
         receipt = await store_blob_relay(client=client, data=b"x", epochs=1)
         assert receipt.outcome is RelayOutcome.RESUMABLE
@@ -391,10 +540,10 @@ class TestCertifyFailure:
         async def _boom(**kwargs: Any) -> None:
             raise RuntimeError("certify exploded")
 
-        monkeypatch.setattr(pipeline_module, "execute_certify", _boom)
+        monkeypatch.setattr(ops_blob_execute, "execute_certify", _boom)
         client = _FakeClient()
         receipt = await store_blob_relay(client=client, data=b"x", epochs=1)
-        assert receipt.register_tip_tx_digest == "0xtx1"
+        assert receipt.register_tx_digest == "0xtx1"
         assert receipt.nonce is not None
         assert receipt.tip_paid is True
 
@@ -406,7 +555,7 @@ class TestCertifyFailure:
                 message="bad certificate", stage="parse_certificate"
             )
 
-        monkeypatch.setattr(pipeline_module, "parse_relay_certificate", _bad)
+        monkeypatch.setattr(delivery_module, "parse_relay_certificate", _bad)
         client = _FakeClient()
         receipt = await store_blob_relay(client=client, data=b"x", epochs=1)
         assert receipt.outcome is RelayOutcome.RESUMABLE
@@ -414,7 +563,13 @@ class TestCertifyFailure:
 
 
 class TestDeletable:
-    """The deletable blob object is sent only for deletable blobs."""
+    """The deletable blob object is sent only for deletable blobs.
+
+    The object id follows what Tx1 ACTUALLY registered -- the ``deletable``
+    flag read back from the created ``Blob`` -- rather than the caller's
+    request. The two agree in practice; where they could not, the relay must
+    be told what is on chain, because that is what it re-verifies against.
+    """
 
     async def test_deletable_sends_object_id(self, rec: _Recorder) -> None:
         client = _FakeClient()
