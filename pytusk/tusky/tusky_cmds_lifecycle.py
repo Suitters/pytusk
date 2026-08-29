@@ -133,7 +133,7 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
             print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        blob_result = await client.execute(command=GetObject(object_id=args.blobid))
+        blob_result = await client.execute(command=GetObject(object_id=args.object_id))
         if not blob_result.is_ok():
             print(
                 f"Error fetching blob object: {blob_result.result_string}",
@@ -142,12 +142,12 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
             sys.exit(1)
         obj = blob_result.result_data
         if not (obj.object_type and "::blob::Blob" in obj.object_type):
-            print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
+            print(f"{args.object_id} is not a Walrus Blob object.", file=sys.stderr)
             sys.exit(1)
         try:
             _, end_epoch = blob_deletable_and_end_epoch(obj=obj)
         except ValueError as exc:
-            print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+            print(f"Error reading blob {args.object_id}: {exc}", file=sys.stderr)
             sys.exit(1)
 
         try:
@@ -157,7 +157,7 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
             sys.exit(1)
         if end_epoch <= current_epoch:
             print(
-                f"{args.blobid} is expired (end_epoch={end_epoch}, "
+                f"{args.object_id} is expired (end_epoch={end_epoch}, "
                 f"current_epoch={current_epoch}); expired blobs cannot be "
                 "extended.",
                 file=sys.stderr,
@@ -201,7 +201,7 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
 
         await txn.move_call(
             target=f"{walrus_pkg}::system::extend_blob",
-            arguments=[system_obj_id, args.blobid, args.epochs, payment_coin_id],
+            arguments=[system_obj_id, args.object_id, args.epochs, payment_coin_id],
             type_arguments=[],
         )
         txdict = await txn.build_and_sign()
@@ -218,7 +218,7 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         print(result.result_data.to_json(indent=2))
-        print(f"Extended {args.blobid}'s expiration by {args.epochs} epoch(s).")
+        print(f"Extended {args.object_id}'s expiration by {args.epochs} epoch(s).")
         transaction = getattr(result.result_data, "transaction", None)
         if transaction is None:
             print(
@@ -285,8 +285,8 @@ async def delete_blob(args: argparse.Namespace) -> None:
 
         system_obj_id, walrus_pkg = await walrus_package_id(client=client)
 
-        if args.blobid:
-            blob_result = await client.execute(command=GetObject(object_id=args.blobid))
+        if args.object_id:
+            blob_result = await client.execute(command=GetObject(object_id=args.object_id))
             if not blob_result.is_ok():
                 print(
                     f"Error fetching blob object: {blob_result.result_string}",
@@ -295,12 +295,12 @@ async def delete_blob(args: argparse.Namespace) -> None:
                 sys.exit(1)
             obj = blob_result.result_data
             if not (obj.object_type and "::blob::Blob" in obj.object_type):
-                print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
+                print(f"{args.object_id} is not a Walrus Blob object.", file=sys.stderr)
                 sys.exit(1)
             try:
                 deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
             except ValueError as exc:
-                print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+                print(f"Error reading blob {args.object_id}: {exc}", file=sys.stderr)
                 sys.exit(1)
 
             txn: AsyncSuiTransaction = await client.transaction(
@@ -311,7 +311,7 @@ async def delete_blob(args: argparse.Namespace) -> None:
                     bcs.Argument,
                     await txn.move_call(
                         target=f"{walrus_pkg}::system::delete_blob",
-                        arguments=[system_obj_id, args.blobid],
+                        arguments=[system_obj_id, args.object_id],
                         type_arguments=[],
                     ),
                 )
@@ -320,7 +320,7 @@ async def delete_blob(args: argparse.Namespace) -> None:
             elif args.burn:
                 if end_epoch > current_epoch:
                     print(
-                        f"Warning: {args.blobid} is not expired "
+                        f"Warning: {args.object_id} is not expired "
                         f"(end_epoch={end_epoch}, current_epoch={current_epoch}) "
                         "and not deletable; burning it now destroys an "
                         "active, paid-for blob irreversibly.",
@@ -328,13 +328,13 @@ async def delete_blob(args: argparse.Namespace) -> None:
                     )
                 await txn.move_call(
                     target=f"{walrus_pkg}::blob::burn",
-                    arguments=[args.blobid],
+                    arguments=[args.object_id],
                     type_arguments=[],
                 )
                 action = "Burned"
             else:
                 print(
-                    f"{args.blobid} is not eligible for delete_blob "
+                    f"{args.object_id} is not eligible for delete_blob "
                     f"(deletable={deletable}, end_epoch={end_epoch}, "
                     f"current_epoch={current_epoch}); pass --burn to burn it instead.",
                     file=sys.stderr,
@@ -346,7 +346,7 @@ async def delete_blob(args: argparse.Namespace) -> None:
             if not result.is_ok():
                 print(f"Error in delete_blob: {result.result_string}", file=sys.stderr)
                 sys.exit(1)
-            print(f"{action} {args.blobid}.")
+            print(f"{action} {args.object_id}.")
             print(result.result_data.to_json(indent=2))
             return
 
@@ -468,7 +468,7 @@ async def burn_blob(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         _, walrus_pkg = await walrus_package_id(client=client)
-        blob_ids = list(dict.fromkeys(args.blobid))
+        blob_ids = list(dict.fromkeys(args.object_id))
 
         confirmed_ids: list[str] = []
         for blob_id in blob_ids:

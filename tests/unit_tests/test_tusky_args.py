@@ -1,0 +1,260 @@
+#    Copyright Frank V. Castellucci
+#    SPDX-License-Identifier: Apache-2.0
+
+# -*- coding: utf-8 -*-
+
+"""Parser-level tests for the tusky CLI argument definitions.
+
+Unlike test_tusky_cmds.py, which hand-builds argparse.Namespace objects to
+test handler logic, these tests call build_parser() with real CLI argument
+strings -- so a flag defined on the wrong subparser, a typo'd dest, or a
+short-flag collision surfaces here instead of only at real CLI use.
+"""
+
+import pytest
+
+from pytusk.tusky.tusky_args import build_parser
+
+
+OBJECT_ID = "0x" + "1" * 64
+OBJECT_ID_2 = "0x" + "2" * 64
+STORAGE_ID = "0x" + "3" * 64
+
+
+class TestObjectIdArguments:
+    """-o/--object-id parses to dest object_id and validates format."""
+
+    def test_blob_object_id_short_flag(self) -> None:
+        """blob accepts -o as a Sui object ID."""
+        args = build_parser(in_args=["blob", "-o", OBJECT_ID])
+        assert args.subcommand == "blob"
+        assert args.object_id == OBJECT_ID
+
+    def test_blob_object_id_long_flag(self) -> None:
+        """blob accepts --object-id as a Sui object ID."""
+        args = build_parser(in_args=["blob", "--object-id", OBJECT_ID])
+        assert args.object_id == OBJECT_ID
+
+    def test_blob_object_id_rejects_invalid_format(self) -> None:
+        """blob rejects a malformed object id."""
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["blob", "-o", "not-an-id"])
+
+    def test_certify_blob_object_id(self) -> None:
+        """certify_blob's -o parses to object_id."""
+        args = build_parser(in_args=["certify_blob", "-o", OBJECT_ID])
+        assert args.object_id == OBJECT_ID
+
+    def test_extend_blob_expiration_object_id(self) -> None:
+        """extend_blob_expiration's -o parses to object_id."""
+        args = build_parser(
+            in_args=["extend_blob_expiration", "-o", OBJECT_ID, "--epochs", "5"]
+        )
+        assert args.object_id == OBJECT_ID
+
+    def test_delete_blob_object_id(self) -> None:
+        """delete_blob's -o parses to object_id."""
+        args = build_parser(in_args=["delete_blob", "-o", OBJECT_ID])
+        assert args.object_id == OBJECT_ID
+
+    def test_delete_blob_all_flag(self) -> None:
+        """delete_blob's --all is the renamed flag (was --all-blobs)."""
+        args = build_parser(in_args=["delete_blob", "--all"])
+        assert args.all is True
+
+    def test_delete_blob_requires_exactly_one_target(self) -> None:
+        """delete_blob's target group rejects both -o and --all together."""
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["delete_blob", "-o", OBJECT_ID, "--all"])
+
+    def test_delete_blob_requires_a_target(self) -> None:
+        """delete_blob's target group is required."""
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["delete_blob"])
+
+
+class TestBlobIdArgument:
+    """-b/--blob-id parses to dest blob_id, distinct from object_id."""
+
+    def test_read_blob_blob_id_short_flag(self) -> None:
+        """read_blob accepts -b as a Walrus blob ID (not object-id validated)."""
+        args = build_parser(in_args=["read_blob", "-b", "not-an-object-id-format"])
+        assert args.blob_id == "not-an-object-id-format"
+
+    def test_read_blob_blob_id_long_flag(self) -> None:
+        """read_blob accepts --blob-id."""
+        args = build_parser(in_args=["read_blob", "--blob-id", "somewalrusblobid"])
+        assert args.blob_id == "somewalrusblobid"
+
+
+class TestBurnBlobRepeatable:
+    """burn_blob's -o/--object-id is repeatable and validates each value."""
+
+    def test_burn_blob_single(self) -> None:
+        """A single -o produces a one-item list."""
+        args = build_parser(in_args=["burn_blob", "-o", OBJECT_ID])
+        assert args.object_id == [OBJECT_ID]
+
+    def test_burn_blob_repeated(self) -> None:
+        """Repeating -o accumulates into a list, matching the pre-existing UX."""
+        args = build_parser(in_args=["burn_blob", "-o", OBJECT_ID, "-o", OBJECT_ID_2])
+        assert args.object_id == [OBJECT_ID, OBJECT_ID_2]
+
+    def test_burn_blob_rejects_invalid_id(self) -> None:
+        """Each repeated value is validated, not just the first."""
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["burn_blob", "-o", OBJECT_ID, "-o", "bad-id"])
+
+    def test_burn_blob_requires_at_least_one(self) -> None:
+        """-o/--object-id is required on burn_blob."""
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["burn_blob"])
+
+
+class TestStorageIdArguments:
+    """-s/--storage-id parses to dest storage_id."""
+
+    def test_split_storage_storage_id(self) -> None:
+        """split_storage's -s parses to storage_id."""
+        args = build_parser(
+            in_args=["split_storage", "-s", STORAGE_ID, "--by-epoch", "5"]
+        )
+        assert args.storage_id == STORAGE_ID
+
+    def test_reclaim_storage_storage_id(self) -> None:
+        """reclaim_storage's -s accepts one or more storage ids."""
+        args = build_parser(in_args=["reclaim_storage", "-s", STORAGE_ID])
+        assert args.storage_id == [STORAGE_ID]
+
+    def test_reclaim_storage_all_flag(self) -> None:
+        """reclaim_storage's --all remains unchanged by the rename."""
+        args = build_parser(in_args=["reclaim_storage", "--all"])
+        assert args.all is True
+
+    def test_reclaim_storage_requires_exactly_one_target(self) -> None:
+        """reclaim_storage's target group rejects both -s and --all together."""
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["reclaim_storage", "-s", STORAGE_ID, "--all"])
+
+    def test_extend_blob_with_storage_both_ids(self) -> None:
+        """extend_blob_with_storage takes distinct -o and -s without collision."""
+        args = build_parser(
+            in_args=["extend_blob_with_storage", "-o", OBJECT_ID, "-s", STORAGE_ID]
+        )
+        assert args.object_id == OBJECT_ID
+        assert args.storage_id == STORAGE_ID
+
+
+class TestStoreQuiltPatchFlags:
+    """--patch-file/--patch-content parse to dest patch_file/patch_content."""
+
+    def test_patch_file_repeatable_key_value(self) -> None:
+        """--patch-file KEY=PATH is repeatable and parses as (key, value) pairs."""
+        args = build_parser(
+            in_args=[
+                "store_quilt",
+                "--patch-file",
+                "a=path/to/a",
+                "--patch-file",
+                "b=path/to/b",
+                "--epochs",
+                "5",
+            ]
+        )
+        assert args.patch_file == [("a", "path/to/a"), ("b", "path/to/b")]
+
+    def test_patch_content_repeatable_key_value(self) -> None:
+        """--patch-content KEY=TEXT is repeatable and parses as (key, value) pairs."""
+        args = build_parser(
+            in_args=["store_quilt", "--patch-content", "a=hello", "--epochs", "5"]
+        )
+        assert args.patch_content == [("a", "hello")]
+
+    def test_store_blob_content_flag_unaffected(self) -> None:
+        """store_blob's own --content stays a plain single string, not renamed."""
+        args = build_parser(in_args=["store_blob", "--content", "hello", "--epochs", "5"])
+        assert args.content == "hello"
+
+
+class TestTipGasSource:
+    """--tip-gas-source parses to dest tip_gas_source (was --tip-source)."""
+
+    def test_tip_gas_source_default(self) -> None:
+        """Default is from_gas when --tip-gas-source is omitted."""
+        args = build_parser(
+            in_args=["store_blob_relay", "--content", "hello", "--epochs", "5"]
+        )
+        assert args.tip_gas_source == "from_gas"
+
+    def test_tip_gas_source_explicit(self) -> None:
+        """--tip-gas-source accepts an explicit coin object id."""
+        args = build_parser(
+            in_args=[
+                "store_blob_relay",
+                "--content",
+                "hello",
+                "--epochs",
+                "5",
+                "--tip-gas-source",
+                OBJECT_ID,
+            ]
+        )
+        assert args.tip_gas_source == OBJECT_ID
+
+
+class TestStoreBlobRelayLogVerbose:
+    """--log-file/--verbose now exist on store_blob_relay, mirroring store_blob_native."""
+
+    def test_log_file_and_verbose(self, tmp_path) -> None:
+        """store_blob_relay accepts --log-file and --verbose like store_blob_native."""
+        log_path = tmp_path / "run.log"
+        args = build_parser(
+            in_args=[
+                "store_blob_relay",
+                "--content",
+                "hello",
+                "--epochs",
+                "5",
+                "--log-file",
+                str(log_path),
+                "--verbose",
+            ]
+        )
+        assert args.log_file == log_path
+        assert args.verbose is True
+
+
+class TestRecipientAndAddressValidation:
+    """--recipient/--address now validate as Sui addresses where they didn't before."""
+
+    def test_store_blob_recipient_rejects_invalid_address(self) -> None:
+        """store_blob's --recipient now validates format."""
+        with pytest.raises(SystemExit):
+            build_parser(
+                in_args=[
+                    "store_blob",
+                    "--content",
+                    "hello",
+                    "--epochs",
+                    "5",
+                    "--recipient",
+                    "not-an-address",
+                ]
+            )
+
+    def test_expiry_report_address_rejects_invalid_address(self) -> None:
+        """expiry_report's --address now validates format."""
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["expiry_report", "--address", "not-an-address"])
+
+
+class TestFuseStorageUnchanged:
+    """--fuse-to/--fuse-from flags stay as-is; only help text changed in Stage 1."""
+
+    def test_fuse_to_and_fuse_from(self) -> None:
+        """fuse_storage's flags still parse under their original names."""
+        args = build_parser(
+            in_args=["fuse_storage", "--fuse-to", STORAGE_ID, "--fuse-from", OBJECT_ID]
+        )
+        assert args.fuse_to == STORAGE_ID
+        assert args.fuse_from == [OBJECT_ID]

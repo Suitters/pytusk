@@ -80,7 +80,7 @@ async def store_quilt(args: argparse.Namespace) -> None:
         except OSError as exc:
             print(f"Error reading file {path}: {exc}", file=sys.stderr)
             sys.exit(1)
-    for key, path in args.file:
+    for key, path in args.patch_file:
         if key in files:
             print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
             sys.exit(1)
@@ -89,7 +89,7 @@ async def store_quilt(args: argparse.Namespace) -> None:
         except OSError as exc:
             print(f"Error reading file {path}: {exc}", file=sys.stderr)
             sys.exit(1)
-    for key, text in args.content:
+    for key, text in args.patch_content:
         if key in files:
             print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
             sys.exit(1)

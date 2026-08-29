@@ -228,7 +228,7 @@ async def store_blob_relay(args: argparse.Namespace) -> None:
                     sender=sender,
                     sponsor=sponsor,
                     recipient=args.recipient,
-                    tip_source=args.tip_source,
+                    tip_source=args.tip_gas_source,
                     max_tip=args.max_tip,
                     timeout=args.timeout,
                     on_quote=_print_tip_quote,
@@ -337,7 +337,7 @@ async def store_blob_relay(args: argparse.Namespace) -> None:
                 client=client,
                 sender=sender,
                 sponsor=sponsor,
-                tip_source=args.tip_source if quote.requires_payment else None,
+                tip_source=args.tip_gas_source if quote.requires_payment else None,
                 tip_minimum_balance=quote.amount or 0,
                 wal_payment_coin=None,
             )
@@ -354,7 +354,7 @@ async def store_blob_relay(args: argparse.Namespace) -> None:
                 relay_address=quote.address or "",
                 tip_amount=quote.amount or 0,
                 auth_package=auth_package,
-                payment_coin=args.tip_source,
+                payment_coin=args.tip_gas_source,
             )
             if auth_package is not None
             else None
@@ -416,7 +416,7 @@ async def store_blob_relay(args: argparse.Namespace) -> None:
                 "address": quote.address,
                 "amount_mist": quote.amount,
                 "max_mist": args.max_tip,
-                "source": args.tip_source,
+                "source": args.tip_gas_source,
             },
             "cost": {"sui": sui_cost, "wal": wal_cost},
             "timings": dataclasses.asdict(timings),

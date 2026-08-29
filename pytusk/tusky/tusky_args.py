@@ -24,7 +24,32 @@ from pysui.sui.sui_common.validators import (
     ValidateFile,
     ValidateObjectID,
     ValidatePositive,
+    valid_sui_address,
 )
+
+
+class ValidateObjectIDAppend(argparse.Action):
+    """Validate a Sui object ID and append it to a repeatable list.
+
+    Unlike ``ValidateObjectID``, which overwrites ``dest`` on each call,
+    this preserves values across repeated flag invocations (e.g.
+    ``-o id1 -o id2``), matching burn_blob's pre-existing repeatable UX
+    while adding validation.
+    """
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str,
+        option_string: str | None = None,
+    ) -> None:
+        """Validate then append rather than overwrite."""
+        if not valid_sui_address(values):
+            parser.error(f"'{values}' is not a valid Sui object id format.")
+        items = list(getattr(namespace, self.dest, None) or [])
+        items.append(values)
+        setattr(namespace, self.dest, items)
 
 
 def _add_config_args(subp: argparse.ArgumentParser) -> None:
@@ -100,7 +125,7 @@ def _key_value_pair(value: str) -> tuple[str, str]:
     return key, val
 
 
-def _add_blob_id_arg(
+def _add_object_id_arg(
     subp: argparse.ArgumentParser,
     *,
     required: bool = True,
@@ -108,32 +133,47 @@ def _add_blob_id_arg(
         "Sui object ID of the blob (0x-prefixed) — not the Walrus blob ID "
         "(content hash)."
     ),
-    validate_as_object_id: bool = True,
 ) -> None:
-    """Add the -i/--blobid argument.
+    """Add the -o/--object-id argument.
 
     Args:
         subp (argparse.ArgumentParser): The subparser to add the argument to.
         required (bool): Whether the argument is required. Defaults to True.
         help_text (str): Help text for the argument. Defaults to describing
-            a Sui object ID; override for commands that take a different
-            identifier (e.g. read_blob's Walrus blob ID).
-        validate_as_object_id (bool): Whether to validate the argument as a
-            Sui object ID via ``ValidateObjectID``. Defaults to True.
-            read_blob's ``-i/--blobid`` is a Walrus content-hash blob ID
-            (URL-safe base64), NOT a Sui object ID, so its call site passes
-            False to avoid rejecting a well-formed Walrus blob ID.
+            a Sui object ID of a blob; override for commands where the
+            object ID identifies something else (e.g. extend_blob_with_storage's
+            blob argument, disambiguated from its own storage object ID).
     """
-    kwargs: dict = {}
-    if validate_as_object_id:
-        kwargs["action"] = ValidateObjectID
     subp.add_argument(
-        "-i",
-        "--blobid",
-        dest="blobid",
+        "-o",
+        "--object-id",
+        dest="object_id",
+        action=ValidateObjectID,
         required=required,
         help=help_text,
-        **kwargs,
+    )
+
+
+def _add_blob_id_arg(
+    subp: argparse.ArgumentParser,
+    *,
+    required: bool = True,
+    help_text: str = "Walrus blob ID (URL-safe base64, content hash).",
+) -> None:
+    """Add the -b/--blob-id argument.
+
+    Args:
+        subp (argparse.ArgumentParser): The subparser to add the argument to.
+        required (bool): Whether the argument is required. Defaults to True.
+        help_text (str): Help text for the argument. Defaults to describing
+            a Walrus content-hash blob ID.
+    """
+    subp.add_argument(
+        "-b",
+        "--blob-id",
+        dest="blob_id",
+        required=required,
+        help=help_text,
     )
 
 
@@ -206,7 +246,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         help="Show full on-chain details for one blob.",
         description="Show full on-chain details for one blob.",
     )
-    _add_blob_id_arg(p_blob)
+    _add_object_id_arg(p_blob)
     _add_config_args(p_blob)
 
     p_epoch = subparsers.add_parser(
@@ -234,6 +274,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_expiry_report.add_argument(
         "--address",
         dest="address",
+        action=ValidateAddress,
         default=None,
         help="Sui address to report on (default: active address).",
     )
@@ -247,6 +288,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_wal_coins.add_argument(
         "--address",
         dest="address",
+        action=ValidateAddress,
         default=None,
         help="Sui address to list WAL coins for (default: active address).",
     )
@@ -260,7 +302,6 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_blob_id_arg(
         p_read_blob,
         help_text="Walrus blob ID (URL-safe base64, content hash) to read.",
-        validate_as_object_id=False,
     )
     _add_config_args(p_read_blob)
 
@@ -317,6 +358,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_store_blob.add_argument(
         "--recipient",
         dest="recipient",
+        action=ValidateAddress,
         default=None,
         help="Sui address to receive the stored blob object (default: active address).",
     )
@@ -339,8 +381,8 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         ),
     )
     p_store_quilt.add_argument(
-        "--file",
-        dest="file",
+        "--patch-file",
+        dest="patch_file",
         action="append",
         default=[],
         type=_key_value_pair,
@@ -350,8 +392,8 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         ),
     )
     p_store_quilt.add_argument(
-        "--content",
-        dest="content",
+        "--patch-content",
+        dest="patch_content",
         action="append",
         default=[],
         type=_key_value_pair,
@@ -378,6 +420,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_store_quilt.add_argument(
         "--recipient",
         dest="recipient",
+        action=ValidateAddress,
         default=None,
         help="Sui address to receive the stored quilt object (default: active address).",
     )
@@ -546,8 +589,8 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         ),
     )
     p_store_blob_relay.add_argument(
-        "--tip-source",
-        dest="tip_source",
+        "--tip-gas-source",
+        dest="tip_gas_source",
         default="from_gas",
         help=(
             "Where the relay tip is paid from: 'from_gas', meaning whoever "
@@ -587,6 +630,22 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         help="Sui address to receive the stored blob object (default: sender).",
     )
     p_store_blob_relay.add_argument(
+        "--log-file",
+        dest="log_file",
+        type=Path,
+        default=None,
+        help=(
+            "Write an INFO-level log of this run's relay upload progress "
+            "to the given path (default: no log file is written)."
+        ),
+    )
+    p_store_blob_relay.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        help="Emit INFO-level relay upload progress to stdout.",
+    )
+    p_store_blob_relay.add_argument(
         "--full-json",
         dest="full_json",
         action="store_true",
@@ -619,7 +678,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
             "uploading mismatched content."
         ),
     )
-    _add_blob_id_arg(p_certify_blob)
+    _add_object_id_arg(p_certify_blob)
     p_certify_blob.add_argument(
         "--recover",
         action="store_true",
@@ -659,7 +718,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
             "changes; content and object ID are unaffected)."
         ),
     )
-    _add_blob_id_arg(p_extend_blob_expiration)
+    _add_object_id_arg(p_extend_blob_expiration)
     p_extend_blob_expiration.add_argument(
         "--epochs",
         action=ValidatePositive,
@@ -674,8 +733,8 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         "--merge",
         action="store_true",
         help=(
-            "Merge all owned WAL coins into one before extending, in case "
-            "no single coin covers the extension cost."
+            "Merge owned WAL coins (largest-first) if no single coin "
+            "covers the extension cost."
         ),
     )
     _add_signing_args(p_extend_blob_expiration)
@@ -693,9 +752,9 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     target_group = p_delete_blob.add_mutually_exclusive_group(required=True)
     target_group.add_argument(
-        "-i",
-        "--blobid",
-        dest="blobid",
+        "-o",
+        "--object-id",
+        dest="object_id",
         action=ValidateObjectID,
         help=(
             "Sui object ID of the blob to delete (0x-prefixed) — not the "
@@ -703,17 +762,20 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         ),
     )
     target_group.add_argument(
-        "--all-blobs",
+        "--all",
         action="store_true",
-        help="Delete all active deletable blobs owned by the address.",
+        help=(
+            "Delete every active deletable blob owned by the address -- no "
+            "object IDs needed."
+        ),
     )
     p_delete_blob.add_argument(
         "--burn",
         action="store_true",
         help=(
-            "Fallback to burning instead of deleting: in -i mode, burns "
+            "Fallback to burning instead of deleting: in -o mode, burns "
             "this blob only if it isn't eligible for delete_blob (already "
-            "expired or not deletable); in --all-blobs mode, additionally "
+            "expired or not deletable); in --all mode, additionally "
             "burns expired blobs in the same pass."
         ),
     )
@@ -731,14 +793,14 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         ),
     )
     p_burn_blob.add_argument(
-        "-i",
-        "--blobid",
-        dest="blobid",
-        action="append",
+        "-o",
+        "--object-id",
+        dest="object_id",
+        action=ValidateObjectIDAppend,
         required=True,
         help=(
             "Sui object ID of a blob to burn (0x-prefixed) — not the "
-            "Walrus blob ID (content hash). Repeat -i/--blobid to burn "
+            "Walrus blob ID (content hash). Repeat -o/--object-id to burn "
             "multiple blobs in one call."
         ),
     )
@@ -824,9 +886,9 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         ),
     )
     p_split_storage.add_argument(
-        "-i",
-        "--storageid",
-        dest="storageid",
+        "-s",
+        "--storage-id",
+        dest="storage_id",
         action=ValidateObjectID,
         required=True,
         help="Sui object ID of the Storage object to split (0x-prefixed).",
@@ -854,6 +916,7 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_split_storage.add_argument(
         "--recipient",
         dest="recipient",
+        action=ValidateAddress,
         default=None,
         help=(
             "Address to receive the newly created Storage object; defaults "
@@ -883,10 +946,10 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         action=ValidateObjectID,
         default=None,
         help=(
-            "Sui object ID of the Storage that survives and absorbs the "
-            "other(s) (0x-prefixed). Required for explicit mode; optional "
-            "for --fuse-periods, where it names which cluster's hub to "
-            "consolidate around when more than one is owned."
+            "Sui storage object id of the Storage that survives and absorbs "
+            "the other(s) (0x-prefixed). Required for explicit mode; "
+            "optional for --fuse-periods, where it names which cluster's "
+            "hub to consolidate around when more than one is owned."
         ),
     )
     p_fuse_storage.add_argument(
@@ -896,9 +959,9 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         action=ValidateObjectID,
         default=None,
         help=(
-            "One or more Sui object IDs to fold into --fuse-to, in order "
-            "(0x-prefixed); each is consumed by its fuse. Explicit mode "
-            "only."
+            "One or more Sui storage object ids to fold into --fuse-to, in "
+            "order (0x-prefixed); each is consumed by its fuse. Explicit "
+            "mode only."
         ),
     )
     fuse_bulk_group = p_fuse_storage.add_mutually_exclusive_group()
@@ -955,9 +1018,9 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     reclaim_group = p_reclaim_storage.add_mutually_exclusive_group(required=True)
     reclaim_group.add_argument(
-        "-i",
-        "--storageid",
-        dest="storageid",
+        "-s",
+        "--storage-id",
+        dest="storage_id",
         nargs="+",
         action=ValidateObjectID,
         default=None,
@@ -984,10 +1047,17 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
             "compatible with the blob's existing storage."
         ),
     )
-    _add_blob_id_arg(p_extend_blob_with_storage)
+    _add_object_id_arg(
+        p_extend_blob_with_storage,
+        help_text=(
+            "Sui object ID of the blob to extend (0x-prefixed) — not the "
+            "Walrus blob ID (content hash)."
+        ),
+    )
     p_extend_blob_with_storage.add_argument(
-        "--storageid",
-        dest="storageid",
+        "-s",
+        "--storage-id",
+        dest="storage_id",
         action=ValidateObjectID,
         required=True,
         help=(

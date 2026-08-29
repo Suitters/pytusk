@@ -167,7 +167,7 @@ async def blob(args: argparse.Namespace) -> None:
     """
     config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
-        result = await client.execute(command=GetObject(object_id=args.blobid))
+        result = await client.execute(command=GetObject(object_id=args.object_id))
     if not result.is_ok():
         print(f"Error fetching object: {result.result_string}", file=sys.stderr)
         sys.exit(1)

@@ -221,7 +221,7 @@ def _base_relay_args(**overrides: object) -> argparse.Namespace:
         "permanent": False,
         "max_tip": None,
         "relay": None,
-        "tip_source": FROM_GAS,
+        "tip_gas_source": FROM_GAS,
         "recipient": None,
         "full_json": False,
         "sender": None,
@@ -374,7 +374,7 @@ class TestRelaySimulateMatchesPipelineComposition:
         )
 
         args = _base_relay_args(
-            epochs=5, permanent=False, tip_source=FROM_GAS, content="hello world"
+            epochs=5, permanent=False, tip_gas_source=FROM_GAS, content="hello world"
         )
         await tusky_cmds_relay.store_blob_relay(args)
 
@@ -443,7 +443,7 @@ class TestRelaySimulateGuardsNowRun:
 
         monkeypatch.setattr(tusky_cmds_relay, "walrus_package_id", _fake_walrus_package_id)
 
-        args = _base_relay_args(tip_source="0xbadcoin", content="hello world")
+        args = _base_relay_args(tip_gas_source="0xbadcoin", content="hello world")
 
         with pytest.raises(SystemExit) as excinfo:
             await tusky_cmds_relay.store_blob_relay(args)

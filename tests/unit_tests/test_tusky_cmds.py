@@ -151,7 +151,7 @@ def _base_args(**overrides: object) -> argparse.Namespace:
     for every attribute the handler and its helpers read, overridable per
     test."""
     defaults: dict[str, object] = {
-        "blobid": "0xblob",
+        "object_id": "0xblob",
         "recover": False,
         "content": None,
         "file": None,

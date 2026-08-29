@@ -641,7 +641,7 @@ async def split_storage(args: argparse.Namespace) -> None:
             storage = await add_split_by_epoch(
                 txn=txn,
                 package_id=walrus_pkg,
-                storage_object_id=args.storageid,
+                storage_object_id=args.storage_id,
                 split_epoch=args.by_epoch,
             )
             detail = f"at epoch {args.by_epoch}"
@@ -649,7 +649,7 @@ async def split_storage(args: argparse.Namespace) -> None:
             storage = await add_split_by_size(
                 txn=txn,
                 package_id=walrus_pkg,
-                storage_object_id=args.storageid,
+                storage_object_id=args.storage_id,
                 split_size=args.by_size,
             )
             detail = f"off {args.by_size} bytes"
@@ -660,7 +660,7 @@ async def split_storage(args: argparse.Namespace) -> None:
         if not result.is_ok():
             print(f"Error in split_storage: {result.result_string}", file=sys.stderr)
             sys.exit(1)
-        print(f"Split {args.storageid} {detail}; new Storage sent to {recipient}.")
+        print(f"Split {args.storage_id} {detail}; new Storage sent to {recipient}.")
         print(result.result_data.to_json(indent=2))
 
 
@@ -972,7 +972,7 @@ async def reclaim_storage(args: argparse.Namespace) -> None:
                 print("No storage objects found to destroy.")
                 return
         else:
-            storage_ids = args.storageid
+            storage_ids = args.storage_id
 
         await _destroy_storage_batches(
             client=client,
@@ -1027,7 +1027,7 @@ async def extend_blob_with_storage(args: argparse.Namespace) -> None:
             print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        blob_result = await client.execute(command=GetObject(object_id=args.blobid))
+        blob_result = await client.execute(command=GetObject(object_id=args.object_id))
         if not blob_result.is_ok():
             print(
                 f"Error fetching blob object: {blob_result.result_string}",
@@ -1036,23 +1036,23 @@ async def extend_blob_with_storage(args: argparse.Namespace) -> None:
             sys.exit(1)
         blob_obj = blob_result.result_data
         if not (blob_obj.object_type and "::blob::Blob" in blob_obj.object_type):
-            print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
+            print(f"{args.object_id} is not a Walrus Blob object.", file=sys.stderr)
             sys.exit(1)
         try:
             blob_storage = storage_from_blob(obj=blob_obj)
         except ValueError as exc:
-            print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+            print(f"Error reading blob {args.object_id}: {exc}", file=sys.stderr)
             sys.exit(1)
         blob_end_epoch = blob_storage.end_epoch
 
         try:
             certified_epoch = blob_certified_epoch(obj=blob_obj)
         except ValueError as exc:
-            print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+            print(f"Error reading blob {args.object_id}: {exc}", file=sys.stderr)
             sys.exit(1)
         if certified_epoch is None:
             print(
-                f"{args.blobid} is not certified; only certified blobs can "
+                f"{args.object_id} is not certified; only certified blobs can "
                 "be extended (Move abort: ENotCertified).",
                 file=sys.stderr,
             )
@@ -1065,7 +1065,7 @@ async def extend_blob_with_storage(args: argparse.Namespace) -> None:
             sys.exit(1)
         if blob_end_epoch <= current_epoch:
             print(
-                f"{args.blobid} is expired (end_epoch={blob_end_epoch}, "
+                f"{args.object_id} is expired (end_epoch={blob_end_epoch}, "
                 f"current_epoch={current_epoch}); expired blobs cannot be "
                 "extended.",
                 file=sys.stderr,
@@ -1073,7 +1073,7 @@ async def extend_blob_with_storage(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         storage_result = await client.execute(
-            command=GetObject(object_id=args.storageid)
+            command=GetObject(object_id=args.storage_id)
         )
         if not storage_result.is_ok():
             print(
@@ -1087,21 +1087,21 @@ async def extend_blob_with_storage(args: argparse.Namespace) -> None:
             and "::storage_resource::Storage" in storage_obj.object_type
         ):
             print(
-                f"{args.storageid} is not a Walrus Storage object.",
+                f"{args.storage_id} is not a Walrus Storage object.",
                 file=sys.stderr,
             )
             sys.exit(1)
         try:
             extension = storage_from_object(obj=storage_obj)
         except ValueError as exc:
-            print(f"Error reading Storage {args.storageid}: {exc}", file=sys.stderr)
+            print(f"Error reading Storage {args.storage_id}: {exc}", file=sys.stderr)
             sys.exit(1)
 
         if extension.end_epoch <= blob_end_epoch:
             print(
-                f"Storage {args.storageid} ends at epoch "
+                f"Storage {args.storage_id} ends at epoch "
                 f"{extension.end_epoch}, which is not later than blob "
-                f"{args.blobid}'s current end_epoch {blob_end_epoch}; the "
+                f"{args.object_id}'s current end_epoch {blob_end_epoch}; the "
                 "extension would not extend anything (Move abort: "
                 "EResourceBounds).",
                 file=sys.stderr,
@@ -1122,7 +1122,7 @@ async def extend_blob_with_storage(args: argparse.Namespace) -> None:
         )
         await txn.move_call(
             target=f"{walrus_pkg}::system::extend_blob_with_resource",
-            arguments=[system_obj_id, args.blobid, args.storageid],
+            arguments=[system_obj_id, args.object_id, args.storage_id],
             type_arguments=[],
         )
         txdict = await txn.build_and_sign()
@@ -1134,7 +1134,7 @@ async def extend_blob_with_storage(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         print(
-            f"Extended {args.blobid} from epoch {blob_end_epoch} to "
-            f"{extension.end_epoch} using Storage {args.storageid}."
+            f"Extended {args.object_id} from epoch {blob_end_epoch} to "
+            f"{extension.end_epoch} using Storage {args.storage_id}."
         )
         print(result.result_data.to_json(indent=2))

@@ -26,7 +26,7 @@ async def read_blob(args: argparse.Namespace) -> None:
     """
     config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
-        result = await client.execute(command=ReadBlob(blob_id=args.blobid))
+        result = await client.execute(command=ReadBlob(blob_id=args.blob_id))
     if not result.is_ok():
         print(f"Error reading blob: {result.result_string}", file=sys.stderr)
         sys.exit(1)

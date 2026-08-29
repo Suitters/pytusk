@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed undefined `RelayUploadOutcome` in relay upload
 - Relay pipeline, relay commands, receipt protocols and chain/ops helpers now exported from `pytusk`
 - Updated readthedocs coverage
+- Tusky CLI arguments aligned for consistency and clarity
 
 ### Removed
 

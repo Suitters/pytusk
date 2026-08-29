@@ -136,14 +136,14 @@ stdout.
 
 .. code-block:: console
 
-   tusky read_blob -i BLOB_ID
+   tusky read_blob -b BLOB_ID
 
-``-i`` / ``--blobid``
-   The **Walrus blob ID** (URL-safe base64, content hash) — not the Sui
-   object ID. This is the opposite convention from every other
-   ``-i``/``--blobid`` use in ``tusky`` (see the note under `blob
-   inspection & reporting`_ below); ``read_blob`` reads by content hash,
-   everything else identifies a blob by its on-chain object.
+``-b`` / ``--blob-id``
+   The **Walrus blob ID** (URL-safe base64, content hash) to read. This
+   is a different flag from ``-o``/``--object-id`` (used by every other
+   blob-targeting command — see the note under `blob inspection &
+   reporting`_ below), because ``read_blob`` addresses content by its
+   Walrus blob ID rather than by the blob's Sui object ID.
 
 store_quilt
 ~~~~~~~~~~~
@@ -156,24 +156,24 @@ registration.
 .. code-block:: console
 
    tusky store_quilt [--paths PATH [PATH ...]]
-                      [--file KEY=PATH ...] [--content KEY=TEXT ...]
+                      [--patch-file KEY=PATH ...] [--patch-content KEY=TEXT ...]
                       --epochs N [--permanent] [--recipient ADDRESS]
 
 ``--paths``
    File paths to include in the quilt, shell-expandable (e.g. ``*.py``).
    The patch key for each is derived from its filename.
 
-``--file``
+``--patch-file``
    Patch key and file path, in ``KEY=PATH`` form (repeatable). Use this
    when you need an explicit patch key that differs from the filename.
 
-``--content``
+``--patch-content``
    Patch key and inline UTF-8 text content, in ``KEY=TEXT`` form
    (repeatable).
 
-``--paths``, ``--file``, and ``--content`` are combinable — at least one
-patch from any of the three is required. Duplicate patch keys across all
-three sources are rejected as an error.
+``--paths``, ``--patch-file``, and ``--patch-content`` are combinable —
+at least one patch from any of the three is required. Duplicate patch
+keys across all three sources are rejected as an error.
 
 ``--epochs``, ``--permanent``, ``--recipient``
    Same semantics as ``store_blob``.
@@ -182,7 +182,7 @@ Example — explicit inline content:
 
 .. code-block:: console
 
-   $ tusky store_quilt --content patch1="hello quilt" --epochs 1
+   $ tusky store_quilt --patch-content patch1="hello quilt" --epochs 1
    {
      "quilt_id": "sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHY",
      "patch_keys": ["patch1"],
@@ -240,10 +240,11 @@ Blob Inspection & Reporting
 
 .. note::
 
-   Except for ``read_blob`` above, every ``-i``/``--blobid`` argument in
-   ``tusky`` — including throughout this section and the lifecycle
-   commands below — takes the blob's **Sui object ID** (0x-prefixed), not
-   the Walrus blob ID (content hash).
+   Except for ``read_blob`` above (which takes ``-b``/``--blob-id``),
+   every ``-o``/``--object-id`` argument in ``tusky`` — including
+   throughout this section and the lifecycle commands below — takes the
+   blob's **Sui object ID** (0x-prefixed), not the Walrus blob ID (content
+   hash).
 
 blobs
 ~~~~~
@@ -275,13 +276,13 @@ Show full on-chain details for one blob object, as formatted JSON.
 
 .. code-block:: console
 
-   tusky blob -i OBJECT_ID
+   tusky blob -o OBJECT_ID
 
 Example (``bcs`` payload abbreviated for readability):
 
 .. code-block:: console
 
-   $ tusky blob -i 0x3e163d3b14bef322b3d7eea360dc4a15c2a8f1cb488a2be9de980b3268d08b66
+   $ tusky blob -o 0x3e163d3b14bef322b3d7eea360dc4a15c2a8f1cb488a2be9de980b3268d08b66
    {
      "bcs": { "...": "..." },
      "objectId": "0x3e163d3b14bef322b3d7eea360dc4a15c2a8f1cb488a2be9de980b3268d08b66",
@@ -448,10 +449,10 @@ expiry epoch changes — content, size, and object ID are unaffected.
 
 .. code-block:: console
 
-   tusky extend_blob_expiration -i OBJECT_ID --epochs N [--merge]
+   tusky extend_blob_expiration -o OBJECT_ID --epochs N [--merge]
                                  [--sender ADDRESS] [--sponsor ADDRESS] [--mode simulate|execute]
 
-``-i`` / ``--blobid``
+``-o`` / ``--object-id``
    Sui object ID of the blob (not the Walrus blob ID).
 
 ``--epochs``
@@ -478,18 +479,18 @@ Delete one blob, or all active deletable blobs, via
 
 .. code-block:: console
 
-   tusky delete_blob (-i OBJECT_ID | --all-blobs) [--burn]
+   tusky delete_blob (-o OBJECT_ID | --all) [--burn]
                       [--sender ADDRESS] [--sponsor ADDRESS] [--mode simulate|execute]
 
-``-i`` / ``--blobid`` / ``--all-blobs``
-   Mutually exclusive, one required. ``-i`` targets a single blob by Sui
-   object ID; ``--all-blobs`` targets every active, deletable blob owned
+``-o`` / ``--object-id`` / ``--all``
+   Mutually exclusive, one required. ``-o`` targets a single blob by Sui
+   object ID; ``--all`` targets every active, deletable blob owned
    by the sender.
 
 ``--burn``
-   Fallback to burning instead of deleting. In ``-i`` mode: burns the
+   Fallback to burning instead of deleting. In ``-o`` mode: burns the
    target blob if it isn't eligible for ``delete_blob`` (already expired,
-   or not deletable). In ``--all-blobs`` mode: additionally burns expired
+   or not deletable). In ``--all`` mode: additionally burns expired
    blobs of any type in a separate batched pass.
 
 A blob is only eligible for ``delete_blob`` itself when it is
@@ -498,7 +499,7 @@ blob without ``--burn`` fails cleanly:
 
 .. code-block:: console
 
-   $ tusky delete_blob -i 0x1ba8360de6ab4222211670f09fe12427b059d4272364d4f75d9eebb8328ead24
+   $ tusky delete_blob -o 0x1ba8360de6ab4222211670f09fe12427b059d4272364d4f75d9eebb8328ead24
    0x1ba8360de6ab4222211670f09fe12427b059d4272364d4f75d9eebb8328ead24 is not eligible for delete_blob (deletable=False, end_epoch=486, current_epoch=485); pass --burn to burn it instead.
 
 Burning a blob that is *not yet expired* (i.e. it's being burned only
@@ -510,7 +511,7 @@ rebate, though other copies of identical content stored separately (e.g.
 by a different owner, or the same content re-stored elsewhere) may still
 persist, since deletion only affects this specific blob registration.
 
-In ``--all-blobs`` mode, operations are batched (up to the PTB per-batch
+In ``--all`` mode, operations are batched (up to the PTB per-batch
 limit); each batch's result is printed as it completes, so a failure
 partway through still leaves a record of every batch that succeeded
 beforehand.
@@ -523,11 +524,11 @@ Burn one or more blob objects directly via ``blob::burn``, bypassing
 
 .. code-block:: console
 
-   tusky burn_blob -i OBJECT_ID [-i OBJECT_ID ...]
+   tusky burn_blob -o OBJECT_ID [-o OBJECT_ID ...]
                     [--sender ADDRESS] [--sponsor ADDRESS] [--mode simulate|execute]
 
-``-i`` / ``--blobid``
-   Sui object ID of a blob to burn (repeatable — pass multiple ``-i``
+``-o`` / ``--object-id``
+   Sui object ID of a blob to burn (repeatable — pass multiple ``-o``
    flags to burn several blobs in one invocation). Duplicate IDs are
    de-duplicated before batching.
 
@@ -537,7 +538,7 @@ before burning: a blob ID that can't be fetched, isn't a Walrus ``Blob``
 object, or has unreadable on-chain data is skipped with a warning rather
 than burned blind. A blob that is not yet expired prints a warning before
 burning, since that destroys an active, paid-for blob. Operations are
-batched, same as ``delete_blob --all-blobs``.
+batched, same as ``delete_blob --all``.
 
 .. note::
 
@@ -638,11 +639,11 @@ other than ``CERTIFIED``.
 
 .. code-block:: console
 
-   tusky certify_blob -i OBJECT_ID [--recover (--content TEXT | --file PATH)]
+   tusky certify_blob -o OBJECT_ID [--recover (--content TEXT | --file PATH)]
                        [--sender ADDRESS] [--sponsor ADDRESS]
                        [--mode simulate|execute]
 
-``-i`` / ``--blobid``
+``-o`` / ``--object-id``
    Sui object ID of the already-registered ``Blob``.
 
 ``--recover``
@@ -670,7 +671,7 @@ Example — resuming a blob whose sliver fan-out never ran:
 
 .. code-block:: console
 
-   $ tusky certify_blob -i 0x4280c2303826e9bec80eac1e43edc596563bf69b1b516d181b1a69c1b96aaef7 --recover --file testdata_1mb.bin --mode execute
+   $ tusky certify_blob -o 0x4280c2303826e9bec80eac1e43edc596563bf69b1b516d181b1a69c1b96aaef7 --recover --file testdata_1mb.bin --mode execute
    {
      "blob_id": "bY4GUMK5eCHB3KBjsDN2wSzdlIY4IzQAHjzd7UHHkvw",
      "object_id": "0x4280c2303826e9bec80eac1e43edc596563bf69b1b516d181b1a69c1b96aaef7",
@@ -733,9 +734,10 @@ returns.
 
    tusky store_blob_relay (--content TEXT | --file PATH) --epochs N
                            [--permanent] [--relay NAME]
-                           [--tip-source from_gas|COIN_ID] [--max-tip MIST]
+                           [--tip-gas-source from_gas|COIN_ID] [--max-tip MIST]
                            [--timeout SECONDS]
                            [--recipient ADDRESS] [--full-json]
+                           [--log-file PATH] [--verbose]
                            [--sender ADDRESS] [--sponsor ADDRESS]
                            [--mode simulate|execute]
 
@@ -744,7 +746,7 @@ returns.
    neither an explicit name nor an active relay resolves, the command
    errors naming the relays available on that network.
 
-``--tip-source``
+``--tip-gas-source``
    ``from_gas`` (default) splits the tip from whichever party funds the
    transaction — the sponsor when one is given, otherwise the sender. An
    explicit coin object ID is verified against sender/sponsor ownership
@@ -774,6 +776,12 @@ returns.
    prices the transaction you are about to sign. Unlike
    ``store_blob_native``, though, simulate here does include the tip cost,
    because the tip is composed into the very transaction being simulated.
+
+``--log-file`` / ``--verbose``
+   Opt-in progress logging for the pipeline. ``--log-file`` writes an
+   INFO-level log of this run's relay upload progress to the given path;
+   ``--verbose`` emits INFO-level relay upload progress to stdout.
+   Neither is enabled by default — see :doc:`logging`.
 
 In ``execute`` mode the relay's quoted tip and the Sui address it will be
 paid to are printed before Tx1 is composed, so the figure is visible before
@@ -893,11 +901,11 @@ one.
 
 .. code-block:: console
 
-   tusky split_storage -i STORAGE_ID (--by-epoch N | --by-size N)
+   tusky split_storage -s STORAGE_ID (--by-epoch N | --by-size N)
                         [--recipient ADDRESS] [--sender ADDRESS]
                         [--sponsor ADDRESS] [--mode simulate|execute]
 
-``-i`` / ``--storageid``
+``-s`` / ``--storage-id``
    Sui object ID of the Storage object to split (0x-prefixed).
 
 ``--by-epoch``
@@ -932,14 +940,15 @@ compatible before choosing.
                        [--mode simulate|execute]
 
 ``--fuse-to``
-   Sui object ID of the Storage that survives and absorbs the other(s).
-   Required for explicit mode; optional for ``--fuse-periods``, where it
-   names which cluster's hub to consolidate around when more than one is
-   owned.
+   Sui storage object id of the Storage that survives and absorbs the
+   other(s) (0x-prefixed). Required for explicit mode; optional for
+   ``--fuse-periods``, where it names which cluster's hub to consolidate
+   around when more than one is owned.
 
 ``--fuse-from``
-   One or more Sui object IDs to fold into ``--fuse-to``, in order; each
-   is consumed by its fuse. Explicit mode only.
+   One or more Sui storage object ids to fold into ``--fuse-to``, in
+   order (0x-prefixed); each is consumed by its fuse. Explicit mode
+   only.
 
 ``--fuse-amount``
    Bulk-fuse every owned Storage object sharing one identical epoch-range
@@ -973,11 +982,11 @@ one. **Irreversible.**
 
 .. code-block:: console
 
-   tusky reclaim_storage (-i STORAGE_ID [STORAGE_ID ...] | --all)
+   tusky reclaim_storage (-s STORAGE_ID [STORAGE_ID ...] | --all)
                           [--sender ADDRESS] [--sponsor ADDRESS]
                           [--mode simulate|execute]
 
-``-i`` / ``--storageid``
+``-s`` / ``--storage-id``
    One or more Sui object IDs of Storage objects to destroy.
 
 ``--all``
@@ -1023,13 +1032,13 @@ which owned objects, if any, currently satisfy this against which blobs.
 
 .. code-block:: console
 
-   tusky extend_blob_with_storage -i BLOB_ID --storageid STORAGE_ID
+   tusky extend_blob_with_storage -o BLOB_ID -s STORAGE_ID
                                    [--sender ADDRESS] [--sponsor ADDRESS]
                                    [--mode simulate|execute]
 
-``-i`` / ``--blobid``
+``-o`` / ``--object-id``
    Sui object ID of the blob (0x-prefixed) -- not the Walrus blob ID
    (content hash).
 
-``--storageid``
+``-s`` / ``--storage-id``
    Sui object ID of the Storage object to consume (0x-prefixed).

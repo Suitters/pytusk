@@ -380,7 +380,7 @@ async def certify_blob(args: argparse.Namespace) -> None:
             print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        blob_result = await client.execute(command=GetObject(object_id=args.blobid))
+        blob_result = await client.execute(command=GetObject(object_id=args.object_id))
         if not blob_result.is_ok():
             print(
                 f"Error fetching blob object: {blob_result.result_string}",
@@ -389,13 +389,13 @@ async def certify_blob(args: argparse.Namespace) -> None:
             sys.exit(1)
         obj = blob_result.result_data
         if not (obj.object_type and "::blob::Blob" in obj.object_type):
-            print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
+            print(f"{args.object_id} is not a Walrus Blob object.", file=sys.stderr)
             sys.exit(1)
         try:
             blob_id_bytes = blob_id_from_object(obj=obj)
             deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
         except ValueError as exc:
-            print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+            print(f"Error reading blob {args.object_id}: {exc}", file=sys.stderr)
             sys.exit(1)
 
         try:
@@ -425,7 +425,7 @@ async def certify_blob(args: argparse.Namespace) -> None:
             if encoded.blob_id != blob_id_bytes:
                 print(
                     "Error: the re-supplied content does not match the "
-                    f"blob_id already registered for {args.blobid}.",
+                    f"blob_id already registered for {args.object_id}.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -444,7 +444,7 @@ async def certify_blob(args: argparse.Namespace) -> None:
                 sliver_upload_duration = time.monotonic() - sliver_upload_start
 
         registration = Registration(
-            object_id=args.blobid,
+            object_id=args.object_id,
             blob_id=blob_id_bytes,
             end_epoch=end_epoch,
             deletable=deletable,
@@ -528,7 +528,7 @@ async def certify_blob(args: argparse.Namespace) -> None:
             txn=txn,
             package_id=walrus_pkg,
             system_object=system_obj_id,
-            blob_object_id=args.blobid,
+            blob_object_id=args.object_id,
             certificate=certificate,
         )
         txdict = await txn.build_and_sign()
