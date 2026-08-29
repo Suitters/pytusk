@@ -67,8 +67,42 @@ class RelayUploadAck:
     relay_message: str | None
 
 
+def _tip_amount(*, value: object, field: str) -> int:
+    """Return ``value`` as a validated MIST tip amount.
+
+    ``bool`` is rejected EXPLICITLY rather than by omission: it is a
+    subclass of ``int``, so a JSON ``true`` would otherwise be accepted and
+    silently become a tip of 1 MIST. Negative values are rejected because
+    the amount is a ``u64`` on the wire -- a negative one means the relay
+    sent something pytusk does not model, not a discount.
+
+    Neither :class:`ConstTip` nor :class:`LinearTip` validates its own
+    fields, so this is the only gate between the relay's JSON and a tip
+    amount the caller is asked to pay.
+
+    Args:
+        value (object): The decoded JSON value.
+        field (str): Field name, used to build the error message.
+
+    Returns:
+        int: The validated amount, in MIST.
+
+    Raises:
+        ValueError: If ``value`` is not a non-negative, non-boolean integer.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be an integer, got {value!r}")
+    if value < 0:
+        raise ValueError(f"{field} must not be negative, got {value}")
+    return value
+
+
 def _parse_tip_kind(*, payload: object) -> TipKind:
     """Parse Walrus's externally tagged ``TipKind`` JSON.
+
+    Every amount goes through :func:`_tip_amount`. This runs while parsing
+    ``GET /v1/tip-config``, which is PRE-SPEND, so raising here is correct
+    under the error boundary: nothing has been paid yet.
 
     Args:
         payload (object): The decoded ``kind`` value.
@@ -77,26 +111,65 @@ def _parse_tip_kind(*, payload: object) -> TipKind:
         TipKind: The parsed tip formula.
 
     Raises:
-        ValueError: If the payload does not match either variant.
+        ValueError: If the payload does not match either variant, or if any
+            amount is not a non-negative, non-boolean integer.
     """
     if not isinstance(payload, dict) or len(payload) != 1:
         raise ValueError(f"Unrecognised tip kind payload: {payload!r}")
     tag, body = next(iter(payload.items()))
     if tag == "const":
-        if not isinstance(body, int):
-            raise ValueError(f"const tip amount must be an integer, got {body!r}")
-        return ConstTip(amount=body)
+        return ConstTip(amount=_tip_amount(value=body, field="const tip amount"))
     if tag == "linear":
         if not isinstance(body, dict):
             raise ValueError(f"linear tip body must be an object, got {body!r}")
         try:
-            return LinearTip(
-                base=body["base"],
-                encoded_size_mul_per_kib=body["encoded_size_mul_per_kib"],
-            )
+            base = body["base"]
+            multiplier = body["encoded_size_mul_per_kib"]
         except KeyError as exc:
             raise ValueError(f"linear tip is missing field {exc}") from exc
+        return LinearTip(
+            base=_tip_amount(value=base, field="linear tip base"),
+            encoded_size_mul_per_kib=_tip_amount(
+                value=multiplier, field="linear tip encoded_size_mul_per_kib"
+            ),
+        )
     raise ValueError(f"Unknown tip kind {tag!r}")
+
+
+def _tip_address(*, value: object) -> str:
+    """Return ``value`` as a validated Sui address for the tip transfer.
+
+    The relay names its own payee, so a malformed address costs the caller
+    nothing directly. It is refused HERE so the failure reports as an
+    unusable tip config, pre-spend, rather than surfacing later as an
+    opaque error from inside PTB composition. This is the address side of
+    the gate :func:`_tip_amount` provides for the amount.
+
+    Shortened forms are accepted: a Sui address is at most 32 bytes and
+    leading zeroes may be omitted, so the hex is left-padded before it is
+    checked rather than requiring the full 64 digits.
+
+    Args:
+        value (object): The decoded ``address`` value.
+
+    Returns:
+        str: The validated address, unchanged.
+
+    Raises:
+        ValueError: If ``value`` is not a well-formed Sui address.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"tip address must be a string, got {value!r}")
+    if not value.startswith("0x"):
+        raise ValueError(f"tip address must be 0x-prefixed, got {value!r}")
+    digits = value[2:]
+    if not digits or len(digits) > 64:
+        raise ValueError(f"tip address is not a Sui address: {value!r}")
+    try:
+        bytes.fromhex(digits.rjust(64, "0"))
+    except ValueError as exc:
+        raise ValueError(f"tip address is not valid hex: {value!r}") from exc
+    return value
 
 
 def _parse_tip_config(*, payload: object) -> TipConfig:
@@ -126,7 +199,10 @@ def _parse_tip_config(*, payload: object) -> TipConfig:
             kind = body["kind"]
         except KeyError as exc:
             raise ValueError(f"send_tip is missing field {exc}") from exc
-        return TipConfig(address=address, kind=_parse_tip_kind(payload=kind))
+        return TipConfig(
+            address=_tip_address(value=address),
+            kind=_parse_tip_kind(payload=kind),
+        )
     raise ValueError(f"Unrecognised tip config payload: {payload!r}")
 
 
@@ -239,7 +315,26 @@ class UploadRelayBlob(WalrusCommand):
                     relay_message=response.text,
                 ),
             )
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            # A 2xx whose body is not JSON at all -- an HTML error page from
+            # a proxy or CDN, a redirect body -- must NOT escape as an
+            # exception. This runs POST-SPEND: the tip is paid and the blob
+            # is registered, so raising here would destroy the nonce the
+            # caller needs to resume. Reported as REFUSED, matching the
+            # malformed-but-decodable 2xx case below.
+            return SuiRpcResult(
+                False,
+                f"Relay returned a non-JSON body (HTTP {response.status_code}): {exc}",
+                RelayUploadAck(
+                    outcome=RelayUploadOutcome.REFUSED,
+                    blob_id=None,
+                    confirmation_certificate=None,
+                    relay_status=response.status_code,
+                    relay_message=response.text,
+                ),
+            )
         try:
             ack = RelayUploadAck(
                 outcome=RelayUploadOutcome.UPLOADED,

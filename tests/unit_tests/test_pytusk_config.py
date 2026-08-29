@@ -395,6 +395,42 @@ class TestRelayConfig:
         assert loaded.relay_url == "https://relay.example.com"
 
 
+class TestRelayConfigUrlValidation:
+    """relay_url is validated at construction, not at first use.
+
+    ``GET /v1/tip-config`` returns the Sui ADDRESS the tip is paid to, so a
+    plaintext or malformed relay URL is a fund-redirection risk rather than
+    a cosmetic configuration error.
+    """
+
+    def test_empty_url_rejected(self) -> None:
+        with pytest.raises(ValueError, match="relay_url must not be empty"):
+            RelayConfig(relay_name="mysten")
+
+    def test_non_absolute_url_rejected(self) -> None:
+        with pytest.raises(ValueError, match="is not an absolute URL"):
+            RelayConfig(relay_name="mysten", relay_url="relay.example.com")
+
+    def test_non_http_scheme_rejected(self) -> None:
+        with pytest.raises(ValueError, match="got scheme 'ftp'"):
+            RelayConfig(relay_name="mysten", relay_url="ftp://relay.example.com")
+
+    def test_plaintext_http_rejected(self) -> None:
+        with pytest.raises(ValueError, match="permitted only for localhost"):
+            RelayConfig(relay_name="mysten", relay_url="http://relay.example.com")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://localhost:9000",
+            "http://127.0.0.1:9000",
+            "http://[::1]:9000",
+        ],
+    )
+    def test_plaintext_http_allowed_for_loopback(self, url: str) -> None:
+        assert RelayConfig(relay_name="local", relay_url=url).relay_url == url
+
+
 class TestRelayMigration:
     """Config schema migration from 1.0.0 to 1.1.0."""
 

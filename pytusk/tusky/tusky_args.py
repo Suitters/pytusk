@@ -568,6 +568,18 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         ),
     )
     p_store_blob_relay.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=None,
+        help=(
+            "Per-attempt relay upload timeout, in seconds. Every retry "
+            "re-sends the blob from the beginning, so a large blob on a "
+            "slow link needs this raised or the retry budget is spent on "
+            "timeouts alone. Default: the client's configured timeout."
+        ),
+    )
+    p_store_blob_relay.add_argument(
         "--recipient",
         dest="recipient",
         action=ValidateAddress,

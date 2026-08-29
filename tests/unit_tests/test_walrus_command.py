@@ -5,6 +5,7 @@
 
 """Unit tests for WalrusCommand base and response dataclasses."""
 
+import httpx
 import pytest
 
 from pytusk.commands.walrus_command import (
@@ -14,6 +15,7 @@ from pytusk.commands.walrus_command import (
     QuiltPatch,
     QuiltReceipt,
     WalrusCommand,
+    http_failure_message,
 )
 
 
@@ -150,3 +152,32 @@ class TestQuiltReceipt:
         a = QuiltReceipt(quilt_id="q", patch_keys=["k"], cost=10, expiry_epoch=5)
         b = QuiltReceipt(quilt_id="q", patch_keys=["k"], cost=10, expiry_epoch=5)
         assert a == b
+
+
+class TestResponseBodyForLog:
+    """A logged error body is written by an UNTRUSTED server.
+
+    It reaches a terminal verbatim, so control characters must not survive:
+    ANSI escape sequences would let a hostile server clear the screen and
+    forge output around the diagnostic line.
+
+    A bare ``httpx.Response`` is enough here -- ``http_failure_message``
+    already tolerates an unset ``request`` and a body that is not JSON, so
+    no response double is needed.
+    """
+
+    def test_ansi_escapes_are_neutralised(self) -> None:
+        message = http_failure_message(
+            response=httpx.Response(500, text="\x1b[2Jforged output"),
+            context="blob_id=abc",
+        )
+        assert "\x1b" not in message
+        assert "forged output" in message
+
+    def test_newlines_and_tabs_are_kept(self) -> None:
+        """Both carry real structure in a JSON or HTML error body."""
+        message = http_failure_message(
+            response=httpx.Response(500, text="line1\n\tline2"),
+            context="blob_id=abc",
+        )
+        assert "line1\n\tline2" in message

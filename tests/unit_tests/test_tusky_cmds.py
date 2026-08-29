@@ -383,7 +383,7 @@ class _FakeNativeSimulateClient:
         )
         self.txns: list[_FakeNativeSimulateTxn] = []
 
-    async def __aenter__(self) -> "_FakeNativeSimulateClient":
+    async def __aenter__(self) -> "_FakeNativeSimulateClient":  # noqa: PYI034 -- typing.Self is 3.11+ only (project targets >=3.10.6)
         """Enter the fake client's async context, returning itself."""
         return self
 
@@ -754,7 +754,7 @@ class _FakeRelayListClient:
     def __init__(self) -> None:
         self.committee_calls = 0
 
-    async def __aenter__(self) -> "_FakeRelayListClient":
+    async def __aenter__(self) -> "_FakeRelayListClient":  # noqa: PYI034 -- typing.Self is 3.11+ only (project targets >=3.10.6)
         """Enter the fake client's async context, returning itself."""
         return self
 

@@ -32,6 +32,18 @@ _RETRY_BASE_DELAY: float = 0.5
 _RETRY_MAX_DELAY: float = 8.0
 """Ceiling on the backoff delay, in seconds."""
 
+_RETRYABLE_CLIENT_STATUSES: frozenset[int] = frozenset({408, 425, 429})
+"""4xx codes that mean "not now" rather than "never".
+
+A definitive refusal (400/401/402 and friends) returns the same answer on
+every attempt, so retrying only wastes the budget. A timeout, an early-data
+rejection, or a rate-limit does not: the tip is already paid and re-POSTing
+the same digest and nonce costs nothing, so these retry alongside the 5xx
+codes instead of terminating as REFUSED. Reporting one of these as REJECTED
+would tell a caller their tip is unrecoverable when a retry seconds later
+would have completed the upload for free.
+"""
+
 
 async def upload_to_relay(
     *,
@@ -43,6 +55,7 @@ async def upload_to_relay(
     nonce: str | None = None,
     deletable_blob_object: str | None = None,
     max_attempts: int = DEFAULT_MAX_UPLOAD_ATTEMPTS,
+    timeout: float | None = None,
 ) -> RelayUploadResult:
     """POST a blob to a relay, retrying only what is safe to retry.
 
@@ -70,6 +83,14 @@ async def upload_to_relay(
         deletable_blob_object (str | None): Object ID when the blob was
             registered deletable; omitted means permanent.
         max_attempts (int): POST attempt budget, at least 1.
+        timeout (float | None): Per-attempt request timeout, in seconds,
+            applied to EVERY attempt. ``None`` means the client's own
+            configured default -- NOT "no timeout". Raise it for a large
+            blob: a relay accepts bodies up to roughly 1 GiB, and the
+            default write timeout needs sustained throughput to push that
+            much inside a single attempt. Each retry re-sends the body
+            from the beginning, so a timeout set too low burns the entire
+            budget without any attempt ever completing.
 
     Returns:
         RelayUploadResult: The certificate, or the points needed to resume.
@@ -97,7 +118,9 @@ async def upload_to_relay(
 
     for attempt in range(1, max_attempts + 1):
         attempts = attempt
-        result = await client.execute(command=command, base_url=relay_url)
+        result = await client.execute(
+            command=command, base_url=relay_url, timeout=timeout
+        )
         ack = result.result_data
 
         if result.is_ok():
@@ -126,7 +149,10 @@ async def upload_to_relay(
             transport_error = None
             relay_status = ack.relay_status
             relay_message = ack.relay_message
-            if relay_status is None or relay_status < 500:
+            if relay_status is None or (
+                relay_status < 500
+                and relay_status not in _RETRYABLE_CLIENT_STATUSES
+            ):
                 return RelayUploadResult(
                     outcome=RelayUploadOutcome.REFUSED,
                     certificate=None,

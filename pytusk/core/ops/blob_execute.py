@@ -220,7 +220,14 @@ async def execute_registration_txn(
         raise RegistrationPendingError(
             digest=result.result_data.digest,
             object_id=object_id,
-            detail=f"{exc} {_RESUME_HINT}",
+            # _RESUME_HINT is NOT appended here. It is native-specific --
+            # it asserts no storage node holds the slivers and that the
+            # paid storage is stranded -- and this raise is reached by the
+            # relay pipeline too, which converts it into a RESUMABLE
+            # receipt carrying the digest and nonce needed to re-POST. The
+            # path-neutral guidance in RegistrationPendingError's own
+            # message (_RESUME_HINT_PENDING_READBACK) is correct for both.
+            detail=str(exc),
             stage="register_readback",
         ) from exc
 
@@ -465,26 +472,27 @@ async def execute_reserve_and_register(
             locate the created ``Blob`` in the effects (an assumption
             UNVERIFIED against a live node -- see that function's
             docstring), the error is re-raised (chained via ``from``) with
-            Tx1's transaction digest and :data:`_RESUME_HINT` appended. If
-            Tx1 SUCCEEDS, the created ``Blob``'s object ID IS found, and
-            checkpoint finality and the ``GetObject`` read-back both
-            succeed, but ``blob_deletable_and_end_epoch`` then raises
-            ``ValueError`` on a malformed/unexpected JSON view, the error
-            is re-raised (chained via ``from``) with Tx1's transaction
-            digest and the same hint.
+            Tx1's transaction digest and :data:`_RESUME_HINT` appended.
 
             Note that NONE of these ``RuntimeError`` cases are recoverable
             with ``tusky certify_blob`` -- see :data:`_RESUME_HINT`. This is
             unlike :class:`~pytusk.core.types.errors.RegistrationPendingError`
             below, which IS recoverable.
         RegistrationPendingError: If Tx1 succeeds on-chain but checkpoint
-            finality is not reached within ``finality_max_attempts``, or the
+            finality is not reached within ``finality_max_attempts``, the
             immediate read-back of the newly created ``Blob`` via
-            :class:`GetObject` fails. Unlike the ``RuntimeError`` cases
-            above, this IS transient and recoverable: ``digest`` and
-            ``object_id`` are valid and the pipeline can be resumed from
-            sliver upload onward without re-executing Tx1 -- see this
-            exception class's own docstring.
+            :class:`GetObject` fails, or ``blob_deletable_and_end_epoch``
+            raises ``ValueError`` on a malformed/unexpected JSON view of
+            that ``Blob``. Unlike the ``RuntimeError`` cases above, these
+            ARE recoverable: ``digest`` and ``object_id`` are valid and the
+            pipeline can be resumed from sliver upload onward without
+            re-executing Tx1 -- see this exception class's own docstring.
+
+            :data:`_RESUME_HINT` is deliberately NOT appended to any of
+            these. It is native-specific -- it asserts that no storage node
+            holds the slivers and that the paid storage is stranded -- and
+            the relay pipeline reaches these same raises, converting them
+            into a RESUMABLE receipt.
     """
     resolved_sender = sender or client.pysui_client.config.active_address
     resolved_payment_coin = await preflight_payment(

@@ -32,6 +32,7 @@ import asyncio
 import dataclasses
 import functools
 import time
+from collections.abc import Callable
 
 from pytusk.client.walrus_client import WalrusClient
 from pytusk.core.chain.committee import WalrusCommittee
@@ -73,6 +74,7 @@ from pytusk.core.types import (
     RelayUploadError,
     StageTimings,
     TipComposition,
+    TipQuote,
 )
 
 
@@ -440,6 +442,8 @@ async def store_blob_relay(
     max_tip: int | None = None,
     wal_payment_coin: str | None = None,
     max_upload_attempts: int = DEFAULT_MAX_UPLOAD_ATTEMPTS,
+    timeout: float | None = None,
+    on_quote: Callable[[TipQuote], None] | None = None,
 ) -> RelayBlobReceipt:
     """Store a blob through a Walrus upload relay, end to end.
 
@@ -506,6 +510,15 @@ async def store_blob_relay(
             is signed, submitted, or spent.
         wal_payment_coin: WAL coin funding storage. ``None`` auto-selects.
         max_upload_attempts: POST retry budget.
+        timeout: Per-attempt relay POST timeout, in seconds. ``None`` uses
+            the client's configured default, NOT "no timeout". Raise it
+            for a large blob: each retry re-sends the body from the
+            beginning, so a timeout below what the upload actually needs
+            spends the whole budget without ever completing.
+        on_quote: Called with the relay's quote once it has passed the
+            ``max_tip`` ceiling and before anything is composed, signed or
+            spent, so a caller can surface the price about to be paid.
+            Runs PRE-SPEND: nothing has been paid when it is invoked.
 
     Returns:
         A ``RelayBlobReceipt``. Inspect ``outcome`` -- reading ``blob_id``
@@ -571,6 +584,15 @@ async def store_blob_relay(
     # Pre-spend ceiling. Shared with tusky's simulate branch, which composes
     # Tx1 itself rather than calling this pipeline, so the two cannot drift.
     assert_tip_within_ceiling(quote=quote, max_tip=max_tip)
+
+    # Pre-spend visibility hook. It receives the SAME TipQuote that is about
+    # to be composed into Tx1 -- not a second fetch -- so what a caller shows
+    # a user cannot disagree with what actually gets signed. Nothing has been
+    # composed, signed, or spent at this point, so raising from the callback
+    # aborts cleanly and is the supported way to decline a quote that
+    # max_tip alone cannot express.
+    if on_quote is not None:
+        on_quote(quote)
 
     auth_package = build_auth_package(data=data) if quote.requires_payment else None
 
@@ -676,6 +698,7 @@ async def store_blob_relay(
         nonce=nonce,
         tip_paid=tip_paid,
         max_attempts=max_upload_attempts,
+        timeout=timeout,
     ).deliver(
         client=client,
         committee=committee,

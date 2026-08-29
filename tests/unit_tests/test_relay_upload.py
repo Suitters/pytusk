@@ -29,12 +29,14 @@ class _FakeRelayClient:
     def __init__(self, *, responses: list[SuiRpcResult]) -> None:
         self.responses = list(responses)
         self.calls: list[tuple[Any, str | None]] = []
+        self.timeouts: list[object] = []
 
     async def execute(
         self, *, command: Any, base_url: str | None = None, **kwargs: object
     ) -> SuiRpcResult:
         """Record the dispatch and return the next canned response."""
         self.calls.append((command, base_url))
+        self.timeouts.append(kwargs.get("timeout"))
         return self.responses[len(self.calls) - 1]
 
 
@@ -212,3 +214,43 @@ class TestUploadContract:
         client = _FakeRelayClient(responses=[])
         with pytest.raises(ValueError, match="max_attempts must be at least 1"):
             await _upload(client, max_attempts=0)
+
+
+class TestRetryableClientStatuses:
+    """408, 425 and 429 are the relay asking for another attempt.
+
+    They arrive as 4xx, which is otherwise a definitive refusal. Treating
+    them as terminal would abandon a registered, already-paid-for blob
+    over a timeout or a rate limit that clears on its own.
+    """
+
+    @pytest.mark.parametrize("status", [408, 425, 429])
+    async def test_retryable_client_status_is_retried(
+        self, no_sleep: list[float], status: int
+    ) -> None:
+        client = _FakeRelayClient(
+            responses=[_answered(status=status), _uploaded()]
+        )
+        result = await _upload(client)
+        assert result.outcome is RelayUploadOutcome.UPLOADED
+        assert len(client.calls) == 2
+
+class TestTimeoutPassThrough:
+    """The per-attempt timeout reaches the client on every attempt.
+
+    A retry re-sends the body from byte zero, so a POST that is merely
+    slow rather than broken must be given room to finish; without this
+    knob a large blob can burn the whole budget on timeouts alone.
+    """
+
+    async def test_timeout_is_forwarded_to_every_attempt(
+        self, no_sleep: list[float]
+    ) -> None:
+        client = _FakeRelayClient(responses=[_transport(), _uploaded()])
+        await _upload(client, timeout=900.0)
+        assert client.timeouts == [900.0, 900.0]
+
+    async def test_default_forwards_none(self, no_sleep: list[float]) -> None:
+        client = _FakeRelayClient(responses=[_uploaded()])
+        await _upload(client)
+        assert client.timeouts == [None]

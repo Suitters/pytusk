@@ -633,7 +633,8 @@ certify_blob
 Recover the confirmation-collection and ``certify_blob`` (Tx2) stages for
 a blob that is already registered on-chain (Tx1 succeeded) but not yet
 certified — the recovery counterpart to a partial ``store_blob_native``
-failure.
+failure, or to a ``store_blob_relay`` write that returned any outcome
+other than ``CERTIFIED``.
 
 .. code-block:: console
 
@@ -685,6 +686,111 @@ Example — resuming a blob whose sliver fan-out never ran:
        "total": null
      }
    }
+
+Upload Relay (pysui PTB + Relay HTTP)
+--------------------------------------------
+
+These two commands implement pytusk's upload-relay write path. A relay
+performs the sliver fan-out that ``store_blob_native`` does on the client,
+in exchange for a tip paid on-chain in the same transaction that registers
+the blob. The blob is still encoded locally on either path -- that is how
+the blob id the registration needs is derived. This is the practical path for Mainnet
+writes, where no public publisher exists. See :doc:`configuration` for
+managing the relays a network knows about, and :doc:`transactions` for the
+underlying PTB composition.
+
+relay_configs
+~~~~~~~~~~~~~
+
+List the relays configured for the active network and what each would
+charge to upload a blob of a given size. Informational only — nothing is
+composed, signed, or spent.
+
+.. code-block:: console
+
+   tusky relay_configs (--size BYTES | --file PATH | --content TEXT)
+
+``--size`` / ``--file`` / ``--content``
+   Mutually exclusive, one required — three ways of stating how large the
+   hypothetical upload is. ``--file`` is measured with ``os.path.getsize``
+   and never read, since pricing a hypothetical upload needs no bytes.
+   ``--content`` is measured as its UTF-8 encoded byte length rather than
+   its character count, so a non-ASCII string is not under-priced.
+
+Every configured relay is queried concurrently, and the network's active
+relay is marked with ``*``. A relay that fails to answer is reported
+alongside the ones that did, rather than aborting the command.
+
+store_blob_relay
+~~~~~~~~~~~~~~~~
+
+Store a blob through an upload relay: tip + ``reserve_space`` +
+``register_blob`` (Tx1), a POST of the raw blob bytes to the relay, then
+``certify_blob`` (Tx2) using the confirmation certificate the relay
+returns.
+
+.. code-block:: console
+
+   tusky store_blob_relay (--content TEXT | --file PATH) --epochs N
+                           [--permanent] [--relay NAME]
+                           [--tip-source from_gas|COIN_ID] [--max-tip MIST]
+                           [--timeout SECONDS]
+                           [--recipient ADDRESS] [--full-json]
+                           [--sender ADDRESS] [--sponsor ADDRESS]
+                           [--mode simulate|execute]
+
+``--relay``
+   Name of the relay to use. Defaults to the network's active relay; if
+   neither an explicit name nor an active relay resolves, the command
+   errors naming the relays available on that network.
+
+``--tip-source``
+   ``from_gas`` (default) splits the tip from whichever party funds the
+   transaction — the sponsor when one is given, otherwise the sender. An
+   explicit coin object ID is verified against sender/sponsor ownership
+   before anything is composed.
+
+``--max-tip``
+   Refuse the write when the relay's quote exceeds this many MIST. Checked
+   BEFORE any PTB is built, so nothing is signed or spent when it trips.
+   Leaving it unset applies no ceiling — that is a deliberate no-op, not a
+   failure — but the quoted tip is printed before Tx1 is composed either
+   way, so an unexpected figure is visible rather than silent.
+
+``--timeout``
+   Per-attempt timeout for the POST to the relay, in seconds. Every retry
+   re-sends the blob from the beginning, so a large blob over a slow link
+   can spend the whole retry budget on timeouts without ever finishing;
+   raise this when that is a risk. Leaving it unset uses the client's
+   configured timeout, which is a real bound, not "no timeout".
+
+``--mode``
+   ``simulate`` (default) or ``execute``. Simulate covers **Tx1 only** —
+   the tip and the registration — and that is the most it can cover. The
+   POST to the relay is a real network write against a tip that has to have
+   been genuinely paid, and Tx2 cannot be composed at all until the relay
+   has returned a certificate that does not yet exist. So a clean simulate
+   is not a promise that the upload or the certification will succeed; it
+   prices the transaction you are about to sign. Unlike
+   ``store_blob_native``, though, simulate here does include the tip cost,
+   because the tip is composed into the very transaction being simulated.
+
+In ``execute`` mode the relay's quoted tip and the Sui address it will be
+paid to are printed before Tx1 is composed, so the figure is visible before
+anything is signed. The full receipt is then printed as JSON *before* the
+outcome is inspected, and the command then exits non-zero for any outcome other than
+``CERTIFIED``. A ``RESUMABLE`` receipt's transaction digest and nonce are
+therefore always on stdout rather than being swallowed by the non-zero exit
+— see ``certify_blob`` above for resuming from that state.
+
+.. warning::
+
+   A relay enforces a maximum request-body size, in practice about 1 GiB,
+   that it does not advertise anywhere. No tip-configuration field reports
+   it, and ``--mode simulate`` will happily price a blob the relay will
+   later refuse. Keep relay writes under roughly 1 GiB, and use
+   ``store_blob_native`` for anything larger.
+
 
 Storage Management (pysui PTB)
 -------------------------------

@@ -30,6 +30,14 @@ from pytusk.core.types import (
 
 _RELAY_URL = "https://relay.example"
 
+_BLOB_OBJECT_ID = "0x" + "ab" * 32
+"""Object id of the registered blob.
+
+A real Sui object id, not a placeholder: the deletable relay path decodes
+it to raw bytes to rebuild the confirmation message, so a non-hex stand-in
+fails inside the decoder rather than at the assertion under test.
+"""
+
 
 class _FakeTusk:
     """PytuskConfiguration stub."""
@@ -196,7 +204,7 @@ def rec(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
     async def _exec_reg(**kwargs: Any) -> types.SimpleNamespace:
         recorder.order.append("exec_reg")
         return types.SimpleNamespace(
-            object_id="0xblob",
+            object_id=_BLOB_OBJECT_ID,
             blob_id=b"\x01" * 32,
             end_epoch=42,
             # Mirrors the real read-back rather than hard-coding False. The
@@ -241,7 +249,7 @@ def rec(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
         recorder.order.append("certify")
         recorder.certify.append(kwargs)
         return types.SimpleNamespace(
-            object_id="0xblob", blob_id=b"", certified=True, digest="0xtx2"
+            object_id=_BLOB_OBJECT_ID, blob_id=b"", certified=True, digest="0xtx2"
         )
 
     async def _resolve_pkg(**kwargs: Any) -> str:
@@ -482,7 +490,7 @@ class TestRegistrationPendingErrorConvertedToReceipt:
         async def _pending(**kwargs: Any) -> None:
             raise RegistrationPendingError(
                 digest="0xtx1",
-                object_id="0xblob",
+                object_id=_BLOB_OBJECT_ID,
                 detail="boom",
                 stage=stage,
             )
@@ -501,7 +509,7 @@ class TestRegistrationPendingErrorConvertedToReceipt:
         assert receipt.certified is False
         assert receipt.failed_stage == "register_finality"
         assert receipt.register_tx_digest == "0xtx1"
-        assert receipt.object_id == "0xblob"
+        assert receipt.object_id == _BLOB_OBJECT_ID
         assert receipt.end_epoch is None
 
     async def test_register_readback_stage_is_resumable(
@@ -515,7 +523,7 @@ class TestRegistrationPendingErrorConvertedToReceipt:
         assert receipt.certified is False
         assert receipt.failed_stage == "register_readback"
         assert receipt.register_tx_digest == "0xtx1"
-        assert receipt.object_id == "0xblob"
+        assert receipt.object_id == _BLOB_OBJECT_ID
         assert receipt.end_epoch is None
 
 
@@ -560,7 +568,7 @@ class TestCertifyFailure:
         client = _FakeClient()
         receipt = await store_blob_relay(client=client, data=b"x", epochs=1)
         assert receipt.outcome is RelayOutcome.RESUMABLE
-        assert receipt.object_id == "0xblob"
+        assert receipt.object_id == _BLOB_OBJECT_ID
 
 
 class TestDeletable:
@@ -575,7 +583,7 @@ class TestDeletable:
     async def test_deletable_sends_object_id(self, rec: _Recorder) -> None:
         client = _FakeClient()
         await store_blob_relay(client=client, data=b"x", epochs=1, deletable=True)
-        assert rec.upload[0]["deletable_blob_object"] == "0xblob"
+        assert rec.upload[0]["deletable_blob_object"] == _BLOB_OBJECT_ID
 
     async def test_permanent_sends_none(self, rec: _Recorder) -> None:
         client = _FakeClient()
@@ -660,3 +668,23 @@ class TestMaxTip:
         )
         assert receipt.outcome is RelayOutcome.CERTIFIED
         assert receipt.tip_paid is False
+
+
+class TestUploadTimeout:
+    """The per-attempt timeout reaches upload_to_relay from the pipeline.
+
+    A knob the caller cannot reach is not a knob: this asserts the value
+    survives store_blob_relay -> RelayDelivery -> upload_to_relay.
+    """
+
+    async def test_timeout_is_forwarded(self, rec: _Recorder) -> None:
+        client = _FakeClient()
+        await store_blob_relay(
+            client=client, data=b"x", epochs=1, timeout=900.0
+        )
+        assert rec.upload[0]["timeout"] == 900.0
+
+    async def test_default_timeout_is_none(self, rec: _Recorder) -> None:
+        client = _FakeClient()
+        await store_blob_relay(client=client, data=b"x", epochs=1)
+        assert rec.upload[0]["timeout"] is None

@@ -186,7 +186,7 @@ class _FakeParityClient:
         self._get_object_response = get_object_response
         self.txns: list[_RecordingComposeTxn] = []
 
-    async def __aenter__(self) -> "_FakeParityClient":
+    async def __aenter__(self) -> "_FakeParityClient":  # noqa: PYI034 -- typing.Self is 3.11+ only (project targets >=3.10.6)
         """Enter the fake client's async context, returning itself."""
         return self
 

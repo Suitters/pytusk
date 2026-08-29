@@ -10,6 +10,7 @@ import enum
 import shutil
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from dataclasses_json import DataClassJsonMixin
 from pysui import PysuiConfiguration
@@ -97,6 +98,36 @@ class RelayConfig(DataClassJsonMixin):
     def __post_init__(self) -> None:
         if not self.relay_name:
             raise ValueError("RelayConfig.relay_name must not be empty.")
+        if not self.relay_url:
+            raise ValueError(
+                f"RelayConfig.relay_url must not be empty (relay '{self.relay_name}')."
+            )
+        parsed = urlparse(self.relay_url)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(
+                f"RelayConfig.relay_url for '{self.relay_name}' is not an "
+                f"absolute URL: {self.relay_url!r}"
+            )
+        if parsed.scheme not in ("https", "http"):
+            raise ValueError(
+                f"RelayConfig.relay_url for '{self.relay_name}' must use https, "
+                f"got scheme {parsed.scheme!r}"
+            )
+        if parsed.scheme == "http" and parsed.hostname not in (
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        ):
+            # GET /v1/tip-config returns the Sui ADDRESS the tip is paid to.
+            # Over plaintext an on-path attacker substitutes that address and
+            # the tip is transferred to them, so http is refused outright
+            # except against a loopback host used for local testing.
+            raise ValueError(
+                f"RelayConfig.relay_url for '{self.relay_name}' must use https: "
+                "the tip destination address is fetched over this URL, so a "
+                "plaintext connection lets an on-path attacker redirect the "
+                "tip. http is permitted only for localhost."
+            )
 
 
 @dataclasses.dataclass

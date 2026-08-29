@@ -56,6 +56,7 @@ import typing
 from pytusk.client.walrus_client import WalrusClient
 from pytusk.core.certification import Certificate
 from pytusk.core.chain.committee import WalrusCommittee
+from pytusk.core.encoding import object_id_to_raw_bytes
 from pytusk.core.encoding.redstuff import EncodedBlob
 from pytusk.core.native_upload.confirm import collect_confirmations
 from pytusk.core.native_upload.fanout import upload_slivers
@@ -383,12 +384,17 @@ class RelayDelivery:
         tip_paid (bool): Whether Tx1 carried a tip. When ``False``, no
             ``tx_id`` is sent, which is valid only against a ``no_tip`` relay.
         max_attempts (int): POST attempt budget, at least 1.
+        timeout (float | None): Per-attempt request timeout, in seconds.
+            ``None`` uses the client's configured default, NOT "no
+            timeout". Every retry re-sends the body from the beginning,
+            so a large blob on a slow link needs this raised.
     """
 
     relay_url: str
     nonce: str | None = None
     tip_paid: bool = False
     max_attempts: int = DEFAULT_MAX_UPLOAD_ATTEMPTS
+    timeout: float | None = None
 
     async def deliver(
         self,
@@ -428,6 +434,7 @@ class RelayDelivery:
             data=data,
             register_tip_tx_digest=registration.digest if self.tip_paid else None,
             nonce=self.nonce,
+            timeout=self.timeout,
             deletable_blob_object=(
                 registration.object_id if registration.deletable else None
             ),
@@ -449,7 +456,14 @@ class RelayDelivery:
 
         try:
             certificate = parse_relay_certificate(
-                payload=upload.certificate, committee=committee
+                payload=upload.certificate,
+                committee=committee,
+                blob_id=encoded.blob_id,
+                object_id=(
+                    object_id_to_raw_bytes(object_id=registration.object_id)
+                    if registration.deletable
+                    else None
+                ),
             )
         except RelayCertificateParseError as exc:
             # The POST succeeded, so the tip is spent and the blob is with

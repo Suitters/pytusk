@@ -743,6 +743,238 @@ re-fetching the committee and redoing confirmation collection themselves;
 already retries this automatically, which is the main reason to prefer
 the convenience path when you don't need to interleave custom move_calls.
 
+Upload Relay
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+An upload relay stages the same on-chain work as a native upload — Tx1
+(``reserve_space`` + ``register_blob``), then Tx2 (``certify_blob``) — but
+delegates the off-chain half. ``pytusk`` still encodes the blob locally, to
+derive the blob id and root hash the registration needs, but instead of
+fanning slivers out to the committee yourself you POST the raw blob bytes
+and the relay does that, returning a signed confirmation certificate.
+The relay is paid a tip, composed into the SAME transaction as the
+registration. See :doc:`intro` for choosing between the three write paths,
+and :doc:`configuration` for configuring which relays a network knows about.
+
+The highest-level entry point runs the whole pipeline in one call:
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import (
+        PytuskConfiguration,
+        RelayOutcome,
+        WalrusClient,
+        store_blob_relay,
+    )
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            receipt = await store_blob_relay(
+                client=client,
+                data=b"hello walrus",
+                epochs=5,
+                deletable=True,
+                sender=sender,
+                max_tip=1_000_000,
+                # Per-attempt cap on the POST to the relay. Unset uses the
+                # client's configured timeout; raise it for a large blob,
+                # because every retry re-sends the body from the start.
+                timeout=900.0,
+            )
+            if receipt.outcome is RelayOutcome.CERTIFIED:
+                print(receipt.blob_id, receipt.object_id)
+            else:
+                print(receipt.outcome)
+
+    asyncio.run(main())
+
+``store_blob_relay()`` orchestrates, in order: a sponsor pre-flight, a tip
+quote, the ``max_tip`` ceiling check, the ``on_quote`` callback, a payment
+pre-flight, Tx1 (tip +
+``reserve_space`` + ``register_blob``), the POST to the relay, parsing the
+returned certificate, and Tx2 (``certify_blob``). Everything that can refuse
+the write does so BEFORE anything is spent: an unsignable sponsor, an
+unusable tip coin, and a quote above ``max_tip`` all raise — the last as
+:py:class:`~pytusk.TipCeilingExceededError` — before a PTB is built.
+
+``on_quote`` is an optional callback invoked with the
+:py:class:`~pytusk.TipQuote` immediately after the ceiling check and before
+any PTB is composed. It receives the same quote that is composed into Tx1
+rather than a second, separately fetched one, so a figure shown to a user
+cannot disagree with what actually gets signed. Raising from it aborts the
+write cleanly, since nothing has been spent at that point — which makes it
+the place to put a confirmation prompt, or any refusal rule that ``max_tip``
+alone cannot express.
+
+.. code-block:: python
+
+    def show_tip(quote):
+        if quote.requires_payment:
+            print(f"tip: {quote.amount} MIST to {quote.address}")
+
+    receipt = await store_blob_relay(
+        client=client,
+        data=data,
+        epochs=5,
+        on_quote=show_tip,
+    )
+
+After Tx1 succeeds, failures are RETURNED rather than raised. The result is
+a :py:class:`~pytusk.RelayBlobReceipt` whose
+:py:class:`~pytusk.RelayOutcome` is one of ``CERTIFIED``, ``RESUMABLE``,
+``REJECTED`` or ``NOT_STARTED``. Branch on ``outcome`` — never on whether a
+certificate happens to be present. A ``RESUMABLE`` receipt carries the
+digest and nonce needed to retry, and retrying is free: the relay applies no
+replay protection, so re-submitting the same transaction digest and nonce
+costs nothing beyond the tip already paid. ``tusky certify_blob``
+(:doc:`tusky`) recovers the same state from the CLI.
+
+.. warning::
+
+   A relay enforces a maximum request-body size — in practice about 1 GiB —
+   that it does not advertise: no field in the tip configuration reports it
+   and no endpoint exposes it. ``pytusk`` therefore applies no client-side
+   guard, and a simulate run will price a blob the relay will later refuse.
+   Treat roughly 1 GiB as the practical ceiling for a relay write and use
+   native upload for anything larger.
+
+Composing the Relay Write by Hand
+''''''''''''''''''''''''''''''''''''''
+
+:py:func:`~pytusk.store_blob_relay` builds, signs, and submits both
+transactions for you. An SDK developer who needs to own the transactions —
+to choose sender and sponsor per transaction, or interleave their own
+``move_call`` commands — can compose the same stages from the public
+building blocks.
+
+The one hard rule: **the tip must be the first thing added to Tx1.** The
+relay locates the authentication package by a positional read of PTB input
+0, so anything registered ahead of it makes the relay reject the upload.
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import (
+        PytuskConfiguration,
+        WalrusClient,
+        add_tip,
+        assert_tip_within_ceiling,
+        build_auth_package,
+        parse_relay_certificate,
+        quote_tip,
+        upload_to_relay,
+    )
+
+    async def main():
+        config = PytuskConfiguration(active_network="testnet")
+        data = b"hello walrus"
+
+        async with WalrusClient(pytusk_config=config) as client:
+            relay_url = config.relay_url_for(network_name="testnet")
+            committee = await client.committee()
+
+            # Price this exact upload. A tip formula can depend on
+            # encoded size, so the same relay charges differently for
+            # different blobs -- there is no per-relay flat rate to cache.
+            quote = await quote_tip(
+                client=client,
+                relay_url=relay_url,
+                unencoded_length=len(data),
+                n_shards=committee.n_shards,
+            )
+
+            # Refuse an over-budget quote here, while refusing still costs
+            # nothing. Past Tx1 the tip is spent whatever happens next.
+            assert_tip_within_ceiling(quote=quote, max_tip=1_000_000)
+
+            # Bind the tip to THIS blob. Each call mints a fresh 32-byte
+            # nonce, which is what distinguishes one attempt from another.
+            # Resuming an interrupted upload must reuse the package built
+            # here rather than build a second one, or the tip already paid
+            # stops matching the upload the relay is asked to honour.
+            auth = build_auth_package(data=data)
+
+            # Compose Tx1 -- and add the tip BEFORE anything else. The relay
+            # reads the authentication package out of PTB input 0 by
+            # position, so any command registered ahead of it shifts the
+            # package and the relay rejects the upload.
+            txn = await client.transaction()
+            await add_tip(
+                txn=txn,
+                relay_address=quote.address,
+                tip_amount=quote.amount,
+                auth_package=auth,
+            )
+
+            # Add the registration commands, then sign and submit Tx1 however
+            # you like -- owning this step is the point of composing by hand.
+            # Two of its results are needed below: the blob_id that
+            # registration derived, and the digest of the transaction that
+            # paid the tip.
+            blob_id, tx1_digest = await register_and_submit_tx1(txn)
+
+            # Hand the relay the raw bytes. It re-encodes them itself and
+            # fans the slivers out to the committee; the digest is what
+            # proves the tip was actually paid.
+            result = await upload_to_relay(
+                client=client,
+                relay_url=relay_url,
+                blob_id=blob_id,
+                data=data,
+                register_tip_tx_digest=tx1_digest,
+                # Same per-attempt cap the one-call pipeline exposes; the
+                # retry budget is spent here, not by the caller.
+                timeout=900.0,
+            )
+
+            # The certificate arrives as raw JSON whose three parts are each
+            # encoded differently. Parsing is a separate step so a decoding
+            # problem reports as one, instead of resurfacing later as what
+            # looks like a corrupt signature.
+            #
+            # ``blob_id`` and ``object_id`` are not decoration: the parser
+            # rebuilds the confirmation message and rejects a certificate
+            # that confirms some OTHER blob -- one that would verify locally
+            # and then abort inside Move with the tip already spent. Pass
+            # ``object_id=None`` for a permanent blob; for a deletable one
+            # pass the registered ``Blob`` object id as raw bytes, via
+            # ``object_id_to_raw_bytes``.
+            certificate = parse_relay_certificate(
+                payload=result.certificate,
+                committee=committee,
+                blob_id=blob_id,
+                object_id=None,
+            )
+
+            # Certify in Tx2. From here the relay path and the native path
+            # are identical -- see Composing Tx1/Tx2 by Hand above.
+
+    asyncio.run(main())
+
+``register_and_submit_tx1`` above stands in for your own Tx1 handling —
+adding the registration commands, choosing signers, and submitting — since
+that is exactly the part a hand-composed write exists to control. See
+``Composing Tx1/Tx2 by Hand`` for the native equivalent.
+
+``upload_to_relay`` reports rather than raises, exactly as the encapsulated
+pipeline does: branch on ``result.outcome`` (``UPLOADED``, ``UNANSWERED`` or
+``REFUSED``), not on whether ``result.certificate`` is set. Parsing is a
+separate step because the relay encodes the certificate's three parts
+inconsistently — committee positions as a JSON integer array, the message as
+a plain integer array, and only the signature as base64 — and
+``parse_relay_certificate`` is what reconciles that against the committee.
+
+Use the convenience path unless you need to interleave custom ``move_call``
+commands or control signing per transaction.
+
+
 Burning a Blob
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

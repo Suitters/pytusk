@@ -30,6 +30,7 @@ from pytusk import (
     RelayStageTimings,
     RelayUploadError,
     TipComposition,
+    TipQuote,
     WalrusClient,
     add_registration_sequence,
     assert_tip_within_ceiling,
@@ -50,6 +51,23 @@ from pytusk.tusky.tusky_cmds_common import (
     submit,
     walrus_package_id,
 )
+
+
+def _print_tip_quote(quote: TipQuote) -> None:
+    """Show what the relay will charge, before Tx1 is composed.
+
+    Passed to store_blob_relay as its on_quote hook rather than quoting
+    separately here: the figure printed is then the one actually composed
+    into Tx1, so a relay that changes its price cannot leave the user
+    having approved a number different from the one they signed.
+
+    Args:
+        quote (TipQuote): The relay's quote for this specific upload.
+    """
+    if not quote.requires_payment:
+        print("Relay tip: none required by this relay.")
+        return
+    print(f"Relay tip: {quote.amount} MIST to {quote.address}")
 
 
 def _priced_size(*, args: argparse.Namespace) -> int:
@@ -212,6 +230,8 @@ async def store_blob_relay(args: argparse.Namespace) -> None:
                     recipient=args.recipient,
                     tip_source=args.tip_source,
                     max_tip=args.max_tip,
+                    timeout=args.timeout,
+                    on_quote=_print_tip_quote,
                 )
             except BlobTooLargeError as exc:
                 print(f"Error in encode: {exc}", file=sys.stderr)

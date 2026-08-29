@@ -59,6 +59,7 @@ from pytusk.config.tusk_config import (
     NetworkType,
     PytuskConfigModel,
     PytuskConfiguration,
+    RelayConfig,
     WalrusNetworkConfig,
 )
 
@@ -156,6 +157,7 @@ from pytusk.core.ops import (
     add_reserve_and_register,
     add_split_by_epoch,
     add_split_by_size,
+    add_tip,
     execute_certify,
     execute_destroy_storage,
     execute_fuse,
@@ -183,6 +185,7 @@ from pytusk.core.pipelines import store_blob_native, store_blob_relay
 # Relay upload orchestration (tip quoting/payment, relay POST, confirmation
 # certificate, thin end-to-end compose)
 from pytusk.core.relay_upload import (
+    DEFAULT_MAX_UPLOAD_ATTEMPTS,
     RelayBlobReceipt,
     RelayCertificateParseError,
     RelayCertifyTransactionError,
@@ -194,17 +197,29 @@ from pytusk.core.relay_upload import (
     TipPaymentError,
     assert_tip_within_ceiling,
     build_auth_package,
+    parse_relay_certificate,
     quote_tip,
+    upload_to_relay,
 )
 from pytusk.core.types import (
+    FROM_GAS,
+    AuthPackage,
     CertifyResult,
+    ConstTip,
+    LinearTip,
     Registration,
     RegistrationPendingError,
+    RelayUploadOutcome,
+    RelayUploadResult,
     SplitResult,
     StageTimingsProtocol,
     StorageObject,
     StorageOpResult,
     TipComposition,
+    TipConfig,
+    TipKind,
+    TipQuote,
+    TipResult,
     UploadReceipt,
 )
 from pytusk.version import __version__
@@ -229,6 +244,7 @@ __all__ = [  # noqa: RUF022
     # Configuration
     "NetworkType",
     "WalrusNetworkConfig",
+    "RelayConfig",
     "PytuskConfigModel",
     "PytuskConfiguration",
     # Client
@@ -373,10 +389,24 @@ __all__ = [  # noqa: RUF022
     "TipComposition",
     "TipConfigError",
     "TipPaymentError",
+    "add_tip",
+    "AuthPackage",
+    "ConstTip",
+    "DEFAULT_MAX_UPLOAD_ATTEMPTS",
+    "FROM_GAS",
+    "LinearTip",
+    "RelayUploadOutcome",
+    "RelayUploadResult",
+    "TipConfig",
+    "TipKind",
+    "TipQuote",
+    "TipResult",
     "assert_tip_within_ceiling",
     "build_auth_package",
+    "parse_relay_certificate",
     "quote_tip",
     "store_blob_relay",
+    "upload_to_relay",
     # Receipt protocols
     "StageTimingsProtocol",
     "UploadReceipt",

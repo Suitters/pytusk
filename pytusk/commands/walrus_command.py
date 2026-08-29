@@ -51,6 +51,14 @@ def _response_body_for_log(*, response: httpx.Response) -> str:
         body = response.text
     except Exception:  # noqa: BLE001 - logging must never raise
         body = repr(response.content)
+    # The body is written by an UNTRUSTED server and this string reaches a
+    # terminal. ANSI escape sequences start with ESC (0x1b), so without
+    # this a hostile server could clear the screen and forge output around
+    # the diagnostic. Tab and newline are kept -- they carry real structure
+    # in a JSON or HTML error body and neither moves the cursor.
+    body = "".join(
+        char if char in "\t\n" or char.isprintable() else " " for char in body
+    )
     if len(body) > _MAX_ERROR_BODY_CHARS:
         body = f"{body[:_MAX_ERROR_BODY_CHARS]}...[truncated]"
     return body

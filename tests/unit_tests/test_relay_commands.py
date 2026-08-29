@@ -15,12 +15,22 @@ from pytusk.commands.relay_commands import (
     GetTipConfig,
     RelayUploadAck,
     UploadRelayBlob,
+    _parse_tip_kind,
+    _tip_address,
 )
 from pytusk.core.types import (
     ConstTip,
     LinearTip,
     RelayUploadOutcome,
 )
+
+_RELAY_ADDRESS = "0x" + "ab" * 32
+"""Tip destination used by the fixtures.
+
+A real Sui address, not a placeholder: ``_tip_address`` rejects malformed
+input, so a stand-in like ``"0xr"`` fails address validation before a test
+can reach the tip-kind assertion it was written for.
+"""
 
 
 class TestGetTipConfig:
@@ -44,11 +54,11 @@ class TestGetTipConfig:
 
     def test_parses_const_tip(self) -> None:
         response = httpx.Response(
-            200, json={"send_tip": {"address": "0xr", "kind": {"const": 31415}}}
+            200, json={"send_tip": {"address": _RELAY_ADDRESS, "kind": {"const": 31415}}}
         )
         result = GetTipConfig().parse_response(response)
         assert result.is_ok()
-        assert result.result_data.address == "0xr"
+        assert result.result_data.address == _RELAY_ADDRESS
         assert result.result_data.kind == ConstTip(amount=31415)
         assert result.result_data.requires_payment is True
 
@@ -57,7 +67,7 @@ class TestGetTipConfig:
             200,
             json={
                 "send_tip": {
-                    "address": "0xr",
+                    "address": _RELAY_ADDRESS,
                     "kind": {"linear": {"base": 101, "encoded_size_mul_per_kib": 42}},
                 }
             },
@@ -70,7 +80,7 @@ class TestGetTipConfig:
 
     def test_unknown_kind_is_error(self) -> None:
         response = httpx.Response(
-            200, json={"send_tip": {"address": "0xr", "kind": {"quadratic": 3}}}
+            200, json={"send_tip": {"address": _RELAY_ADDRESS, "kind": {"quadratic": 3}}}
         )
         result = GetTipConfig().parse_response(response)
         assert result.is_err()
@@ -78,7 +88,7 @@ class TestGetTipConfig:
 
     def test_missing_linear_field_is_error(self) -> None:
         response = httpx.Response(
-            200, json={"send_tip": {"address": "0xr", "kind": {"linear": {"base": 1}}}}
+            200, json={"send_tip": {"address": _RELAY_ADDRESS, "kind": {"linear": {"base": 1}}}}
         )
         result = GetTipConfig().parse_response(response)
         assert result.is_err()
@@ -210,3 +220,106 @@ class TestRelayRoleDispatch:
                 headers=None,
                 base_url=None,
             )
+
+
+class TestUploadRelayBlobNonJsonBody:
+    """A 2xx body that is not JSON at all is refused, never raised."""
+
+    def test_non_json_body_is_refused_not_raised(self) -> None:
+        """This branch runs POST-SPEND, so it must not raise.
+
+        By the time the relay answers, the tip is paid and the blob is
+        registered. An HTML error page from a proxy or CDN carrying a 2xx
+        must come back as a REFUSED ack; raising here would destroy the
+        nonce the caller needs in order to resume.
+        """
+        body = "<html>bad gateway</html>"
+        response = httpx.Response(200, text=body)
+        result = UploadRelayBlob(blob_id="bid", data=b"x").parse_response(response)
+        assert not result.is_ok()
+        ack = result.result_data
+        assert isinstance(ack, RelayUploadAck)
+        assert ack.outcome is RelayUploadOutcome.REFUSED
+        assert ack.relay_status == 200
+        assert ack.relay_message == body
+        assert ack.confirmation_certificate is None
+
+
+class TestTipAmountValidation:
+    """A tip amount is a wire ``u64``; bool and negative are not tips.
+
+    Neither tip dataclass validates its own fields, so a bad amount that
+    gets past the parser is a bad amount the caller is asked to pay.
+    """
+
+    def test_bool_const_amount_rejected(self) -> None:
+        """``bool`` subclasses ``int``, so JSON ``true`` would tip 1 MIST."""
+        with pytest.raises(ValueError, match="const tip amount must be an integer"):
+            _parse_tip_kind(payload={"const": True})
+
+    def test_negative_const_amount_rejected(self) -> None:
+        with pytest.raises(
+            ValueError, match="const tip amount must not be negative"
+        ):
+            _parse_tip_kind(payload={"const": -1})
+
+    def test_zero_const_amount_is_valid(self) -> None:
+        assert _parse_tip_kind(payload={"const": 0}) == ConstTip(amount=0)
+
+    def test_bool_linear_base_rejected(self) -> None:
+        with pytest.raises(ValueError, match="linear tip base must be an integer"):
+            _parse_tip_kind(
+                payload={"linear": {"base": False, "encoded_size_mul_per_kib": 1}}
+            )
+
+    def test_non_integer_linear_base_rejected(self) -> None:
+        with pytest.raises(ValueError, match="linear tip base must be an integer"):
+            _parse_tip_kind(
+                payload={"linear": {"base": "10", "encoded_size_mul_per_kib": 1}}
+            )
+
+    def test_negative_linear_multiplier_rejected(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="linear tip encoded_size_mul_per_kib must not be negative",
+        ):
+            _parse_tip_kind(
+                payload={"linear": {"base": 1, "encoded_size_mul_per_kib": -5}}
+            )
+
+
+class TestTipAddressValidation:
+    """The tip destination is validated the way the amount is.
+
+    A malformed address costs nothing directly -- the relay names its own
+    payee -- but it must fail as a bad tip config, pre-spend, rather than
+    as an opaque error from inside PTB composition.
+    """
+
+    def test_non_string_rejected(self) -> None:
+        with pytest.raises(ValueError, match="must be a string"):
+            _tip_address(value=12345)
+
+    def test_missing_prefix_rejected(self) -> None:
+        with pytest.raises(ValueError, match="must be 0x-prefixed"):
+            _tip_address(value="ab" * 32)
+
+    def test_empty_body_rejected(self) -> None:
+        with pytest.raises(ValueError, match="is not a Sui address"):
+            _tip_address(value="0x")
+
+    def test_over_long_rejected(self) -> None:
+        with pytest.raises(ValueError, match="is not a Sui address"):
+            _tip_address(value="0x" + "ab" * 33)
+
+    def test_non_hex_rejected(self) -> None:
+        with pytest.raises(ValueError, match="is not valid hex"):
+            _tip_address(value="0x" + "zz" * 32)
+
+    def test_canonical_address_accepted(self) -> None:
+        address = "0x" + "ab" * 32
+        assert _tip_address(value=address) == address
+
+    def test_shortened_address_accepted(self) -> None:
+        """Leading zeroes may be omitted, so short forms are still valid."""
+        assert _tip_address(value="0x2") == "0x2"
