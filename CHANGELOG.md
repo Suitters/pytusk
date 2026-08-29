@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added relay blob support
+- Updated tusky CLI to include relay blob commands
+
 ### Fixed
 
 ### Changed
@@ -21,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Relay certify failures raise `RelayCertifyTransactionError` rather than the native-named `CertifyTransactionError`
 - Fixed undefined `RelayUploadOutcome` in relay upload
 - Relay pipeline, relay commands, receipt protocols and chain/ops helpers now exported from `pytusk`
+- Updated readthedocs coverage
 
 ### Removed
 
