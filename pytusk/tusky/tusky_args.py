@@ -659,6 +659,129 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_signing_args(p_store_blob_relay)
     _add_config_args(p_store_blob_relay)
 
+    p_store_quilt_relay = subparsers.add_parser(
+        "store_quilt_relay",
+        help="Store several files as one quilt through a Walrus upload relay.",
+        description=(
+            "Store a batch of named files as a single quilt via a Walrus "
+            "upload relay (reserve_space+register_blob bundled with the relay "
+            "tip in one transaction, relay upload, certify_blob). The whole "
+            "batch costs one registration and one certification rather than "
+            "one each."
+        ),
+    )
+    p_store_quilt_relay.add_argument(
+        "--paths",
+        dest="paths",
+        nargs="*",
+        default=[],
+        metavar="PATH",
+        help=(
+            "File paths to include in the quilt (shell-expandable, e.g. "
+            "*.py); the patch key for each is derived from its filename."
+        ),
+    )
+    p_store_quilt_relay.add_argument(
+        "--patch-file",
+        dest="patch_file",
+        action="append",
+        default=[],
+        type=_key_value_pair,
+        metavar="KEY=PATH",
+        help=(
+            "Patch key and file path for a quilt member, in KEY=PATH form (repeatable)."
+        ),
+    )
+    p_store_quilt_relay.add_argument(
+        "--patch-content",
+        dest="patch_content",
+        action="append",
+        default=[],
+        type=_key_value_pair,
+        metavar="KEY=TEXT",
+        help=(
+            "Patch key and inline UTF-8 text content for a quilt member, in "
+            "KEY=TEXT form (repeatable)."
+        ),
+    )
+    p_store_quilt_relay.add_argument(
+        "--epochs",
+        action=ValidatePositive,
+        required=True,
+        help=(
+            "Number of epochs to store the quilt for, counted from now "
+            "(a duration, not an absolute epoch number)."
+        ),
+    )
+    p_store_quilt_relay.add_argument(
+        "--permanent",
+        action="store_true",
+        help="Store as a permanent quilt (cannot be deleted before expiry).",
+    )
+    p_store_quilt_relay.add_argument(
+        "--relay",
+        dest="relay",
+        default=None,
+        help=(
+            "Name of the upload relay to use (default: the active network's "
+            "active_relay)."
+        ),
+    )
+    p_store_quilt_relay.add_argument(
+        "--tip-gas-source",
+        dest="tip_gas_source",
+        default="from_gas",
+        help=(
+            "Where the relay tip is paid from: 'from_gas', meaning whoever "
+            "funds the transaction pays (the sponsor if given, otherwise the "
+            "sender), or a SUI coin object id to split the tip from "
+            "(default: from_gas)."
+        ),
+    )
+    p_store_quilt_relay.add_argument(
+        "--max-tip",
+        dest="max_tip",
+        type=int,
+        default=None,
+        help=(
+            "Refuse to proceed if the relay's quoted tip exceeds this many "
+            "MIST. Checked before anything is composed, signed, or spent -- "
+            "no transaction is submitted. Default: no ceiling."
+        ),
+    )
+    p_store_quilt_relay.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=None,
+        help=(
+            "Per-attempt relay upload timeout, in seconds. A quilt is larger "
+            "than any single file in it and every retry re-sends the whole "
+            "buffer, so this generally needs raising above what a single "
+            "blob would want. Default: the client's configured timeout."
+        ),
+    )
+    p_store_quilt_relay.add_argument(
+        "--recipient",
+        dest="recipient",
+        action=ValidateAddress,
+        default=None,
+        help="Sui address to receive the stored quilt object (default: sender).",
+    )
+    p_store_quilt_relay.add_argument(
+        "--full-json",
+        dest="full_json",
+        action="store_true",
+        help=(
+            "Also print the complete raw simulate transaction result as "
+            "JSON, in addition to the concise cost summary (--mode simulate "
+            "only; default: off, since the raw result can run to thousands "
+            "of lines)."
+        ),
+    )
+    _add_signing_args(p_store_quilt_relay)
+    _add_config_args(p_store_quilt_relay)
+
     p_certify_blob = subparsers.add_parser(
         "certify_blob",
         help=(

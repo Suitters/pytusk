@@ -1130,6 +1130,110 @@ class TestAddRegistrationSequenceCommandParity:
         assert txn_no_tip.calls[2][1]["transfers"] == [txn_no_tip.calls[1][1]["result"]]
 
 
+class TestAddRegistrationSequenceAttributes:
+    """``attributes`` composes one ``insert_or_update_metadata_pair`` per
+    pair, against the registered ``Blob`` and before the transfer that
+    consumes it."""
+
+    async def test_omitted_composes_no_extra_commands(self) -> None:
+        """The default writes no metadata commands at all."""
+        txn = _RecordingTipTxn()
+
+        await add_registration_sequence(
+            txn=txn,  # type: ignore[arg-type]
+            encoded=_registration_encoded(),
+            epochs=3,
+            deletable=False,
+            package_id="0xpkg",
+            system_object="0xsystem",
+            recipient="0xrecipient",
+            wal_payment_coin="0xwal",
+            tip=None,
+        )
+
+        assert [kind for kind, _ in txn.calls] == [
+            "move_call",
+            "move_call",
+            "transfer_objects",
+        ]
+
+    async def test_single_pair_targets_the_registered_blob(self) -> None:
+        """The pair is written against ``register_blob``'s own command
+        result -- not a fresh input -- and lands before the transfer."""
+        txn = _RecordingTipTxn()
+
+        await add_registration_sequence(
+            txn=txn,  # type: ignore[arg-type]
+            encoded=_registration_encoded(),
+            epochs=3,
+            deletable=False,
+            package_id="0xpkg",
+            system_object="0xsystem",
+            recipient="0xrecipient",
+            wal_payment_coin="0xwal",
+            tip=None,
+            attributes={"quilt": "v1"},
+        )
+
+        assert [kind for kind, _ in txn.calls] == [
+            "move_call",
+            "move_call",
+            "move_call",
+            "transfer_objects",
+        ]
+
+        register_result = txn.calls[1][1]["result"]
+        attribute_call = txn.calls[2][1]
+        assert (
+            attribute_call["target"] == "0xpkg::blob::insert_or_update_metadata_pair"
+        )
+        assert list(attribute_call["arguments"]) == [register_result, "quilt", "v1"]
+        assert attribute_call["type_arguments"] == []
+
+        # The Blob is still live when the attribute is written, and is only
+        # consumed afterwards.
+        assert list(txn.calls[3][1]["transfers"]) == [register_result]
+
+    async def test_multiple_pairs_compose_one_command_each_in_mapping_order(
+        self,
+    ) -> None:
+        """Mapping order is preserved. These are INDEPENDENT PTB commands
+        taking pure ``String`` arguments, not a BCS map, so the canonical
+        key ordering that governs a serialized map is deliberately NOT
+        imposed here -- a sort would reorder these to alpha, zeta."""
+        txn = _RecordingTipTxn()
+
+        await add_registration_sequence(
+            txn=txn,  # type: ignore[arg-type]
+            encoded=_registration_encoded(),
+            epochs=3,
+            deletable=False,
+            package_id="0xpkg",
+            system_object="0xsystem",
+            recipient="0xrecipient",
+            wal_payment_coin="0xwal",
+            tip=None,
+            attributes={"zeta": "last", "alpha": "first"},
+        )
+
+        assert [kind for kind, _ in txn.calls] == [
+            "move_call",
+            "move_call",
+            "move_call",
+            "move_call",
+            "transfer_objects",
+        ]
+
+        register_result = txn.calls[1][1]["result"]
+        attribute_args = [list(call["arguments"]) for _, call in txn.calls[2:4]]
+
+        assert [(args[1], args[2]) for args in attribute_args] == [
+            ("zeta", "last"),
+            ("alpha", "first"),
+        ]
+        assert all(args[0] == register_result for args in attribute_args)
+
+
 class _FakePreflightConfig:
     """Stand-in for ``WalrusClient.pysui_client.config``, controlling which
     addresses ``keypair_for_address`` treats as signable."""

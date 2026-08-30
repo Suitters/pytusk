@@ -223,6 +223,33 @@ _RESUME_HINT_PENDING_READBACK: str = (
 )
 
 
+class ChainContextError(RuntimeError):
+    """Raised when a pre-action chain read fails, naming which read failed.
+
+    :func:`~pytusk.core.ops.system_reads.prepare_chain_context` serves the
+    write pipelines, the read path and cost estimation alike, so it cannot
+    report under any one of their error families. It raises this instead, and
+    a caller that has its own family translates it, preserving ``stage``.
+
+    Everything this covers is PRE-SPEND: nothing has been registered and no
+    WAL has moved, so a failure has no on-chain state to report.
+
+    Attributes:
+        stage (str): Which read failed -- ``"committee"`` or
+            ``"resolve_package_id"``.
+    """
+
+    def __init__(self, *, message: str, stage: str) -> None:
+        """Initialize the error.
+
+        Args:
+            message (str): Human-readable description of the failure.
+            stage (str): Which read failed.
+        """
+        super().__init__(message)
+        self.stage = stage
+
+
 class RegistrationPendingError(RuntimeError):
     """Tx1 succeeded on-chain but its readback is not available yet.
 

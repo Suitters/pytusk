@@ -30,7 +30,11 @@ from pytusk.core.pipelines.registration import (
     PlainBlobRegistration,
     TippedBlobRegistration,
 )
-from pytusk.core.pipelines.write import store_blob_native, store_blob_relay
+from pytusk.core.pipelines.write import (
+    store_blob_native,
+    store_blob_relay,
+    store_quilt_relay,
+)
 
 __all__ = [
     "BlobDelivery",
@@ -45,4 +49,5 @@ __all__ = [
     "TippedBlobRegistration",
     "store_blob_native",
     "store_blob_relay",
+    "store_quilt_relay",
 ]

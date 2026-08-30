@@ -75,6 +75,8 @@ from pytusk.core.ops.storage_reads import (
 from pytusk.core.ops.system_reads import (
     DEFAULT_FINALITY_MAX_ATTEMPTS,
     DEFAULT_FINALITY_MAX_DELAY,
+    ChainContext,
+    prepare_chain_context,
     resolve_package_id,
     wait_for_finality,
 )
@@ -84,6 +86,7 @@ __all__ = [
     "DEFAULT_FINALITY_MAX_ATTEMPTS",
     "DEFAULT_FINALITY_MAX_DELAY",
     "CertificationOutcome",
+    "ChainContext",
     "add_certify",
     "add_destroy_storage",
     "add_fuse",
@@ -106,6 +109,7 @@ __all__ = [
     "matches_wal_coin_type",
     "preflight_payment",
     "preflight_sponsor",
+    "prepare_chain_context",
     "resolve_package_id",
     "select_wal_payment_coin",
     "storage_from_blob",

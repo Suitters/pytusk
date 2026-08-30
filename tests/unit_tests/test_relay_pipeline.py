@@ -3,22 +3,26 @@
 
 # -*- coding: utf-8 -*-
 
-"""Unit tests for the encapsulated store_blob_relay pipeline."""
+"""Unit tests for the encapsulated store_blob_relay and store_quilt_relay
+pipelines."""
 
 import types
 from typing import Any
 
 import pytest
 
+from pytusk.core.ops import ChainContext
 from pytusk.core.ops import blob_execute as ops_blob_execute
 from pytusk.core.pipelines import delivery as delivery_module
 from pytusk.core.pipelines import registration as registration_module
 from pytusk.core.pipelines import write as pipeline_module
-from pytusk.core.pipelines.write import store_blob_relay
+from pytusk.core.pipelines.write import store_blob_relay, store_quilt_relay
 from pytusk.core.relay_upload.common import TipQuote
 from pytusk.core.types import (
     FROM_GAS,
     ConstTip,
+    QuiltPatchInput,
+    QuiltRelayReceipt,
     RegistrationPendingError,
     RelayCertificateParseError,
     RelayOutcome,
@@ -252,8 +256,13 @@ def rec(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
             object_id=_BLOB_OBJECT_ID, blob_id=b"", certified=True, digest="0xtx2"
         )
 
-    async def _resolve_pkg(**kwargs: Any) -> str:
-        return "0xpkg"
+    async def _prepare_chain_context(**kwargs: Any) -> ChainContext:
+        client = kwargs["client"]
+        return ChainContext(
+            committee=await client.committee(),
+            system_object=client.config.network.system_object,
+            package_id="0xpkg",
+        )
 
     monkeypatch.setattr(pipeline_module, "encode_blob", _encode)
     monkeypatch.setattr(pipeline_module, "quote_tip", _quote)
@@ -276,7 +285,9 @@ def rec(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
     monkeypatch.setattr(
         ops_blob_execute, "verify_certificate", lambda **kwargs: True
     )
-    monkeypatch.setattr(pipeline_module, "resolve_package_id", _resolve_pkg)
+    monkeypatch.setattr(
+        pipeline_module, "prepare_chain_context", _prepare_chain_context
+    )
     return recorder
 
 
@@ -688,3 +699,99 @@ class TestUploadTimeout:
         client = _FakeClient()
         await store_blob_relay(client=client, data=b"x", epochs=1)
         assert rec.upload[0]["timeout"] is None
+
+
+class TestStoreQuiltRelay:
+    """The quilt entry point rides the SAME relay stage order as the blob
+    one -- which is the point of sharing a body rather than copying it --
+    and adds exactly one thing: per-patch identities on the receipt.
+    """
+
+    _PATCHES = (
+        QuiltPatchInput(identifier="a.bin", contents=b"A" * 6),
+        QuiltPatchInput(identifier="b.bin", contents=b"\x00" * 300),
+    )
+
+    async def test_certified_quilt_returns_quilt_receipt(
+        self, rec: _Recorder
+    ) -> None:
+        client = _FakeClient()
+        receipt = await store_quilt_relay(
+            client=client, patches=self._PATCHES, epochs=1
+        )
+        assert isinstance(receipt, QuiltRelayReceipt)
+        assert receipt.outcome is RelayOutcome.CERTIFIED
+        assert receipt.certified is True
+        assert receipt.certify_tx_digest == "0xtx2"
+        assert receipt.failed_stage is None
+
+    async def test_receipt_carries_a_patch_id_per_input(
+        self, rec: _Recorder
+    ) -> None:
+        """The one thing a quilt receipt adds over a blob receipt."""
+        client = _FakeClient()
+        receipt = await store_quilt_relay(
+            client=client, patches=self._PATCHES, epochs=1
+        )
+        assert [patch.identifier for patch in receipt.patches] == [
+            "a.bin",
+            "b.bin",
+        ]
+        assert all(patch.patch_id for patch in receipt.patches)
+        # Distinct column ranges must yield distinct ids, or two patches
+        # would address the same bytes.
+        assert len({patch.patch_id for patch in receipt.patches}) == 2
+
+    async def test_registration_marks_the_blob_as_a_quilt(
+        self, rec: _Recorder
+    ) -> None:
+        """An assembled quilt's bytes ARE an ordinary blob, so no layer below
+        this one can tell the two apart. The on-chain metadata pair is the
+        only thing that can, and it must ride inside Tx1 -- a follow-up
+        transaction could fail after the storage is already paid for and
+        leave a quilt whose type is unset."""
+        await store_quilt_relay(
+            client=_FakeClient(), patches=self._PATCHES, epochs=1
+        )
+        assert rec.register[-1]["attributes"] == {"_walrusBlobType": "quilt"}
+
+        rec.register.clear()
+        await store_blob_relay(client=_FakeClient(), data=b"x", epochs=1)
+
+        # The contrast is the point: an ordinary blob must NOT be labelled.
+        assert rec.register[-1]["attributes"] is None
+
+    async def test_stage_order_matches_the_blob_path(
+        self, rec: _Recorder
+    ) -> None:
+        """A quilt is an ordinary blob once assembled, so it must drive the
+        relay collaborators in exactly the order a blob does. A divergence
+        here means the shared body stopped being shared."""
+        await store_quilt_relay(
+            client=_FakeClient(), patches=self._PATCHES, epochs=1
+        )
+        quilt_order = list(rec.order)
+
+        rec.order.clear()
+        await store_blob_relay(client=_FakeClient(), data=b"x", epochs=1)
+
+        assert quilt_order == rec.order
+
+    async def test_duplicate_identifier_raises_pre_spend(
+        self, rec: _Recorder
+    ) -> None:
+        """Assembly runs BEFORE anything is registered or paid, so a bad
+        patch set raises rather than returning a receipt -- and must not
+        have reached registration."""
+        duplicated = (
+            QuiltPatchInput(identifier="dup.bin", contents=b"A" * 6),
+            QuiltPatchInput(identifier="dup.bin", contents=b"\x00" * 300),
+        )
+
+        with pytest.raises(RelayUploadError) as excinfo:
+            await store_quilt_relay(
+                client=_FakeClient(), patches=duplicated, epochs=1
+            )
+
+        assert excinfo.value.stage == "assemble"
+        assert rec.register == []

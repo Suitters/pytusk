@@ -46,6 +46,7 @@ already imports :func:`add_reserve_and_register` and :func:`add_certify`
 from this module for its ``execute_*`` wrappers).
 """
 
+from collections.abc import Mapping
 from typing import cast
 
 from pysui.sui.sui_bcs import bcs
@@ -189,10 +190,11 @@ async def add_registration_sequence(
     recipient: str,
     wal_payment_coin: str,
     tip: TipComposition | None = None,
+    attributes: Mapping[str, str] | None = None,
 ) -> None:
     """Compose the whole of Tx1 -- optional tip, then reserve+register, then
-    the transfer that consumes the new ``Blob`` -- onto ``txn``, in that
-    fixed order.
+    any attribute writes, then the transfer that consumes the new ``Blob``
+    -- onto ``txn``, in that fixed order.
 
     PURE PTB COMPOSITION -- see the module docstring's "caller owns the
     transaction lifecycle" note. This makes no network calls, builds
@@ -215,7 +217,11 @@ async def add_registration_sequence(
        refuses to compose into a transaction that already holds an input or
        a command (see its docstring).
     2. :func:`add_reserve_and_register` runs next, registering the blob.
-    3. The returned ``Blob`` command result is transferred to ``recipient``
+    3. When ``attributes`` is given, one
+       ``walrus::blob::insert_or_update_metadata_pair`` call per pair runs
+       against the ``Blob`` command result -- necessarily after step 2,
+       which produces it, and before step 4, which consumes it.
+    4. The returned ``Blob`` command result is transferred to ``recipient``
        via ``txn.transfer_objects`` -- an unconsumed object result would
        otherwise abort the PTB when built (see
        :func:`add_reserve_and_register`'s own warning).
@@ -251,6 +257,14 @@ async def add_registration_sequence(
             :func:`~pytusk.core.ops.tip_compose.add_tip` needs to bundle a
             relay tip payment into this same PTB, composed first. ``None``
             (the default) omits the tip entirely.
+        attributes (Mapping[str, str] | None): Key/value pairs written onto
+            the new ``Blob`` as on-chain metadata, one PTB command each.
+            ``None`` (the default) writes none. Pairs are composed in the
+            mapping's own iteration order: these are INDEPENDENT PTB
+            commands taking pure ``String`` arguments, NOT a BCS map, so the
+            canonical key ordering that governs a serialized map (see
+            :func:`~pytusk.core.encoding.quilt.sorted_tag_entries`) does not
+            apply and no sort is imposed here.
 
     Returns:
         None.
@@ -278,6 +292,18 @@ async def add_registration_sequence(
         deletable=deletable,
         payment_coin=wal_payment_coin,
     )
+
+    if attributes:
+        # insert_or_update_metadata_pair routes through metadata_or_create,
+        # which attaches the metadata dynamic field on first use -- a freshly
+        # registered Blob needs no add_metadata call ahead of this.
+        for key, value in attributes.items():
+            await txn.move_call(
+                target=f"{package_id}::blob::insert_or_update_metadata_pair",
+                arguments=[blob, key, value],
+                type_arguments=[],
+            )
+
     await txn.transfer_objects(transfers=[blob], recipient=recipient)
 
 

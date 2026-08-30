@@ -84,12 +84,18 @@ from pytusk.core.native_upload.fanout import (
     _FanoutProgress,
     _upload_node,
 )
+from pytusk.core.ops import ChainContext, prepare_chain_context
 from pytusk.core.ops import blob_execute as ops_blob_execute
 from pytusk.core.pipelines import delivery as pipelines_delivery
 from pytusk.core.pipelines import registration as pipelines_registration
 from pytusk.core.pipelines import store_blob_native
 from pytusk.core.pipelines import write as pipelines_write
-from pytusk.core.types import CertifyResult, Registration, RegistrationPendingError
+from pytusk.core.types import (
+    CertifyResult,
+    ChainContextError,
+    Registration,
+    RegistrationPendingError,
+)
 from pytusk.core.types.protocols import ExecuteOnlyClient
 
 # importlib.import_module, not `import pytusk.core.native_upload.certify as
@@ -1886,8 +1892,10 @@ class TestCertifyTx2Failure:
                 "certify_blob transaction aborted on-chain: EWrongEpoch"
             )
 
-        async def fake_resolve_package_id(**kwargs: object) -> str:
-            return "0xpkg"
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            return ChainContext(
+                committee=committee, system_object="0xsystem", package_id="0xpkg"
+            )
 
         async def fake_execute_reserve_and_register(**kwargs: object) -> Registration:
             return registration
@@ -1902,7 +1910,9 @@ class TestCertifyTx2Failure:
 
         monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
         monkeypatch.setattr(ops_blob_execute, "execute_certify", fake_execute_certify)
-        monkeypatch.setattr(pipelines_write, "resolve_package_id", fake_resolve_package_id)
+        monkeypatch.setattr(
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
+        )
         monkeypatch.setattr(
             pipelines_registration,
             "execute_reserve_and_register",
@@ -1957,8 +1967,10 @@ class TestCertifyTx2Failure:
         async def fake_execute_certify(**kwargs: object) -> object:
             raise ValueError("Error running SimulateTransactionKind: boom")
 
-        async def fake_resolve_package_id(**kwargs: object) -> str:
-            return "0xpkg"
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            return ChainContext(
+                committee=committee, system_object="0xsystem", package_id="0xpkg"
+            )
 
         async def fake_execute_reserve_and_register(**kwargs: object) -> Registration:
             return registration
@@ -1973,7 +1985,9 @@ class TestCertifyTx2Failure:
 
         monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
         monkeypatch.setattr(ops_blob_execute, "execute_certify", fake_execute_certify)
-        monkeypatch.setattr(pipelines_write, "resolve_package_id", fake_resolve_package_id)
+        monkeypatch.setattr(
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
+        )
         monkeypatch.setattr(
             pipelines_registration,
             "execute_reserve_and_register",
@@ -2029,8 +2043,10 @@ class TestCertifyTx2Failure:
                 "certify_blob transaction aborted on-chain: EWrongEpoch"
             )
 
-        async def fake_resolve_package_id(**kwargs: object) -> str:
-            return "0xpkg"
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            return ChainContext(
+                committee=committee, system_object="0xsystem", package_id="0xpkg"
+            )
 
         async def fake_execute_reserve_and_register(**kwargs: object) -> Registration:
             return registration
@@ -2045,7 +2061,9 @@ class TestCertifyTx2Failure:
 
         monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
         monkeypatch.setattr(ops_blob_execute, "execute_certify", fake_execute_certify)
-        monkeypatch.setattr(pipelines_write, "resolve_package_id", fake_resolve_package_id)
+        monkeypatch.setattr(
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
+        )
         monkeypatch.setattr(
             pipelines_registration,
             "execute_reserve_and_register",
@@ -2120,6 +2138,62 @@ class TestCertifySuccessDigests:
         assert receipt.certify_tx_digest == "0xcertify-digest"
 
 
+class _FakeChainContextClient:
+    """Client fake whose ``committee()`` raises, for prepare_chain_context.
+
+    Only ``.committee()`` and ``.config.network.system_object`` are read on
+    the path under test -- the package read is never reached, because the
+    committee read fails first.
+    """
+
+    def __init__(self, *, error: Exception) -> None:
+        self._error = error
+        self.config = SimpleNamespace(
+            network=SimpleNamespace(
+                system_object="0xsystem", staking_object="0xstaking"
+            )
+        )
+
+    async def committee(self) -> object:
+        """Always raise, standing in for a failed on-chain committee read."""
+        raise self._error
+
+
+class TestPrepareChainContextTypesItsFailures:
+    """``prepare_chain_context`` is the single place every pre-Tx1 chain read
+    now happens, so it is also the only place those reads can be given a
+    stage. Before it existed, a committee failure escaped ``prepare_write`` as
+    a bare exception while the package read three lines below it was already
+    typed -- an asymmetry with no principle behind it.
+
+    ``WalrusClient.committee()`` documents FOUR bare exception types, so all
+    four must be caught; catching only the ``(RuntimeError, ValueError)`` pair
+    the sibling reads use would leave ``KeyError`` and ``TypeError`` escaping
+    untyped, which is the same hole in a smaller form.
+    """
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            KeyError("committee member has no pool entry"),
+            RuntimeError("on-chain read failed"),
+            TypeError("decoded structure not as expected"),
+            ValueError("shard assignment is not a complete cover"),
+        ],
+        ids=["keyerror", "runtimeerror", "typeerror", "valueerror"],
+    )
+    async def test_committee_failure_becomes_chain_context_error(
+        self, error: Exception
+    ) -> None:
+        client = _FakeChainContextClient(error=error)
+
+        with pytest.raises(ChainContextError) as excinfo:
+            await prepare_chain_context(client=cast(WalrusClient, client))
+
+        assert excinfo.value.stage == "committee"
+        assert excinfo.value.__cause__ is error
+
+
 class TestPreSpendFailuresRaiseTypedNativeUploadError:
     """Fix: a failure before Tx1 succeeds (package-ID resolution or Tx1
     itself) must raise a typed ``NativeUploadError`` -- matching relay's
@@ -2140,10 +2214,15 @@ class TestPreSpendFailuresRaiseTypedNativeUploadError:
     ) -> None:
         committee = _one_shard_per_node_committee()
 
-        async def fake_resolve_package_id(**kwargs: object) -> str:
-            raise RuntimeError("Cannot fetch System object 0xsystem: boom")
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            raise ChainContextError(
+                message="Cannot fetch System object 0xsystem: boom",
+                stage="resolve_package_id",
+            )
 
-        monkeypatch.setattr(pipelines_write, "resolve_package_id", fake_resolve_package_id)
+        monkeypatch.setattr(
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
+        )
 
         client = _FakeCertifyClient(
             committee=committee, system_object="0xsystem", staking_object="0xstaking"
@@ -2155,6 +2234,37 @@ class TestPreSpendFailuresRaiseTypedNativeUploadError:
         assert excinfo.value.stage == "resolve_package_id"
         assert isinstance(excinfo.value, RuntimeError)
         assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+    async def test_committee_failure_raises_typed_native_upload_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A committee read fails PRE-SPEND exactly as package resolution
+        does, so it must surface under the pipeline's own error name carrying
+        its own stage, rather than as the bare exception that escaped before
+        ``prepare_chain_context`` gave every pre-Tx1 read one."""
+        committee = _one_shard_per_node_committee()
+
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            raise ChainContextError(
+                message="Cannot fetch committee: boom", stage="committee"
+            )
+
+        monkeypatch.setattr(
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
+        )
+
+        client = _FakeCertifyClient(
+            committee=committee, system_object="0xsystem", staking_object="0xstaking"
+        )
+
+        with pytest.raises(NativeUploadError) as excinfo:
+            await store_blob_native(
+                client=cast(WalrusClient, client), data=_BLOB_DATA, epochs=3
+            )
+
+        assert excinfo.value.stage == "committee"
+        assert isinstance(excinfo.value.__cause__, ChainContextError)
+
 
 class TestRegistrationPendingErrorConvertedToReceipt:
     """A post-spend ``RegistrationPendingError`` must reach the caller as
@@ -2169,8 +2279,10 @@ class TestRegistrationPendingErrorConvertedToReceipt:
     ) -> object:
         committee = _one_shard_per_node_committee()
 
-        async def fake_resolve_package_id(**kwargs: object) -> str:
-            return "0xpkg"
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            return ChainContext(
+                committee=committee, system_object="0xsystem", package_id="0xpkg"
+            )
 
         async def fake_execute_reserve_and_register(**kwargs: object) -> Registration:
             raise RegistrationPendingError(
@@ -2180,7 +2292,9 @@ class TestRegistrationPendingErrorConvertedToReceipt:
                 stage=stage,
             )
 
-        monkeypatch.setattr(pipelines_write, "resolve_package_id", fake_resolve_package_id)
+        monkeypatch.setattr(
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
+        )
         monkeypatch.setattr(
             pipelines_registration,
             "execute_reserve_and_register",

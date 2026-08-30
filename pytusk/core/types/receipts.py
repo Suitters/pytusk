@@ -16,6 +16,7 @@ import dataclasses
 from dataclasses_json import DataClassJsonMixin
 
 from pytusk.core.types.outcomes import RelayOutcome, RelayUploadOutcome
+from pytusk.core.types.quilts import QuiltPatchReceipt
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -223,6 +224,34 @@ class RelayBlobReceipt:
     relay_message: str | None
     attempts: int | None
     transport_error: str | None
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class QuiltRelayReceipt(RelayBlobReceipt):
+    """The outcome of a relay upload that stored a QUILT.
+
+    A quilt IS an ordinary blob on chain, so every inherited field means
+    exactly what it means on the blob path -- ``blob_id`` IS the quilt id,
+    and no field here carries meaning only on some other path. That is what
+    makes subclassing honest here rather than padding.
+
+    What a quilt ADDS is addressability: the per-patch identities a reader
+    needs in order to fetch one packed blob back out without downloading the
+    whole quilt.
+
+    Satisfies :class:`~pytusk.core.types.protocols.UploadReceipt`
+    covariantly, exactly as its base does.
+
+    Attributes:
+        patches (tuple[QuiltPatchReceipt, ...]): One entry per packed blob,
+            carrying its identifier, tags, column range and ``QuiltPatchId``.
+            Ordered as the assembled quilt orders them -- SORTED BY
+            IDENTIFIER, not the caller's input order. Required rather than
+            defaulted: assembly is PRE-SPEND, so a failure early enough to
+            have produced no layout raises instead of returning a receipt.
+    """
+
+    patches: tuple[QuiltPatchReceipt, ...]
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)

@@ -258,3 +258,85 @@ class TestFuseStorageUnchanged:
         )
         assert args.fuse_to == STORAGE_ID
         assert args.fuse_from == [OBJECT_ID]
+
+
+class TestStoreQuiltRelayArgs:
+    """store_quilt_relay takes the quilt's patch flags AND the relay flags.
+
+    It is a separate subcommand rather than a flag on store_quilt, so the
+    two flag families have to meet on it for the first time -- that is what
+    these pin.
+    """
+
+    def test_patch_flags_parse(self) -> None:
+        """The three patch sources parse to the same dests store_quilt uses."""
+        args = build_parser(
+            in_args=[
+                "store_quilt_relay",
+                "--patch-file",
+                "a=path/to/a",
+                "--patch-content",
+                "b=hello",
+                "--epochs",
+                "5",
+            ]
+        )
+        assert args.subcommand == "store_quilt_relay"
+        assert args.patch_file == [("a", "path/to/a")]
+        assert args.patch_content == [("b", "hello")]
+        assert args.paths == []
+
+    def test_relay_flags_parse(self) -> None:
+        """The relay knobs land on the same dests store_blob_relay uses."""
+        args = build_parser(
+            in_args=[
+                "store_quilt_relay",
+                "--patch-content",
+                "a=hello",
+                "--epochs",
+                "5",
+                "--relay",
+                "myrelay",
+                "--max-tip",
+                "1000",
+                "--timeout",
+                "900",
+            ]
+        )
+        assert args.relay == "myrelay"
+        assert args.max_tip == 1000
+        assert args.timeout == 900.0
+        assert args.tip_gas_source == "from_gas"
+
+    def test_defaults_match_the_blob_relay_command(self) -> None:
+        """Shared knobs default identically on both relay subcommands, so a
+        caller switching from blobs to quilts is not silently given
+        different behaviour."""
+        quilt = build_parser(
+            in_args=["store_quilt_relay", "--patch-content", "a=x", "--epochs", "5"]
+        )
+        blob = build_parser(
+            in_args=["store_blob_relay", "--content", "x", "--epochs", "5"]
+        )
+        for field in (
+            "mode",
+            "relay",
+            "tip_gas_source",
+            "max_tip",
+            "timeout",
+            "recipient",
+            "permanent",
+            "full_json",
+            "sender",
+            "sponsor",
+        ):
+            assert getattr(quilt, field) == getattr(blob, field), field
+
+    def test_dispatch_table_has_a_handler(self) -> None:
+        """A subcommand the parser accepts but the dispatch table does not
+        know is a command that parses and then dies -- the failure mode this
+        pins against."""
+        from pytusk.tusky.tusky import _DISPATCH
+
+        assert "store_quilt_relay" in _DISPATCH
+

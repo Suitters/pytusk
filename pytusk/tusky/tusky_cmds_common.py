@@ -25,6 +25,8 @@ live in this module.
 """
 
 import argparse
+import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -346,3 +348,58 @@ def read_file_bytes(path: str | Path) -> bytes:
     """
     with open(path, "rb") as f:
         return f.read()
+
+
+async def collect_quilt_patches(*, args: argparse.Namespace) -> dict[str, bytes]:
+    """Merge the three patch sources into one identifier-to-bytes mapping.
+
+    ``--paths`` keys each patch by its filename; ``--patch-file`` and
+    ``--patch-content`` key it explicitly. All three are combinable, and the
+    duplicate guard spans ALL of them rather than each in isolation -- two
+    sources naming the same patch is a caller mistake to report, not an
+    ambiguity to resolve silently.
+
+    Shared by every quilt-writing subcommand, so the accepted syntax and the
+    duplicate rule cannot come to differ between them.
+
+    Args:
+        args (argparse.Namespace): Parsed arguments carrying ``paths``,
+            ``patch_file`` and ``patch_content``.
+
+    Returns:
+        dict[str, bytes]: Patch identifier mapped to its raw content.
+    """
+    files: dict[str, bytes] = {}
+    for path in args.paths:
+        key = os.path.basename(path)
+        if key in files:
+            print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            files[key] = await asyncio.to_thread(read_file_bytes, path)
+        except OSError as exc:
+            print(f"Error reading file {path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+    for key, path in args.patch_file:
+        if key in files:
+            print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            files[key] = await asyncio.to_thread(read_file_bytes, path)
+        except OSError as exc:
+            print(f"Error reading file {path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+    for key, text in args.patch_content:
+        if key in files:
+            print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
+            sys.exit(1)
+        files[key] = text.encode("utf-8")
+
+    if not files:
+        print(
+            "Error: at least one --paths, --patch-file, or --patch-content "
+            "patch is required",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return files

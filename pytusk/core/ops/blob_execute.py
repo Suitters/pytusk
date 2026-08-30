@@ -62,6 +62,7 @@ one-call behaviour and does not need to compose Tx1/Tx2 by hand.
 
 import dataclasses
 import time
+from collections.abc import Mapping
 
 from pysui import ExecuteTransaction, GetObject
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
@@ -372,6 +373,7 @@ async def execute_reserve_and_register(
     payment_coin: str | None = None,
     sender: str | None = None,
     sponsor: str | None = None,
+    attributes: Mapping[str, str] | None = None,
     finality_max_attempts: int = DEFAULT_FINALITY_MAX_ATTEMPTS,
     finality_max_delay: float = DEFAULT_FINALITY_MAX_DELAY,
 ) -> Registration:
@@ -454,6 +456,11 @@ async def execute_reserve_and_register(
             -- see the transfer note above.
         sponsor (str | None): Address to sponsor gas as, or ``None`` for no
             sponsorship.
+        attributes (Mapping[str, str] | None): Key/value pairs written onto
+            the new ``Blob`` as on-chain metadata, composed into this same
+            Tx1 after registration and before the transfer that consumes the
+            ``Blob``. ``None`` (the default) writes none. Forwarded verbatim
+            to :func:`~pytusk.core.ops.blob_compose.add_registration_sequence`.
         finality_max_attempts (int): Poll budget handed to
             :func:`~pytusk.core.ops.system_reads.wait_for_finality` before the read-back. Defaults to
             :data:`~pytusk.core.ops.system_reads.DEFAULT_FINALITY_MAX_ATTEMPTS`.
@@ -515,6 +522,7 @@ async def execute_reserve_and_register(
         recipient=resolved_sender,
         wal_payment_coin=resolved_payment_coin,
         tip=None,
+        attributes=attributes,
     )
     return await execute_registration_txn(
         client=client,

@@ -32,11 +32,18 @@ import asyncio
 import dataclasses
 import functools
 import time
-from collections.abc import Callable
+import typing
+from collections.abc import Callable, Mapping, Sequence
 
 from pytusk.client.walrus_client import WalrusClient
 from pytusk.core.chain.committee import WalrusCommittee
 from pytusk.core.encoding import encode_blob
+from pytusk.core.encoding.quilt import (
+    QUILT_BLOB_ATTRIBUTES,
+    QuiltAssemblyError,
+    assemble_quilt,
+    quilt_patch_id,
+)
 from pytusk.core.encoding.redstuff import EncodedBlob
 from pytusk.core.native_upload.certify import certify
 from pytusk.core.ops.blob_execute import (
@@ -44,7 +51,7 @@ from pytusk.core.ops.blob_execute import (
     preflight_sponsor,
     submit_certification,
 )
-from pytusk.core.ops.system_reads import resolve_package_id
+from pytusk.core.ops.system_reads import prepare_chain_context
 from pytusk.core.pipelines.delivery import (
     DeliveryOutcome,
     NativeDelivery,
@@ -63,8 +70,13 @@ from pytusk.core.relay_upload.tip import (
 )
 from pytusk.core.relay_upload.upload import DEFAULT_MAX_UPLOAD_ATTEMPTS
 from pytusk.core.types import (
+    ChainContextError,
     NativeBlobReceipt,
     NativeUploadError,
+    QuiltPatchInput,
+    QuiltPatchLayout,
+    QuiltPatchReceipt,
+    QuiltRelayReceipt,
     Registration,
     RegistrationPendingError,
     RelayBlobReceipt,
@@ -76,6 +88,14 @@ from pytusk.core.types import (
     TipComposition,
     TipQuote,
 )
+
+_ReceiptT = typing.TypeVar("_ReceiptT", bound=RelayBlobReceipt)
+"""Receipt type a relay run produces.
+
+Bound to :class:`~pytusk.core.types.RelayBlobReceipt` so the shared relay
+body can build a SUBCLASS without the caller losing the narrower type: a
+quilt run is statically a ``QuiltRelayReceipt``, not merely a blob receipt.
+"""
 
 
 def _failure_receipt(
@@ -199,33 +219,158 @@ async def prepare_write(
 
     Raises:
         NativeUploadError | RelayUploadError: Whichever ``error_type`` names,
-            with ``stage`` set to ``"encode"`` or ``"resolve_package_id"``.
+            with ``stage`` set to ``"committee"``, ``"resolve_package_id"``
+            or ``"encode"``.
     """
-    committee = await client.committee()
+    try:
+        context = await prepare_chain_context(client=client)
+    except ChainContextError as exc:
+        raise error_type(message=str(exc), stage=exc.stage) from exc
 
     encode_start = time.monotonic()
     try:
         encoded = await asyncio.to_thread(
-            functools.partial(encode_blob, data=data, n_shards=committee.n_shards)
+            functools.partial(
+                encode_blob, data=data, n_shards=context.committee.n_shards
+            )
         )
     except (RuntimeError, ValueError) as exc:
         raise error_type(message=str(exc), stage="encode") from exc
     encode_duration = time.monotonic() - encode_start
 
-    system_object = client.config.network.system_object
-    try:
-        package_id = await resolve_package_id(
-            client=client, system_object=system_object
-        )
-    except (RuntimeError, ValueError) as exc:
-        raise error_type(message=str(exc), stage="resolve_package_id") from exc
-
     return WritePreamble(
-        committee=committee,
+        committee=context.committee,
         encoded=encoded,
         encode_duration=encode_duration,
-        system_object=system_object,
-        package_id=package_id,
+        system_object=context.system_object,
+        package_id=context.package_id,
+    )
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class QuiltWritePreamble(WritePreamble):
+    """A :class:`WritePreamble` for a quilt, plus the patch layout.
+
+    The quilt's bytes are an ORDINARY blob by the time they reach
+    ``encoded``, so every inherited field means exactly what it means on the
+    blob path -- this subclass pads nothing. What a quilt ADDS is the layout:
+    which identifier occupies which column range, which is what turns a
+    certified quilt into individually addressable patches. Follows the
+    :class:`~pytusk.core.pipelines.delivery.RelayDeliveryResult` precedent of
+    extending a shared result rather than widening it with fields that are
+    meaningless on the other path.
+
+    Attributes:
+        patches (tuple[QuiltPatchLayout, ...]): Each packed blob's
+            identifier, tags and column range, in quilt order.
+        assemble_duration (float): Seconds spent assembling the quilt buffer,
+            tracked apart from ``encode_duration`` because they are separate
+            stages that can fail independently.
+        data (bytes): The assembled quilt buffer. Carried here because a
+            quilt caller supplies PATCHES and never holds these bytes, yet
+            the relay POST has to send them. A blob caller already holds its
+            own ``data``, which is why this sits on the subclass rather than
+            on :class:`WritePreamble`.
+    """
+
+    data: bytes
+    patches: tuple[QuiltPatchLayout, ...]
+    assemble_duration: float
+
+
+async def prepare_quilt_write(
+    *,
+    client: WalrusClient,
+    patches: Sequence[QuiltPatchInput],
+    error_type: type[NativeUploadError] | type[RelayUploadError],
+) -> QuiltWritePreamble:
+    """Read the chain context, assemble the quilt, then encode it.
+
+    The blob path's :func:`prepare_write` reads and then encodes. A quilt has
+    to ASSEMBLE in between, because the quilt's column geometry is derived
+    from the committee's shard count -- so the read cannot be folded into the
+    encode the way it is for a plain blob.
+
+    Both halves MUST see the same committee. ``client.committee()`` is never
+    cached, so a second fetch can straddle an epoch change; a quilt assembled
+    against one ``n_shards`` and then encoded against another has a matrix
+    the encoder no longer agrees with. Reading the context once, here, is
+    what rules that out.
+
+    Everything here is PRE-SPEND: nothing is registered and no WAL has moved,
+    so failures are RAISED, under whichever name ``error_type`` gives them.
+
+    Args:
+        client (WalrusClient): Client used for the committee and package
+            reads.
+        patches (Sequence[QuiltPatchInput]): The blobs to pack, each with its
+            identifier and tags.
+        error_type (type[NativeUploadError] | type[RelayUploadError]): The
+            exception class to raise pre-spend failures as.
+
+    Returns:
+        QuiltWritePreamble: The committee, the encoded quilt, the patch
+            layout, and the identifiers Tx1 composition needs.
+
+    Raises:
+        NativeUploadError | RelayUploadError: Whichever ``error_type`` names,
+            with ``stage`` set to ``"committee"``, ``"resolve_package_id"``,
+            ``"assemble"`` or ``"encode"``.
+    """
+    try:
+        context = await prepare_chain_context(client=client)
+    except ChainContextError as exc:
+        raise error_type(message=str(exc), stage=exc.stage) from exc
+
+    assemble_start = time.monotonic()
+    try:
+        assembled = await asyncio.to_thread(
+            functools.partial(
+                assemble_quilt, patches=patches, n_shards=context.committee.n_shards
+            )
+        )
+    except QuiltAssemblyError as exc:
+        raise error_type(message=str(exc), stage="assemble") from exc
+    assemble_duration = time.monotonic() - assemble_start
+
+    # Assembly must hand back exactly the patch set it was given. Nothing in
+    # assemble_quilt drops or merges one today -- the 1:1 relation holds by
+    # construction -- but the receipt PROMISES one entry per packed blob, and
+    # a reader uses that entry to locate its data. A silently short patch set
+    # would mean paid-for content nobody can address, so the promise is
+    # checked here, pre-spend, rather than trusted to stay true.
+    assembled_identifiers = sorted(layout.identifier for layout in assembled.patches)
+    requested_identifiers = sorted(patch.identifier for patch in patches)
+    if assembled_identifiers != requested_identifiers:
+        raise error_type(
+            message=(
+                "Quilt assembly returned a different patch set than it was "
+                f"given: expected {requested_identifiers}, "
+                f"got {assembled_identifiers}."
+            ),
+            stage="assemble",
+        )
+
+    encode_start = time.monotonic()
+    try:
+        encoded = await asyncio.to_thread(
+            functools.partial(
+                encode_blob, data=assembled.data, n_shards=context.committee.n_shards
+            )
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise error_type(message=str(exc), stage="encode") from exc
+    encode_duration = time.monotonic() - encode_start
+
+    return QuiltWritePreamble(
+        data=assembled.data,
+        committee=context.committee,
+        encoded=encoded,
+        encode_duration=encode_duration,
+        system_object=context.system_object,
+        package_id=context.package_id,
+        patches=assembled.patches,
+        assemble_duration=assemble_duration,
     )
 
 
@@ -566,6 +711,105 @@ async def store_blob_relay(
     prepared = await prepare_write(
         client=client, data=data, error_type=RelayUploadError
     )
+    return await _store_relay(
+        client=client,
+        data=data,
+        prepared=prepared,
+        epochs=epochs,
+        deletable=deletable,
+        relay_url=relay_url,
+        resolved_sender=resolved_sender,
+        sender=sender,
+        sponsor=sponsor,
+        recipient=recipient,
+        tip_source=tip_source,
+        max_tip=max_tip,
+        wal_payment_coin=wal_payment_coin,
+        max_upload_attempts=max_upload_attempts,
+        timeout=timeout,
+        on_quote=on_quote,
+        pipeline_start=pipeline_start,
+        make_receipt=RelayBlobReceipt,
+    )
+
+
+async def _store_relay(
+    *,
+    client: WalrusClient,
+    data: bytes,
+    prepared: WritePreamble,
+    epochs: int,
+    deletable: bool,
+    relay_url: str,
+    resolved_sender: str,
+    sender: str | None,
+    sponsor: str | None,
+    recipient: str | None,
+    tip_source: str,
+    max_tip: int | None,
+    wal_payment_coin: str | None,
+    max_upload_attempts: int,
+    timeout: float | None,
+    on_quote: Callable[[TipQuote], None] | None,
+    pipeline_start: float,
+    make_receipt: Callable[..., _ReceiptT],
+    attributes: Mapping[str, str] | None = None,
+) -> _ReceiptT:
+    """Run the relay stage order over already-prepared bytes.
+
+    Everything from the tip quote onward is IDENTICAL for a blob and for a
+    quilt: once assembly has run, a quilt's bytes ARE an ordinary blob and
+    the relay protocol cannot tell the difference. Only two things vary, and
+    both arrive as parameters -- which preamble produced ``data``, and which
+    receipt class ``make_receipt`` builds.
+
+    Splitting it this way is what keeps the FOUR receipt-construction sites
+    below single-sourced. A per-payload copy of this function would give each
+    path its own four, free to drift apart -- the failure
+    :func:`_failure_receipt` exists to prevent on the native path.
+
+    ``make_receipt`` is called with the full receipt field set at each site.
+    For a blob it is :class:`~pytusk.core.types.RelayBlobReceipt` itself; for
+    a quilt it is that class's subclass with ``patches`` already bound, so
+    the sites below stay ignorant of which they are building. The
+    ``Callable[...]`` shape is deliberate: what is pre-bound differs per
+    caller, which is what a partial expresses and a stricter signature could
+    not.
+
+    Args:
+        client (WalrusClient): Client providing config, transport and
+            transactions.
+        data (bytes): Bytes to upload -- a plain blob, or an assembled quilt.
+        prepared (WritePreamble): Committee, encoded blob and identifiers,
+            from whichever preamble the caller ran.
+        epochs (int): Epochs of storage to reserve.
+        deletable (bool): Whether the created ``Blob`` is deletable.
+        relay_url (str): Resolved relay base URL.
+        resolved_sender (str): Sender address, already defaulted.
+        sender (str | None): The caller's ORIGINAL sender argument, passed
+            through to certification unchanged so its own defaulting rules
+            still apply there.
+        sponsor (str | None): Gas sponsor.
+        recipient (str | None): Address the certified ``Blob`` transfers to.
+        tip_source (str): ``"from_gas"`` or a coin object id.
+        max_tip (int | None): Ceiling on the tip, in MIST.
+        wal_payment_coin (str | None): WAL coin funding storage.
+        max_upload_attempts (int): POST retry budget.
+        timeout (float | None): Per-attempt relay POST timeout, in seconds.
+        on_quote (Callable[[TipQuote], None] | None): Pre-spend quote hook.
+        pipeline_start (float): Monotonic start, taken by the CALLER so the
+            reported total covers its pre-flight work too.
+        make_receipt (Callable[..., _ReceiptT]): Builds the receipt.
+        attributes (Mapping[str, str] | None): On-chain metadata written onto
+            the ``Blob`` inside Tx1, threaded to whichever registration
+            variant is selected below. ``None`` (the default) writes none,
+            which is what an ordinary blob write wants; a quilt write passes
+            :data:`~pytusk.core.encoding.quilt.QUILT_BLOB_ATTRIBUTES` so the
+            stored blob is identifiable as a quilt on chain.
+
+    Returns:
+        _ReceiptT: Whichever receipt ``make_receipt`` builds.
+    """
     committee = prepared.committee
     encoded = prepared.encoded
     encode_duration = prepared.encode_duration
@@ -633,12 +877,14 @@ async def store_blob_relay(
             wal_payment_coin=resolved_wal_coin,
             sender=resolved_sender,
             sponsor=sponsor,
+            attributes=attributes,
         )
         if tip_composition is not None
         else PlainBlobRegistration(
             payment_coin=resolved_wal_coin,
             sender=resolved_sender,
             sponsor=sponsor,
+            attributes=attributes,
         )
     )
     nonce = auth_package.nonce_base64url if auth_package is not None else None
@@ -663,7 +909,7 @@ async def store_blob_relay(
         # genuinely unavailable -- left `None` rather than fabricated. The
         # relay POST and certify stages never ran, so their fields are
         # left at their "did not run" values.
-        return RelayBlobReceipt(
+        return make_receipt(
             outcome=RelayOutcome.RESUMABLE,
             blob_id=encoded.blob_id_base64,
             object_id=exc.object_id,
@@ -709,7 +955,7 @@ async def store_blob_relay(
     upload = delivered.upload
 
     if delivered.outcome is not DeliveryOutcome.DELIVERED:
-        return RelayBlobReceipt(
+        return make_receipt(
             outcome=(
                 RelayOutcome.REJECTED
                 if delivered.outcome is DeliveryOutcome.REFUSED
@@ -768,7 +1014,7 @@ async def store_blob_relay(
             recipient=recipient,
         )
     except RuntimeError as exc:
-        return RelayBlobReceipt(
+        return make_receipt(
             outcome=RelayOutcome.RESUMABLE,
             blob_id=encoded.blob_id_base64,
             object_id=registration.object_id,
@@ -799,7 +1045,7 @@ async def store_blob_relay(
     # spans of it.
     certify_duration = certification.duration
 
-    return RelayBlobReceipt(
+    return make_receipt(
         outcome=RelayOutcome.CERTIFIED,
         blob_id=encoded.blob_id_base64,
         object_id=certification.result.object_id,
@@ -825,3 +1071,140 @@ async def store_blob_relay(
         attempts=upload.attempts,
         transport_error=None,
     )
+
+
+async def store_quilt_relay(
+    *,
+    client: WalrusClient,
+    patches: Sequence[QuiltPatchInput],
+    epochs: int,
+    deletable: bool = False,
+    relay_name: str | None = None,
+    sender: str | None = None,
+    sponsor: str | None = None,
+    recipient: str | None = None,
+    tip_source: str = FROM_GAS,
+    max_tip: int | None = None,
+    wal_payment_coin: str | None = None,
+    max_upload_attempts: int = DEFAULT_MAX_UPLOAD_ATTEMPTS,
+    timeout: float | None = None,
+    on_quote: Callable[[TipQuote], None] | None = None,
+) -> QuiltRelayReceipt:
+    """Store several blobs as ONE quilt through a Walrus upload relay.
+
+    A quilt is a batching device: many small blobs packed into a single
+    Walrus blob, so they cost one registration and one certification between
+    them rather than one each. Everything after assembly is an ordinary relay
+    upload -- this shares :func:`store_blob_relay`'s entire stage order,
+    through the same private body, so the two cannot drift apart.
+
+    Deliberately a SEPARATE entry point rather than a flag on
+    :func:`store_blob_relay`: the input is a patch list rather than bytes,
+    and the receipt carries per-patch identities a blob caller has no use
+    for. Folding both into one function would hand every blob caller a
+    parameter and a receipt field meaningless on their path.
+
+    Failures follow the same boundary as the blob path -- pre-spend raises,
+    post-spend returns a receipt carrying the resumption tokens. Assembly is
+    PRE-SPEND, so an invalid patch set raises before anything is paid for.
+
+    Args:
+        client (WalrusClient): Client providing config, transport and
+            transactions.
+        patches (Sequence[QuiltPatchInput]): Blobs to pack, each with its
+            identifier and optional tags. Identifiers must be unique within
+            the quilt; assembly rejects duplicates pre-spend.
+        epochs (int): Epochs of storage to reserve for the whole quilt.
+        deletable (bool): Whether the created ``Blob`` is deletable.
+        relay_name (str | None): Relay to use. ``None`` resolves the
+            network's ``active_relay``.
+        sender (str | None): Address to send from. ``None`` uses the active
+            address.
+        sponsor (str | None): Address to sponsor gas. Must be signable in
+            the active ``PysuiConfiguration``.
+        recipient (str | None): Address the certified ``Blob`` transfers to,
+            atomically with certification. ``None`` leaves it with sender.
+        tip_source (str): ``"from_gas"`` to split the tip from the gas coin,
+            or a coin object id to split from.
+        max_tip (int | None): Ceiling, in MIST, on the tip this call pays.
+        wal_payment_coin (str | None): WAL coin funding storage. ``None``
+            auto-selects.
+        max_upload_attempts (int): POST retry budget.
+        timeout (float | None): Per-attempt relay POST timeout, in seconds.
+            A quilt is generally LARGER than any blob going into it -- raise
+            this accordingly, since each retry re-sends the whole buffer.
+        on_quote (Callable[[TipQuote], None] | None): Called with the relay's
+            quote pre-spend, once it has passed the ``max_tip`` ceiling.
+
+    Returns:
+        QuiltRelayReceipt: Inspect ``outcome``. ``blob_id`` is the QUILT's
+            id, and ``patches`` carries each packed blob's ``QuiltPatchId``.
+
+    Raises:
+        RelayUploadError: A contract violation caught before any spend,
+            including an unusable patch set (``stage="assemble"``).
+        TipCeilingExceededError: The quoted tip exceeded ``max_tip``.
+        ValueError: No relay resolved for the active network.
+    """
+    pipeline_start = time.monotonic()
+
+    resolved_sender = sender or client.pysui_client.config.active_address
+
+    await preflight_sponsor(client=client, sponsor=sponsor)
+
+    if max_upload_attempts < 1:
+        raise RelayUploadError(
+            message=(
+                "max_upload_attempts must be at least 1, got "
+                f"{max_upload_attempts}"
+            ),
+            stage="preflight",
+        )
+
+    relay_url = client.config.relay_url_for(
+        network_name=client.config.active_network, relay_name=relay_name
+    )
+
+    prepared = await prepare_quilt_write(
+        client=client, patches=patches, error_type=RelayUploadError
+    )
+
+    # The patch ids cannot exist any earlier: each derives from the quilt's
+    # own blob id, which only encoding produces. Binding them into the
+    # receipt factory here is what lets the shared relay body build a quilt
+    # receipt without knowing that is what it is building.
+    patch_receipts = tuple(
+        QuiltPatchReceipt(
+            identifier=layout.identifier,
+            tags=layout.tags,
+            start_index=layout.start_index,
+            end_index=layout.end_index,
+            patch_id=quilt_patch_id(
+                quilt_id=prepared.encoded.blob_id, layout=layout
+            ),
+        )
+        for layout in prepared.patches
+    )
+
+    return await _store_relay(
+        client=client,
+        data=prepared.data,
+        prepared=prepared,
+        epochs=epochs,
+        deletable=deletable,
+        relay_url=relay_url,
+        resolved_sender=resolved_sender,
+        sender=sender,
+        sponsor=sponsor,
+        recipient=recipient,
+        tip_source=tip_source,
+        max_tip=max_tip,
+        wal_payment_coin=wal_payment_coin,
+        max_upload_attempts=max_upload_attempts,
+        timeout=timeout,
+        on_quote=on_quote,
+        pipeline_start=pipeline_start,
+        make_receipt=functools.partial(QuiltRelayReceipt, patches=patch_receipts),
+        attributes=QUILT_BLOB_ATTRIBUTES,
+    )
+

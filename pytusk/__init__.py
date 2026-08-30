@@ -100,11 +100,14 @@ from pytusk.core.chain import (
 
 # Encoding (RedStuff, blob-ID and root-hash conversions)
 from pytusk.core.encoding import (
+    QUILT_BLOB_ATTRIBUTES,
     RS2_ENCODING_TYPE,
     RS2_MAX_SYMBOL_SIZE,
     RS2_REQUIRED_ALIGNMENT,
     BlobTooLargeError,
     EncodedBlob,
+    QuiltAssemblyError,
+    assemble_quilt,
     blob_id_from_url_base64,
     blob_id_to_u256,
     blob_id_to_url_base64,
@@ -116,6 +119,7 @@ from pytusk.core.encoding import (
     metadata_length,
     min_n_correct,
     object_id_to_raw_bytes,
+    quilt_patch_id,
     root_hash_to_u256,
     source_symbol_counts,
     symbol_size,
@@ -150,6 +154,7 @@ from pytusk.core.native_upload import (
 from pytusk.core.ops import (
     DEFAULT_FINALITY_MAX_ATTEMPTS,
     DEFAULT_FINALITY_MAX_DELAY,
+    ChainContext,
     add_certify,
     add_destroy_storage,
     add_fuse,
@@ -169,6 +174,7 @@ from pytusk.core.ops import (
     list_storage_objects,
     preflight_payment,
     preflight_sponsor,
+    prepare_chain_context,
     resolve_package_id,
     select_wal_payment_coin,
     storage_from_blob,
@@ -180,7 +186,11 @@ from pytusk.core.ops import (
 
 # End-to-end write pipelines (the compose functions that own stage order and
 # receipt construction -- see pytusk.core.pipelines's module docstring)
-from pytusk.core.pipelines import store_blob_native, store_blob_relay
+from pytusk.core.pipelines import (
+    store_blob_native,
+    store_blob_relay,
+    store_quilt_relay,
+)
 
 # Relay upload orchestration (tip quoting/payment, relay POST, confirmation
 # certificate, thin end-to-end compose)
@@ -205,8 +215,12 @@ from pytusk.core.types import (
     FROM_GAS,
     AuthPackage,
     CertifyResult,
+    ChainContextError,
     ConstTip,
     LinearTip,
+    QuiltPatchInput,
+    QuiltPatchReceipt,
+    QuiltRelayReceipt,
     Registration,
     RegistrationPendingError,
     RelayUploadOutcome,
@@ -302,8 +316,12 @@ __all__ = [  # noqa: RUF022
     "blob_id_to_u256",
     "blob_id_to_url_base64",
     "decode_standard_base64",
+    "QUILT_BLOB_ATTRIBUTES",
+    "QuiltAssemblyError",
+    "assemble_quilt",
     "encode_blob",
     "encoded_blob_length",
+    "quilt_patch_id",
     "max_blob_size",
     "max_n_faulty",
     "metadata_length",
@@ -356,9 +374,12 @@ __all__ = [  # noqa: RUF022
     "preflight_payment",
     "preflight_sponsor",
     # Shared ops helpers (client-taking)
+    "ChainContext",
+    "ChainContextError",
     "DEFAULT_FINALITY_MAX_ATTEMPTS",
     "DEFAULT_FINALITY_MAX_DELAY",
     "matches_wal_coin_type",
+    "prepare_chain_context",
     "resolve_package_id",
     "select_wal_payment_coin",
     "wait_for_finality",
@@ -404,8 +425,12 @@ __all__ = [  # noqa: RUF022
     "assert_tip_within_ceiling",
     "build_auth_package",
     "parse_relay_certificate",
+    "QuiltPatchInput",
+    "QuiltPatchReceipt",
+    "QuiltRelayReceipt",
     "quote_tip",
     "store_blob_relay",
+    "store_quilt_relay",
     "upload_to_relay",
     # Receipt protocols
     "StageTimingsProtocol",

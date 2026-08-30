@@ -43,6 +43,7 @@ true; the pool implementation itself is out of scope for this refactor.
 
 import dataclasses
 import typing
+from collections.abc import Mapping
 
 from pytusk.client.walrus_client import WalrusClient
 from pytusk.core.encoding.redstuff import EncodedBlob
@@ -149,11 +150,15 @@ class PlainBlobRegistration:
             address. It is always the ``Blob``'s owner after Tx1, because Tx2
             takes it as ``&mut Blob`` and must be signed by whoever owns it.
         sponsor (str | None): Address to sponsor Tx1's gas, or ``None``.
+        attributes (Mapping[str, str] | None): Key/value pairs written onto
+            the new ``Blob`` as on-chain metadata inside Tx1 itself, one PTB
+            command per pair. ``None`` (the default) writes none.
     """
 
     payment_coin: str | None = None
     sender: str | None = None
     sponsor: str | None = None
+    attributes: Mapping[str, str] | None = None
 
     async def register(
         self,
@@ -193,6 +198,7 @@ class PlainBlobRegistration:
             payment_coin=self.payment_coin,
             sender=self.sender,
             sponsor=self.sponsor,
+            attributes=self.attributes,
         )
 
 
@@ -234,12 +240,18 @@ class TippedBlobRegistration:
         sponsor (str | None): Address to sponsor Tx1's gas, or ``None``. Must
             be signable in the active configuration; the relay pipeline
             checks that before anything is spent.
+        attributes (Mapping[str, str] | None): Key/value pairs written onto
+            the new ``Blob`` as on-chain metadata inside this same PTB, one
+            command per pair, composed after registration and before the
+            transfer that consumes the ``Blob``. ``None`` (the default)
+            writes none.
     """
 
     tip: TipComposition
     wal_payment_coin: str
     sender: str
     sponsor: str | None = None
+    attributes: Mapping[str, str] | None = None
 
     async def register(
         self,
@@ -276,6 +288,9 @@ class TippedBlobRegistration:
             RegistrationPendingError: Tx1 landed but its read-back lagged.
             RuntimeError | ValueError: Tx1 did not land.
         """
+        # attributes ride inside Tx1 rather than a follow-up transaction:
+        # a second transaction could fail after the blob is already paid
+        # for, leaving a registered blob whose type is unset.
         txn = await client.transaction(
             initial_sender=self.sender, initial_sponsor=self.sponsor
         )
@@ -289,6 +304,7 @@ class TippedBlobRegistration:
             recipient=self.sender,
             wal_payment_coin=self.wal_payment_coin,
             tip=self.tip,
+            attributes=self.attributes,
         )
         return await execute_registration_txn(
             client=client,

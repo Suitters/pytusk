@@ -16,15 +16,19 @@ be a real import cycle, not just a layering smell.
 """
 
 import asyncio
+import dataclasses
 
 from pysui import GetObject, GetTransaction
 
 from pytusk.client.walrus_client import WalrusClient
-from pytusk.core.chain.committee import protobuf_json_to_python
+from pytusk.core.chain.committee import WalrusCommittee, protobuf_json_to_python
+from pytusk.core.types import ChainContextError
 
 __all__ = [
     "DEFAULT_FINALITY_MAX_ATTEMPTS",
     "DEFAULT_FINALITY_MAX_DELAY",
+    "ChainContext",
+    "prepare_chain_context",
     "resolve_package_id",
     "wait_for_finality",
 ]
@@ -139,3 +143,69 @@ async def wait_for_finality(
             await asyncio.sleep(delay)
             delay = min(delay * 2, max_delay)
     return False
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class ChainContext:
+    """The chain reads every Walrus operation needs before it can act.
+
+    Attributes:
+        committee (WalrusCommittee): The committee for the current epoch.
+        system_object (str): Object ID of the configured Walrus System object.
+        package_id (str): The resolved Walrus package ID.
+    """
+
+    committee: WalrusCommittee
+    system_object: str
+    package_id: str
+
+
+async def prepare_chain_context(*, client: WalrusClient) -> ChainContext:
+    """Read the committee, the System object ID and the Walrus package ID.
+
+    The reads EVERY path needs before it can do anything else -- write, read
+    or cost estimation -- in the one order they can happen in.
+
+    Deliberately takes no ``error_type``. A read path or a cost estimator has
+    no upload-error class to supply, and forcing one on them would hand every
+    caller a knob meaningful only to the write pipelines. Failures come back
+    as :class:`~pytusk.core.types.ChainContextError` with ``stage`` naming
+    which read failed; a caller reporting under its own error family
+    translates it, as :func:`~pytusk.core.pipelines.write.prepare_write` does.
+
+    The committee is fetched ONCE here rather than by each caller. It is
+    never cached, so two fetches can straddle an epoch change and disagree on
+    the shard count -- and a quilt assembled against one ``n_shards`` then
+    encoded against another is malformed.
+
+    Args:
+        client (WalrusClient): Client used for the committee and package
+            reads.
+
+    Returns:
+        ChainContext: The committee and the identifiers chain operations need.
+
+    Raises:
+        ChainContextError: With ``stage`` set to ``"committee"`` or
+            ``"resolve_package_id"``.
+    """
+    try:
+        committee = await client.committee()
+    except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+        raise ChainContextError(message=str(exc), stage="committee") from exc
+
+    system_object = client.config.network.system_object
+    try:
+        package_id = await resolve_package_id(
+            client=client, system_object=system_object
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise ChainContextError(
+            message=str(exc), stage="resolve_package_id"
+        ) from exc
+
+    return ChainContext(
+        committee=committee,
+        system_object=system_object,
+        package_id=package_id,
+    )

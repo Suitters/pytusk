@@ -13,11 +13,14 @@ drives them via asyncio.run.
 
 import argparse
 import asyncio
-import os
 import sys
 
 from pytusk import StoreBlob, StoreQuilt, WalrusClient
-from pytusk.tusky.tusky_cmds_common import config_from_args, read_file_bytes
+from pytusk.tusky.tusky_cmds_common import (
+    collect_quilt_patches,
+    config_from_args,
+    read_file_bytes,
+)
 
 
 async def store_blob(args: argparse.Namespace) -> None:
@@ -69,38 +72,7 @@ async def store_quilt(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `store_quilt` subcommand arguments.
     """
-    files: dict[str, bytes] = {}
-    for path in args.paths:
-        key = os.path.basename(path)
-        if key in files:
-            print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
-            sys.exit(1)
-        try:
-            files[key] = await asyncio.to_thread(read_file_bytes, path)
-        except OSError as exc:
-            print(f"Error reading file {path}: {exc}", file=sys.stderr)
-            sys.exit(1)
-    for key, path in args.patch_file:
-        if key in files:
-            print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
-            sys.exit(1)
-        try:
-            files[key] = await asyncio.to_thread(read_file_bytes, path)
-        except OSError as exc:
-            print(f"Error reading file {path}: {exc}", file=sys.stderr)
-            sys.exit(1)
-    for key, text in args.patch_content:
-        if key in files:
-            print(f"Error: duplicate patch key {key!r}", file=sys.stderr)
-            sys.exit(1)
-        files[key] = text.encode("utf-8")
-
-    if not files:
-        print(
-            "Error: at least one --paths, --file, or --content patch is required",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    files = await collect_quilt_patches(args=args)
 
     config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:

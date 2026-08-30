@@ -15,6 +15,7 @@ what dissolves the import cycle that previously required
 
 from pytusk.core.types.errors import (
     CertifyTransactionError,
+    ChainContextError,
     ConfirmationCollectionError,
     ConfirmationMismatchError,
     EpochMismatchError,
@@ -36,9 +37,16 @@ from pytusk.core.types.protocols import (
     StageTimingsProtocol,
     UploadReceipt,
 )
+from pytusk.core.types.quilts import (
+    AssembledQuilt,
+    QuiltPatchInput,
+    QuiltPatchLayout,
+    QuiltPatchReceipt,
+)
 from pytusk.core.types.receipts import (
     CertifyResult,
     NativeBlobReceipt,
+    QuiltRelayReceipt,
     Registration,
     RelayBlobReceipt,
     RelayStageTimings,
@@ -62,9 +70,11 @@ from pytusk.core.types.tips import (
 
 __all__ = [
     "FROM_GAS",
+    "AssembledQuilt",
     "AuthPackage",
     "CertifyResult",
     "CertifyTransactionError",
+    "ChainContextError",
     "ConfirmationCollectionError",
     "ConfirmationMismatchError",
     "ConstTip",
@@ -74,6 +84,10 @@ __all__ = [
     "LinearTip",
     "NativeBlobReceipt",
     "NativeUploadError",
+    "QuiltPatchInput",
+    "QuiltPatchLayout",
+    "QuiltPatchReceipt",
+    "QuiltRelayReceipt",
     "QuorumNotReachedError",
     "Registration",
     "RegistrationPendingError",

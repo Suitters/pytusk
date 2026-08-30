@@ -56,11 +56,12 @@ from pysui import SuiRpcResult
 from pysui.sui.sui_common.txn_transaction_builder import ProgrammableTransactionBuilder
 
 from pytusk.core.encoding import EncodedBlob
+from pytusk.core.ops import ChainContext
 from pytusk.core.ops import blob_execute as blob_execute_module
 from pytusk.core.pipelines import registration as registration_module
 from pytusk.core.pipelines import write as pipeline_module
 from pytusk.core.relay_upload.common import TipQuote
-from pytusk.core.types import FROM_GAS, ConstTip
+from pytusk.core.types import FROM_GAS, ConstTip, QuiltPatchInput
 from pytusk.core.types.tips import AuthPackage
 from pytusk.tusky import tusky_cmds_relay
 
@@ -298,8 +299,12 @@ class TestRelaySimulateMatchesPipelineComposition:
         def _fake_build_auth_package(*, data: bytes) -> AuthPackage:
             return auth_package
 
-        async def _fake_resolve_package_id(*, client: object, system_object: str) -> str:
-            return "0xpkg"
+        async def _fake_prepare_chain_context(*, client: Any) -> ChainContext:
+            return ChainContext(
+                committee=await client.committee(),
+                system_object="0xsystem",
+                package_id="0xpkg",
+            )
 
         async def _fake_select_wal_payment_coin(*, client: object, owner: str) -> str:
             return "0xwal"
@@ -322,7 +327,9 @@ class TestRelaySimulateMatchesPipelineComposition:
         monkeypatch.setattr(pipeline_module, "encode_blob", _fake_encode_blob)
         monkeypatch.setattr(pipeline_module, "quote_tip", _fake_quote_tip)
         monkeypatch.setattr(pipeline_module, "build_auth_package", _fake_build_auth_package)
-        monkeypatch.setattr(pipeline_module, "resolve_package_id", _fake_resolve_package_id)
+        monkeypatch.setattr(
+            pipeline_module, "prepare_chain_context", _fake_prepare_chain_context
+        )
         monkeypatch.setattr(
             registration_module, "execute_registration_txn", _stop_after_compose
         )
@@ -473,3 +480,209 @@ class TestRelaySimulateGuardsNowRun:
         assert "not signable" in captured.err
         # Nothing was ever opened -- the guard ran before any transaction.
         assert client.txns == []
+
+
+def _make_fixed_collector(patches: tuple[QuiltPatchInput, ...]):
+    """Return a collect_quilt_patches stand-in yielding exactly ``patches``.
+
+    The CLI builds its patch list from argparse; this pins it to the same
+    set the library side was handed, so the parity assertion compares
+    COMPOSITION rather than two different inputs.
+    """
+
+    async def _collect(*, args: object) -> dict[str, bytes]:
+        return {patch.identifier: patch.contents for patch in patches}
+
+    return _collect
+
+
+def _base_quilt_relay_args(**overrides: object) -> argparse.Namespace:
+    """Build a complete argparse.Namespace for store_quilt_relay.
+
+    Mirrors :func:`_base_relay_args`, swapping the blob command's
+    --content/--file for the quilt command's three patch sources.
+    """
+    defaults: dict[str, object] = {
+        "paths": [],
+        "patch_file": [],
+        "patch_content": [("a.bin", "AAAAAA")],
+        "epochs": 5,
+        "permanent": False,
+        "max_tip": None,
+        "relay": None,
+        "tip_gas_source": FROM_GAS,
+        "recipient": None,
+        "full_json": False,
+        "sender": None,
+        "sponsor": None,
+        "mode": "simulate",
+        "from_cfg_path": None,
+        "active_network": None,
+        "pysui_config_path": None,
+        "pysui_group_name": None,
+        "pysui_profile_name": None,
+        "pysui_address": None,
+        "pysui_alias": None,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+class TestQuiltSimulateMatchesPipelineComposition:
+    """CLI ``store_quilt_relay --mode simulate`` composes the SAME Tx1 as
+    the library's ``store_quilt_relay`` execute path, for identical patches.
+
+    A quilt is an ordinary blob by the time Tx1 is composed, so this pins
+    the same guarantee the blob test does -- but it has to be pinned
+    SEPARATELY, because the CLI reaches composition through its own
+    assemble-then-encode sequence, and a divergence there would not show up
+    in the blob test at all.
+    """
+
+    async def test_composed_quilt_ptb_matches(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        patches = (
+            QuiltPatchInput(identifier="a.bin", contents=b"A" * 6),
+            QuiltPatchInput(identifier="b.bin", contents=b"\x00" * 300),
+        )
+        encoded = _fixed_encoded_blob()
+        quote = _fixed_quote()
+        auth_package = _fixed_auth_package()
+
+        def _fake_encode_blob(*, data: bytes, n_shards: int) -> EncodedBlob:
+            return encoded
+
+        async def _fake_quote_tip(**kwargs: Any) -> TipQuote:
+            return quote
+
+        def _fake_build_auth_package(*, data: bytes) -> AuthPackage:
+            return auth_package
+
+        async def _fake_prepare_chain_context(*, client: Any) -> ChainContext:
+            return ChainContext(
+                committee=await client.committee(),
+                system_object="0xsystem",
+                package_id="0xpkg",
+            )
+
+        async def _fake_select_wal_payment_coin(*, client: object, owner: str) -> str:
+            return "0xwal"
+
+        monkeypatch.setattr(
+            blob_execute_module, "select_wal_payment_coin", _fake_select_wal_payment_coin
+        )
+
+        # -- Library pipeline (execute) path.
+        captured: dict[str, _RecordingComposeTxn] = {}
+
+        async def _stop_after_compose(
+            *, client: object, txn: _RecordingComposeTxn, **kwargs: Any
+        ) -> None:
+            captured["pipeline_txn"] = txn
+            raise _StopAfterCompose()
+
+        monkeypatch.setattr(pipeline_module, "encode_blob", _fake_encode_blob)
+        monkeypatch.setattr(pipeline_module, "quote_tip", _fake_quote_tip)
+        monkeypatch.setattr(
+            pipeline_module, "build_auth_package", _fake_build_auth_package
+        )
+        monkeypatch.setattr(
+            pipeline_module, "prepare_chain_context", _fake_prepare_chain_context
+        )
+        monkeypatch.setattr(
+            registration_module, "execute_registration_txn", _stop_after_compose
+        )
+
+        pipeline_client = _FakeParityClient(
+            active_address="0xsender", signable=frozenset()
+        )
+        with pytest.raises(_StopAfterCompose):
+            await pipeline_module.store_quilt_relay(
+                client=pipeline_client,
+                patches=patches,
+                epochs=5,
+                deletable=True,
+                relay_name=None,
+                sender=None,
+                sponsor=None,
+                recipient=None,
+                tip_source=FROM_GAS,
+                wal_payment_coin=None,
+            )
+        pipeline_txn = captured["pipeline_txn"]
+
+        # -- CLI simulate path. Assembly is NOT faked on either side: it is
+        # deterministic for the same patches and shard count, so both must
+        # arrive at the same buffer on their own.
+        monkeypatch.setattr(tusky_cmds_relay, "config_from_args", lambda args: object())
+        cli_client = _FakeParityClient(active_address="0xsender", signable=frozenset())
+        monkeypatch.setattr(
+            tusky_cmds_relay, "WalrusClient", lambda *, pytusk_config: cli_client
+        )
+        monkeypatch.setattr(tusky_cmds_relay, "encode_blob", _fake_encode_blob)
+        monkeypatch.setattr(tusky_cmds_relay, "quote_tip", _fake_quote_tip)
+        monkeypatch.setattr(
+            tusky_cmds_relay, "build_auth_package", _fake_build_auth_package
+        )
+
+        async def _fake_walrus_package_id(*, client: object) -> tuple[str, str]:
+            return "0xsystem", "0xpkg"
+
+        monkeypatch.setattr(
+            tusky_cmds_relay, "walrus_package_id", _fake_walrus_package_id
+        )
+
+        async def _fake_submit(*, client: object, txdict: dict, mode: str) -> SuiRpcResult:
+            return SuiRpcResult(True, "", types.SimpleNamespace())
+
+        monkeypatch.setattr(tusky_cmds_relay, "submit", _fake_submit)
+
+        async def _fake_cost(
+            *, client: object, transaction: object
+        ) -> tuple[dict, dict]:
+            return {}, {}
+
+        monkeypatch.setattr(
+            tusky_cmds_relay, "simulate_cost_from_balance_changes", _fake_cost
+        )
+
+        args = _base_quilt_relay_args(
+            patch_content=[("a.bin", "AAAAAA")],
+            patch_file=[],
+            paths=[],
+        )
+        # The CLI takes its patches from --patch-content; the pipeline side
+        # above was given the same first patch plus a second. Align them so
+        # the comparison is of composition, not of inputs.
+        monkeypatch.setattr(
+            tusky_cmds_relay,
+            "collect_quilt_patches",
+            _make_fixed_collector(patches),
+        )
+        await tusky_cmds_relay.store_quilt_relay(args)
+
+        assert len(cli_client.txns) == 1
+        cli_txn = cli_client.txns[0]
+
+        cli_inputs = list(cli_txn.builder.inputs.values())
+        pipeline_inputs = list(pipeline_txn.builder.inputs.values())
+        assert len(cli_inputs) == len(pipeline_inputs) == 1
+        assert cli_inputs[0].enum_name == pipeline_inputs[0].enum_name == "Pure"
+        assert cli_inputs[0].value == pipeline_inputs[0].value
+
+        assert cli_txn.calls == pipeline_txn.calls
+        kinds = [kind for kind, _ in cli_txn.calls]
+        # tip split, tip transfer, reserve_space, register_blob, the quilt's
+        # _walrusBlobType metadata pair, then the transfer that consumes the
+        # Blob. That metadata call is what distinguishes a quilt's Tx1 from a
+        # plain blob's, and it must sit AFTER register_blob (which produces
+        # the Blob) and BEFORE the transfer (which consumes it).
+        assert kinds == [
+            "split_coin",
+            "transfer_objects",
+            "move_call",
+            "move_call",
+            "move_call",
+            "transfer_objects",
+        ]

@@ -22,6 +22,12 @@ network.
 """
 
 from pytusk.core.encoding.object_ids import object_id_to_raw_bytes
+from pytusk.core.encoding.quilt import (
+    QUILT_BLOB_ATTRIBUTES,
+    QuiltAssemblyError,
+    assemble_quilt,
+    quilt_patch_id,
+)
 from pytusk.core.encoding.redstuff import (
     RS2_ENCODING_TYPE,
     RS2_MAX_SYMBOL_SIZE,
@@ -44,11 +50,14 @@ from pytusk.core.encoding.redstuff import (
 )
 
 __all__ = [
+    "QUILT_BLOB_ATTRIBUTES",
     "RS2_ENCODING_TYPE",
     "RS2_MAX_SYMBOL_SIZE",
     "RS2_REQUIRED_ALIGNMENT",
     "BlobTooLargeError",
     "EncodedBlob",
+    "QuiltAssemblyError",
+    "assemble_quilt",
     "blob_id_from_url_base64",
     "blob_id_to_u256",
     "blob_id_to_url_base64",
@@ -60,6 +69,7 @@ __all__ = [
     "metadata_length",
     "min_n_correct",
     "object_id_to_raw_bytes",
+    "quilt_patch_id",
     "root_hash_to_u256",
     "source_symbol_counts",
     "symbol_size",
