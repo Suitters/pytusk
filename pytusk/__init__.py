@@ -219,6 +219,7 @@ from pytusk.core.types import (
     CertifyResult,
     ChainContextError,
     ConstTip,
+    ExecuteOnlyClient,
     LinearTip,
     QuiltPatchInput,
     QuiltPatchLayout,
@@ -441,4 +442,6 @@ __all__ = [  # noqa: RUF022
     # Receipt protocols
     "StageTimingsProtocol",
     "UploadReceipt",
+    # Client protocols
+    "ExecuteOnlyClient",
 ]
