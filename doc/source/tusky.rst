@@ -54,10 +54,12 @@ Every subcommand accepts these options to control which
 Signing options (PTB commands only)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The blob-lifecycle move-call commands (``exchange_for_wal``,
-``exchange_for_sui``, ``extend_blob_expiration``, ``delete_blob``,
-``burn_blob``) build and submit a Programmable Transaction Block (PTB), so
-they additionally accept:
+The commands that build and submit a Programmable Transaction Block (PTB)
+-- ``store_blob_native``, ``store_blob_relay``, ``store_quilt_relay``,
+``certify_blob``, ``exchange_for_wal``, ``exchange_for_sui``,
+``extend_blob_expiration``, ``delete_blob``, ``burn_blob``,
+``split_storage``, ``fuse_storage``, ``reclaim_storage`` and
+``extend_blob_with_storage`` -- additionally accept:
 
 ``--sender``
    Address to build and sign the transaction as (default: active address).
@@ -658,7 +660,7 @@ other than ``CERTIFIED``.
 ``--content`` / ``--file``
    The original blob content, required with ``--recover``. Re-encoded and
    checked: the resulting ``blob_id`` must match what's already
-   registered on-chain for ``-i``, or the command errors out before
+   registered on-chain for ``-o``, or the command errors out before
    uploading anything mismatched.
 
 ``--mode``
@@ -797,6 +799,58 @@ therefore always on stdout rather than being swallowed by the non-zero exit
    that it does not advertise anywhere. No tip-configuration field reports
    it, and ``--mode simulate`` will happily price a blob the relay will
    later refuse. Keep relay writes under roughly 1 GiB, and use
+   ``store_blob_native`` for anything larger.
+
+store_quilt_relay
+~~~~~~~~~~~~~~~~~
+
+Store several files as one quilt through an upload relay: tip +
+``reserve_space`` + ``register_blob`` (Tx1), a POST of the assembled quilt
+bytes to the relay, then ``certify_blob`` (Tx2). The whole batch costs one
+registration and one certification rather than one each. Unlike
+``store_quilt``, which needs an HTTP publisher, this is the path that works
+on Mainnet.
+
+.. code-block:: console
+
+   tusky store_quilt_relay [--paths PATH [PATH ...]]
+                           [--patch-file KEY=PATH ...] [--patch-content KEY=TEXT ...]
+                           --epochs N [--permanent] [--relay NAME]
+                           [--tip-gas-source from_gas|COIN_ID] [--max-tip MIST]
+                           [--timeout SECONDS]
+                           [--recipient ADDRESS] [--full-json]
+                           [--log-file PATH] [--verbose]
+                           [--sender ADDRESS] [--sponsor ADDRESS]
+                           [--mode simulate|execute]
+
+``--paths`` / ``--patch-file`` / ``--patch-content``
+   The same three ways of naming quilt members as ``store_quilt`` above:
+   combinable, and duplicate patch keys across all three are rejected.
+
+``--relay``, ``--tip-gas-source``, ``--max-tip``, ``--mode``, ``--log-file``, ``--verbose``
+   Same semantics as ``store_blob_relay`` above. The relay upload progress
+   that ``--log-file``/``--verbose`` surface comes from the shared upload
+   stage, so this command reports exactly what the blob command does.
+
+``--timeout``
+   Per-attempt timeout for the POST to the relay, in seconds. A quilt is
+   larger than any single file in it and every retry re-sends the whole
+   assembled buffer from the start, so this generally wants raising above
+   what a single blob would need.
+
+Tx1 also writes the ``_walrusBlobType = "quilt"`` attribute onto the
+``Blob`` object, which is what records on chain that the stored bytes are a
+quilt rather than a plain blob.
+
+The patch keys reported back are sorted by identifier, not listed in the
+order they were given: packing order determines each patch's id, so it is a
+function of the batch's content rather than of argument order.
+
+.. warning::
+
+   The same unadvertised relay body limit applies -- in practice about
+   1 GiB -- but it applies to the ASSEMBLED quilt, not to any individual
+   patch. A batch of individually small files can cross it. Use
    ``store_blob_native`` for anything larger.
 
 
@@ -1002,7 +1056,7 @@ Example — execute mode, two objects in one batch:
 
 .. code-block:: console
 
-   $ tusky reclaim_storage -i 0xc66d24f61597cd7679e60a74b74d610d0d1519bd79698a747756851e7d4066ad 0xe5b11f312838a84af2f2879e962cf11e836c732582cec36bbc9eec12bfd41133 --mode execute
+   $ tusky reclaim_storage -s 0xc66d24f61597cd7679e60a74b74d610d0d1519bd79698a747756851e7d4066ad 0xe5b11f312838a84af2f2879e962cf11e836c732582cec36bbc9eec12bfd41133 --mode execute
    Destroyed batch 1/1 (2 storage object(s)).
    { ... }
      0xc66d24f61597cd7679e60a74b74d610d0d1519bd79698a747756851e7d4066ad: 1489600 MIST redeemed

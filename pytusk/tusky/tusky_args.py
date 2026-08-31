@@ -779,6 +779,22 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
             "of lines)."
         ),
     )
+    p_store_quilt_relay.add_argument(
+        "--log-file",
+        dest="log_file",
+        type=Path,
+        default=None,
+        help=(
+            "Write an INFO-level log of this run's relay upload progress "
+            "to the given path (default: no log file is written)."
+        ),
+    )
+    p_store_quilt_relay.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        help="Emit INFO-level relay upload progress to stdout.",
+    )
     _add_signing_args(p_store_quilt_relay)
     _add_config_args(p_store_quilt_relay)
 

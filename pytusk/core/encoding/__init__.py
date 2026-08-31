@@ -27,6 +27,7 @@ from pytusk.core.encoding.quilt import (
     QuiltAssemblyError,
     assemble_quilt,
     quilt_patch_id,
+    validate_quilt_identifier,
 )
 from pytusk.core.encoding.redstuff import (
     RS2_ENCODING_TYPE,
@@ -73,4 +74,5 @@ __all__ = [
     "root_hash_to_u256",
     "source_symbol_counts",
     "symbol_size",
+    "validate_quilt_identifier",
 ]

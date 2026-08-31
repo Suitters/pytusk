@@ -353,9 +353,15 @@ async def prepare_quilt_write(
 
     encode_start = time.monotonic()
     try:
+        # Encode against the shard count the buffer was ASSEMBLED for, rather
+        # than reading the committee a second time. The two are the same value
+        # today; taking it from the assembled quilt makes them ONE expression
+        # that cannot drift. A quilt packed for one n_shards and encoded
+        # against another is a perfectly valid blob whose geometry no reader
+        # can decode, and nothing downstream would catch it.
         encoded = await asyncio.to_thread(
             functools.partial(
-                encode_blob, data=assembled.data, n_shards=context.committee.n_shards
+                encode_blob, data=assembled.data, n_shards=assembled.n_shards
             )
         )
     except (RuntimeError, ValueError) as exc:
@@ -1176,7 +1182,7 @@ async def store_quilt_relay(
     patch_receipts = tuple(
         QuiltPatchReceipt(
             identifier=layout.identifier,
-            tags=layout.tags,
+            tags=dict(layout.tags),
             start_index=layout.start_index,
             end_index=layout.end_index,
             patch_id=quilt_patch_id(

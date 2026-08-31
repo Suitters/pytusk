@@ -12,6 +12,7 @@ must not have to reimplement the retry rule to avoid re-POSTing wrongly.
 """
 
 import asyncio
+import logging
 import time
 
 from pytusk.client.walrus_client import WalrusClient
@@ -22,6 +23,11 @@ __all__ = [
     "DEFAULT_MAX_UPLOAD_ATTEMPTS",
     "upload_to_relay",
 ]
+
+_LOGGER = logging.getLogger(__name__)
+"""Progress records only. The library NEVER configures handlers or levels --
+tusky does that, opt-in, via ``configure_upload_logging``. A caller that
+configures nothing sees nothing, courtesy of the package NullHandler."""
 
 DEFAULT_MAX_UPLOAD_ATTEMPTS: int = 5
 """Default number of POSTs attempted before reporting UNANSWERED."""
@@ -118,12 +124,26 @@ async def upload_to_relay(
 
     for attempt in range(1, max_attempts + 1):
         attempts = attempt
+        _LOGGER.info(
+            "Relay upload attempt %d/%d: POSTing %d bytes for blob %s to %s",
+            attempt,
+            max_attempts,
+            len(data),
+            blob_id,
+            relay_url,
+        )
         result = await client.execute(
             command=command, base_url=relay_url, timeout=timeout
         )
         ack = result.result_data
 
         if result.is_ok():
+            _LOGGER.info(
+                "Relay accepted blob %s on attempt %d after %.1fs",
+                blob_id,
+                attempt,
+                time.monotonic() - started,
+            )
             return RelayUploadResult(
                 outcome=RelayUploadOutcome.UPLOADED,
                 certificate=ack.confirmation_certificate,
@@ -153,6 +173,13 @@ async def upload_to_relay(
                 relay_status < 500
                 and relay_status not in _RETRYABLE_CLIENT_STATUSES
             ):
+                _LOGGER.info(
+                    "Relay REFUSED blob %s with status %s: %s -- not"
+                    " retryable, so the attempt budget is abandoned",
+                    blob_id,
+                    relay_status,
+                    relay_message,
+                )
                 return RelayUploadResult(
                     outcome=RelayUploadOutcome.REFUSED,
                     certificate=None,
@@ -168,9 +195,26 @@ async def upload_to_relay(
                 )
 
         if attempt < max_attempts:
+            _LOGGER.info(
+                "Relay attempt %d/%d unsuccessful (status=%s, transport=%s);"
+                " retrying in %.1fs",
+                attempt,
+                max_attempts,
+                relay_status,
+                transport_error,
+                delay,
+            )
             await asyncio.sleep(delay)
             delay = min(delay * 2, _RETRY_MAX_DELAY)
 
+    _LOGGER.info(
+        "Relay upload budget exhausted for blob %s after %d attempts and"
+        " %.1fs. The tip is untouched; a later POST reusing the same"
+        " tx_id and nonce costs nothing.",
+        blob_id,
+        attempts,
+        time.monotonic() - started,
+    )
     return RelayUploadResult(
         outcome=RelayUploadOutcome.UNANSWERED,
         certificate=None,

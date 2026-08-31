@@ -90,6 +90,17 @@ QUILT_INDEX_PREFIX_SIZE: int = QUILT_VERSION_BYTES_LENGTH + QUILT_INDEX_SIZE_BYT
 QUILT_PATCH_BLOB_HEADER_SIZE: int = 6
 """Per-blob header: version(1) + length(u32 LE) + mask(1)."""
 
+QUILT_PATCH_LENGTH_BYTES_LENGTH: int = 4
+MAX_SERIALIZED_BLOB_SIZE: int = (1 << (8 * QUILT_PATCH_LENGTH_BYTES_LENGTH)) - 1
+"""4294967295 -- the largest payload the header's u32 LE length field holds.
+
+Upstream bounds this as ``BlobHeaderV1::MAX_SERIALIZED_BLOB_SIZE`` (``u32::MAX``)
+with a STRICT ``>``, so a payload of exactly this size is ACCEPTED. The
+identifier ceiling one field over uses ``>=`` instead. That asymmetry is
+upstream's own, and reproducing it is what keeps the two clients agreeing on
+which inputs are valid.
+"""
+
 BLOB_IDENTIFIER_SIZE_BYTES_LENGTH: int = 2
 TAGS_SIZE_BYTES_LENGTH: int = 2
 MAX_BLOB_IDENTIFIER_BYTES_LENGTH: int = (1 << (8 * BLOB_IDENTIFIER_SIZE_BYTES_LENGTH)) - 1
@@ -254,6 +265,19 @@ def _can_blobs_fit(*, blob_sizes: list[int], n_columns: int, column_size: int) -
     )
 
 
+def _div_ceil(*, numerator: int, denominator: int) -> int:
+    """Integer ceiling division, mirroring Rust's ``usize::div_ceil``.
+
+    Args:
+        numerator (int): The dividend.
+        denominator (int): The divisor, which must be positive.
+
+    Returns:
+        int: The smallest integer not less than the quotient.
+    """
+    return -(-numerator // denominator)
+
+
 def compute_symbol_size(
     *,
     blob_sizes: list[int],
@@ -264,16 +288,21 @@ def compute_symbol_size(
     """Return the smallest symbol size that fits every blob in whole columns.
 
     Binary search, mirroring upstream exactly. The lower bound is the largest
-    of three floors -- the average bytes per symbol if everything packed
+    of three CEILINGS -- the average bytes per symbol if everything packed
     perfectly, the index's own need given its column cap, and the space the
     index prefix alone requires -- and the search narrows until the smallest
     workable size is found, then rounds UP to the encoding's alignment.
 
-    The bounds are deliberately not pre-rounded to integers. Upstream keeps
-    them as real-valued divisions and only floors at the midpoint, so
-    integer-truncating them here would search a different space and can pick
-    a larger symbol size than upstream for the same inputs -- a quilt that is
-    self-consistent but does not match any other client's bytes.
+    EVERY step is integer arithmetic, because upstream's is: its operands are
+    all ``usize`` and it performs NO real-valued division anywhere in this
+    function. Both bounds use ``div_ceil``, the midpoint uses truncating
+    integer division, and the result uses ``next_multiple_of``. Note the
+    upper bound's inner ``n_columns / len(blob_sizes)`` truncates BEFORE
+    being multiplied by ``n_rows``, and the whole product is a single
+    divisor -- not a division followed by a multiplication. Substituting
+    float division anywhere here searches a different space and can settle on
+    a symbol size no other client would choose, giving a quilt that is
+    self-consistent but matches nobody else's bytes.
 
     Args:
         blob_sizes (list[int]): Serialized size of each blob. The INDEX's own
@@ -299,17 +328,20 @@ def compute_symbol_size(
             f"shard count provides only {n_columns}."
         )
 
-    min_val: float = max(
-        sum(blob_sizes) / (n_columns * n_rows),
-        blob_sizes[0] / (n_rows * max_index_columns),
-        math.ceil(QUILT_INDEX_PREFIX_SIZE / n_rows),
+    min_val: int = max(
+        _div_ceil(numerator=sum(blob_sizes), denominator=n_columns * n_rows),
+        _div_ceil(
+            numerator=blob_sizes[0], denominator=n_rows * max_index_columns
+        ),
+        _div_ceil(numerator=QUILT_INDEX_PREFIX_SIZE, denominator=n_rows),
     )
-    max_val: float = math.ceil(
-        (max(blob_sizes) / (n_columns / len(blob_sizes))) * n_rows
+    max_val: int = _div_ceil(
+        numerator=max(blob_sizes),
+        denominator=n_columns // len(blob_sizes) * n_rows,
     )
 
     while min_val < max_val:
-        mid = math.floor((min_val + max_val) / 2)
+        mid = (min_val + max_val) // 2
         if _can_blobs_fit(
             blob_sizes=blob_sizes, n_columns=n_columns, column_size=mid * n_rows
         ):
@@ -318,7 +350,8 @@ def compute_symbol_size(
             min_val = mid + 1
 
     symbol_size = (
-        math.ceil(min_val / RS2_REQUIRED_ALIGNMENT) * RS2_REQUIRED_ALIGNMENT
+        _div_ceil(numerator=min_val, denominator=RS2_REQUIRED_ALIGNMENT)
+        * RS2_REQUIRED_ALIGNMENT
     )
 
     if not _can_blobs_fit(
@@ -382,6 +415,18 @@ def _write_blob_to_quilt(
     bytes_written = 0
 
     def write_bytes(data: bytes) -> None:
+        """Write one contiguous run into the matrix, column by column.
+
+        Args:
+            data (bytes): The run to write, continuing from wherever the
+                previous call left off.
+
+        Returns:
+            None.
+
+        Raises:
+            QuiltAssemblyError: If the run would extend past the matrix.
+        """
         nonlocal bytes_written
         offset = bytes_written
         symbols_to_skip = offset // symbol_size
@@ -394,6 +439,18 @@ def _write_blob_to_quilt(
             base_index = current_row * row_size + current_col * symbol_size
             start_index = base_index + remaining_offset
             length = min(symbol_size - remaining_offset, len(data) - index)
+            if start_index + length > len(quilt):
+                # A bytearray slice assignment past the end EXTENDS the
+                # buffer rather than raising, where upstream's
+                # copy_from_slice panics. Unreachable today, since
+                # _can_blobs_fit already guarantees the geometry -- but a
+                # silently longer buffer would encode to a valid blob id for
+                # the wrong bytes, so this fails pre-spend instead of
+                # surfacing later as data nobody can read.
+                raise QuiltAssemblyError(
+                    f"Quilt write of {length} bytes at offset {start_index} "
+                    f"would extend past the {len(quilt)}-byte matrix."
+                )
             quilt[start_index : start_index + length] = data[index : index + length]
             index += length
             remaining_offset = 0
@@ -470,12 +527,25 @@ def _blob_metadata(*, patch: QuiltPatchInput) -> bytes:
             the blob's contents.
 
     Raises:
-        QuiltAssemblyError: If the identifier exceeds its byte ceiling.
+        QuiltAssemblyError: If the BCS-serialized identifier reaches the u16
+            length field's ceiling, or the payload exceeds the u32 one.
     """
-    # Length is validated by validate_quilt_identifier against the RAW UTF-8
-    # bytes, which is what upstream bounds. These bytes carry an extra
-    # ULEB128 prefix, so measuring them here would bound the wrong thing.
+    # validate_quilt_identifier bounds the RAW UTF-8 length, mirroring
+    # upstream's construction-time check. Upstream ALSO bounds the
+    # BCS-SERIALIZED length at serialization time (serialized_blob_size,
+    # quilt_encoding.rs:728) -- and that is what this 2-byte prefix actually
+    # carries, since the ULEB128 prefix makes it 1-3 bytes longer than the
+    # raw length. Both checks are needed to accept exactly the identifiers
+    # upstream accepts; without this one an oversize identifier escapes as
+    # OverflowError out of to_bytes() rather than as QuiltAssemblyError.
     identifier_bytes = bcse.String.encode(patch.identifier)
+    if len(identifier_bytes) >= MAX_BLOB_IDENTIFIER_BYTES_LENGTH:
+        raise QuiltAssemblyError(
+            f"Quilt patch identifier {patch.identifier!r} serializes to "
+            f"{len(identifier_bytes)} bytes, at or above the "
+            f"{MAX_BLOB_IDENTIFIER_BYTES_LENGTH}-byte ceiling upstream "
+            "enforces on the u16 identifier length field."
+        )
 
     tag_bytes = _serialize_tags(tags=patch.tags) if patch.tags else None
 
@@ -492,6 +562,13 @@ def _blob_metadata(*, patch: QuiltPatchInput) -> bytes:
     # The header's length field covers everything AFTER the header itself --
     # the identifier and tag sections plus the blob's own contents.
     payload_length = metadata_size - QUILT_PATCH_BLOB_HEADER_SIZE + len(patch.contents)
+
+    if payload_length > MAX_SERIALIZED_BLOB_SIZE:
+        raise QuiltAssemblyError(
+            f"Quilt patch {patch.identifier!r} serializes to {payload_length} "
+            f"bytes, over the {MAX_SERIALIZED_BLOB_SIZE}-byte maximum the u32 "
+            "header length field can carry; store it as its own blob."
+        )
 
     buffer = bytearray()
     buffer.append(QUILT_VERSION_BYTE)

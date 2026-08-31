@@ -17,12 +17,9 @@ import argparse
 import asyncio
 import dataclasses
 import functools
-import io
 import json
-import logging
 import sys
 import time
-from pathlib import Path
 
 from pysui import GetObject
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
@@ -48,6 +45,7 @@ from pytusk import (
 from pytusk import store_blob_native as _store_blob_native_pipeline
 from pytusk.tusky.tusky_cmds_common import (
     config_from_args,
+    configure_upload_logging,
     read_file_bytes,
     resolve_sender,
     resolve_sponsor,
@@ -56,73 +54,10 @@ from pytusk.tusky.tusky_cmds_common import (
     walrus_package_id,
 )
 
-# --- tusky CLI logging configuration ------------------------------------
-# pytusk (the library, everything outside pytusk/tusky/) only ever emits
-# log records -- it never configures handlers, levels, or any other
-# global logging state (see pytusk/__init__.py's NullHandler). tusky, as
-# an APPLICATION built on top of pytusk, is entitled to configure logging,
-# but only when the user explicitly asks for it via --log-file/--verbose
-# on store_blob_native (the only command with progress/heartbeat
-# instrumentation today -- see pytusk.core.native_upload.common's
-# _HEARTBEAT_INTERVAL_SECONDS and its module-level comment), and never by
-# writing to a derived or default path.
-# ------------------------------------------------------------------------
-
-_NATIVE_UPLOAD_LOGGING_CONFIGURED: bool = False
-
-
-def _configure_native_upload_logging(
-    *, log_file: Path | None, verbose: bool
-) -> None:
-    """Configure the ``pytusk`` logger hierarchy per the user's CLI request.
-
-    This is tusky's own opt-in logging setup, not library scaffolding --
-    see the module comment immediately above. Adds an INFO-level stdout
-    stream handler to the ``pytusk`` logger only when ``verbose`` is True,
-    and/or an INFO-level file handler at exactly ``log_file`` only when it
-    is given -- NEVER a derived or default path. Does nothing at all when
-    neither is requested. The ``pytusk`` logger is the parent of every
-    ``pytusk.core.native_upload`` submodule's own
-    ``logging.getLogger(__name__)`` (``fanout``, ``confirm``, etc.), so
-    their progress/heartbeat records propagate up to whichever
-    destination(s) were configured. When ``verbose`` is True, stdout is
-    also reconfigured for line buffering so progress is visible live even
-    when output is redirected to a file. Idempotent: a second call in the
-    same process is a no-op, so handlers are never duplicated.
-
-    Args:
-        log_file (Path | None): Path to write an INFO-level log file to,
-            exactly as given (no default, no derived path); ``None`` to
-            skip file logging.
-        verbose (bool): Whether to emit INFO-level progress to stdout.
-    """
-    # Idempotent one-time setup guard.
-    global _NATIVE_UPLOAD_LOGGING_CONFIGURED  # pylint: disable=global-statement
-
-    if not log_file and not verbose:
-        return
-    if _NATIVE_UPLOAD_LOGGING_CONFIGURED:
-        return
-
-    logger = logging.getLogger("pytusk")
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-
-    if verbose:
-        if isinstance(sys.stdout, io.TextIOWrapper):
-            sys.stdout.reconfigure(line_buffering=True)
-        stream_handler = logging.StreamHandler(sys.stdout)
-        stream_handler.setLevel(logging.INFO)
-        stream_handler.setFormatter(formatter)
-        logger.addHandler(stream_handler)
-
-    if log_file is not None:
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
-    _NATIVE_UPLOAD_LOGGING_CONFIGURED = True
+# tusky's opt-in CLI logging setup now lives in tusky_cmds_common as
+# configure_upload_logging(), because the relay handlers need it too -- both
+# native upload and relay upload emit progress records under the `pytusk`
+# logger. See that module's placement comment.
 
 
 async def store_blob_native(args: argparse.Namespace) -> None:
@@ -147,16 +82,15 @@ async def store_blob_native(args: argparse.Namespace) -> None:
     Pass --log-file PATH to additionally write an INFO-level log of this
     run's progress to PATH, and/or --verbose to emit that same INFO-level
     progress to stdout live; neither is enabled by default (see
-    _configure_native_upload_logging()).
+    configure_upload_logging()).
 
     Args:
         args (argparse.Namespace): Parsed `store_blob_native` subcommand
             arguments.
     """
-    # tusky's opt-in logging setup -- see the module comment near
-    # _configure_native_upload_logging() above. Does nothing unless the
-    # user passed --log-file and/or --verbose.
-    _configure_native_upload_logging(log_file=args.log_file, verbose=args.verbose)
+    # tusky's opt-in logging setup, from tusky_cmds_common. Does nothing
+    # unless the user passed --log-file and/or --verbose.
+    configure_upload_logging(log_file=args.log_file, verbose=args.verbose)
     if args.log_file is not None:
         print(f"Native upload log: {args.log_file}")
 

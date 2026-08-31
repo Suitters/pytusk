@@ -123,6 +123,7 @@ from pytusk.core.encoding import (
     root_hash_to_u256,
     source_symbol_counts,
     symbol_size,
+    validate_quilt_identifier,
 )
 
 # Native upload orchestration (sliver fan-out, confirmation collection,
@@ -213,12 +214,14 @@ from pytusk.core.relay_upload import (
 )
 from pytusk.core.types import (
     FROM_GAS,
+    AssembledQuilt,
     AuthPackage,
     CertifyResult,
     ChainContextError,
     ConstTip,
     LinearTip,
     QuiltPatchInput,
+    QuiltPatchLayout,
     QuiltPatchReceipt,
     QuiltRelayReceipt,
     Registration,
@@ -330,6 +333,7 @@ __all__ = [  # noqa: RUF022
     "root_hash_to_u256",
     "source_symbol_counts",
     "symbol_size",
+    "validate_quilt_identifier",
     # Certification
     "Certificate",
     "ConfirmationMismatchError",
@@ -425,7 +429,9 @@ __all__ = [  # noqa: RUF022
     "assert_tip_within_ceiling",
     "build_auth_package",
     "parse_relay_certificate",
+    "AssembledQuilt",
     "QuiltPatchInput",
+    "QuiltPatchLayout",
     "QuiltPatchReceipt",
     "QuiltRelayReceipt",
     "quote_tip",

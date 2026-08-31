@@ -53,6 +53,7 @@ from pytusk import store_quilt_relay as _store_quilt_relay_pipeline
 from pytusk.tusky.tusky_cmds_common import (
     collect_quilt_patches,
     config_from_args,
+    configure_upload_logging,
     read_file_bytes,
     resolve_sender,
     resolve_sponsor,
@@ -430,6 +431,12 @@ async def store_blob_relay(args: argparse.Namespace) -> None:
         args (argparse.Namespace): Parsed `store_blob_relay` subcommand
             arguments.
     """
+    # tusky's opt-in logging setup, from tusky_cmds_common. Does nothing
+    # unless the user passed --log-file and/or --verbose.
+    configure_upload_logging(log_file=args.log_file, verbose=args.verbose)
+    if args.log_file is not None:
+        print(f"Relay upload log: {args.log_file}")
+
     if args.file:
         try:
             data = await asyncio.to_thread(read_file_bytes, args.file)
@@ -468,10 +475,11 @@ async def store_blob_relay(args: argparse.Namespace) -> None:
                     timeout=args.timeout,
                     on_quote=_print_tip_quote,
                 )
-            except BlobTooLargeError as exc:
-                print(f"Error in encode: {exc}", file=sys.stderr)
-                sys.exit(1)
             except RelayUploadError as exc:
+                # BlobTooLargeError is deliberately NOT caught here:
+                # prepare_write already converts it into
+                # RelayUploadError(stage="encode"), so a clause for it would
+                # be dead code advertising a control path that cannot occur.
                 print(f"Error in {exc.stage}: {exc}", file=sys.stderr)
                 sys.exit(1)
             # RegistrationPendingError is no longer caught here: the
@@ -554,6 +562,12 @@ async def store_quilt_relay(args: argparse.Namespace) -> None:
         args (argparse.Namespace): Parsed `store_quilt_relay` subcommand
             arguments.
     """
+    # tusky's opt-in logging setup, from tusky_cmds_common. Does nothing
+    # unless the user passed --log-file and/or --verbose.
+    configure_upload_logging(log_file=args.log_file, verbose=args.verbose)
+    if args.log_file is not None:
+        print(f"Relay upload log: {args.log_file}")
+
     files = await collect_quilt_patches(args=args)
     patches = [
         QuiltPatchInput(identifier=identifier, contents=contents)
@@ -589,10 +603,11 @@ async def store_quilt_relay(args: argparse.Namespace) -> None:
                     timeout=args.timeout,
                     on_quote=_print_tip_quote,
                 )
-            except BlobTooLargeError as exc:
-                print(f"Error in encode: {exc}", file=sys.stderr)
-                sys.exit(1)
             except RelayUploadError as exc:
+                # BlobTooLargeError is deliberately NOT caught here:
+                # prepare_quilt_write already converts it into
+                # RelayUploadError(stage="encode"), so a clause for it would
+                # be dead code advertising a control path that cannot occur.
                 print(f"Error in {exc.stage}: {exc}", file=sys.stderr)
                 sys.exit(1)
             except (RuntimeError, KeyError, TypeError, ValueError) as exc:
@@ -616,7 +631,11 @@ async def store_quilt_relay(args: argparse.Namespace) -> None:
         # Assembly sits between the committee read and the encode because the
         # quilt's column geometry derives from the shard count. Both halves
         # must see the SAME committee, which is why it is read once above and
-        # passed down rather than fetched again here.
+        # passed down rather than fetched again here -- and why the encode
+        # below takes its shard count from the assembled quilt itself rather
+        # than reading `committee` a second time. A quilt packed for one
+        # n_shards and encoded against another is a valid blob whose geometry
+        # no reader can decode.
         try:
             assembled = await asyncio.to_thread(
                 functools.partial(
@@ -631,7 +650,7 @@ async def store_quilt_relay(args: argparse.Namespace) -> None:
         try:
             encoded = await asyncio.to_thread(
                 functools.partial(
-                    encode_blob, data=assembled.data, n_shards=committee.n_shards
+                    encode_blob, data=assembled.data, n_shards=assembled.n_shards
                 )
             )
         except BlobTooLargeError as exc:

@@ -203,7 +203,7 @@ class TestTipGasSource:
 
 
 class TestStoreBlobRelayLogVerbose:
-    """--log-file/--verbose now exist on store_blob_relay, mirroring store_blob_native."""
+    """--log-file/--verbose exist on BOTH relay commands, as on store_blob_native."""
 
     def test_log_file_and_verbose(self, tmp_path) -> None:
         """store_blob_relay accepts --log-file and --verbose like store_blob_native."""
@@ -213,6 +213,29 @@ class TestStoreBlobRelayLogVerbose:
                 "store_blob_relay",
                 "--content",
                 "hello",
+                "--epochs",
+                "5",
+                "--log-file",
+                str(log_path),
+                "--verbose",
+            ]
+        )
+        assert args.log_file == log_path
+        assert args.verbose is True
+
+    def test_quilt_relay_log_file_and_verbose(self, tmp_path) -> None:
+        """store_quilt_relay accepts --log-file and --verbose as well.
+
+        The relay upload progress they surface is emitted by the shared
+        upload stage, so the quilt command has exactly the same thing to
+        report as the blob command does.
+        """
+        log_path = tmp_path / "quilt.log"
+        args = build_parser(
+            in_args=[
+                "store_quilt_relay",
+                "--patch-content",
+                "a.txt=hello",
                 "--epochs",
                 "5",
                 "--log-file",

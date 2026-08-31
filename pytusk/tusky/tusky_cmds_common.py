@@ -26,6 +26,8 @@ live in this module.
 
 import argparse
 import asyncio
+import io
+import logging
 import os
 import sys
 from pathlib import Path
@@ -54,6 +56,77 @@ from pytusk import wal_balance_and_decimals as core_wal_balance_and_decimals
 # stays here is the CLI's own error handling -- the library call raises, and
 # this module turns that into a message on stderr and a non-zero exit.
 from pytusk.tusky.tusky_format import format_token_amount
+
+# --- tusky CLI logging configuration ------------------------------------
+# pytusk (the library, everything outside pytusk/tusky/) only ever emits log
+# records -- it never configures handlers, levels, or any other global
+# logging state (see pytusk/__init__.py's NullHandler). tusky, as an
+# APPLICATION built on top of pytusk, is entitled to configure logging, but
+# only when the user explicitly asks via --log-file/--verbose, and never by
+# writing to a derived or default path.
+#
+# This lives here rather than in a domain module because TWO domain modules
+# need it: tusky_cmds_native_upload (sliver fan-out and confirmation
+# progress) and tusky_cmds_relay (relay POST attempts and backoff). That is
+# exactly this module's rule for a cross-domain helper.
+# ------------------------------------------------------------------------
+
+_UPLOAD_LOGGING_CONFIGURED: bool = False
+
+
+def configure_upload_logging(*, log_file: Path | None, verbose: bool) -> None:
+    """Configure the ``pytusk`` logger hierarchy per the user's CLI request.
+
+    This is tusky's own opt-in logging setup, not library scaffolding -- see
+    the module comment immediately above. Adds an INFO-level stdout stream
+    handler to the ``pytusk`` logger only when ``verbose`` is True, and/or an
+    INFO-level file handler at exactly ``log_file`` only when it is given --
+    NEVER a derived or default path. Does nothing at all when neither is
+    requested. The ``pytusk`` logger is the parent of every submodule's own
+    ``logging.getLogger(__name__)`` -- the native upload's ``fanout`` and
+    ``confirm``, and the relay's ``upload`` alike -- so their progress
+    records propagate up to whichever destination(s) were configured. When
+    ``verbose`` is True, stdout is also reconfigured for line buffering so
+    progress is visible live even when output is redirected to a file.
+    Idempotent: a second call in the same process is a no-op, so handlers are
+    never duplicated.
+
+    Args:
+        log_file (Path | None): Path to write an INFO-level log file to,
+            exactly as given (no default, no derived path); ``None`` to skip
+            file logging.
+        verbose (bool): Whether to emit INFO-level progress to stdout.
+
+    Returns:
+        None.
+    """
+    # Idempotent one-time setup guard.
+    global _UPLOAD_LOGGING_CONFIGURED  # pylint: disable=global-statement
+
+    if not log_file and not verbose:
+        return
+    if _UPLOAD_LOGGING_CONFIGURED:
+        return
+
+    logger = logging.getLogger("pytusk")
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+
+    if verbose:
+        if isinstance(sys.stdout, io.TextIOWrapper):
+            sys.stdout.reconfigure(line_buffering=True)
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setLevel(logging.INFO)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+
+    if log_file is not None:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    _UPLOAD_LOGGING_CONFIGURED = True
 
 
 def config_from_args(args: argparse.Namespace) -> PytuskConfiguration:

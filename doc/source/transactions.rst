@@ -975,6 +975,202 @@ Use the convenience path unless you need to interleave custom ``move_call``
 commands or control signing per transaction.
 
 
+Quilt Upload Relay
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A quilt packs many small blobs into ONE Walrus blob, so a batch pays for one
+registration and one certification instead of one each. Assembly is a purely
+local step: once assembled, the quilt's bytes ARE an ordinary blob, and every
+stage from the tip quote onward is identical to the blob relay write above.
+That is what makes quilt writes practical on Mainnet, where no public
+publisher exists. See :doc:`intro` for choosing between the write paths and
+:doc:`tusky` for the ``store_quilt_relay`` command.
+
+Only two things distinguish a quilt write from the blob write above. Tx1
+carries one extra command -- ``insert_or_update_metadata_pair`` writing
+``_walrusBlobType = "quilt"`` -- and the bytes registered are the assembled
+buffer rather than a caller's blob. Tx2 is the same ``certify_blob``.
+
+The highest-level entry point runs the whole pipeline in one call:
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import (
+        PytuskConfiguration,
+        QuiltPatchInput,
+        RelayOutcome,
+        WalrusClient,
+        store_quilt_relay,
+    )
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            receipt = await store_quilt_relay(
+                client=client,
+                patches=[
+                    QuiltPatchInput(identifier="readme.md", contents=b"# hello"),
+                    QuiltPatchInput(
+                        identifier="notes.txt",
+                        contents=b"second patch",
+                        tags={"kind": "note"},
+                    ),
+                ],
+                epochs=5,
+                deletable=True,
+                sender=sender,
+                max_tip=1_000_000,
+                # A quilt is larger than any single file in it, and every
+                # retry re-sends the whole assembled buffer from the start.
+                timeout=900.0,
+            )
+            if receipt.outcome is RelayOutcome.CERTIFIED:
+                print(receipt.blob_id, receipt.object_id)
+                for patch in receipt.patches:
+                    print(patch.identifier, patch.patch_id)
+            else:
+                print(receipt.outcome)
+
+    asyncio.run(main())
+
+:py:class:`~pytusk.QuiltRelayReceipt` is a
+:py:class:`~pytusk.RelayBlobReceipt` with exactly one field added:
+``patches``, a tuple of :py:class:`~pytusk.QuiltPatchReceipt`. Every other
+field -- ``outcome``, ``blob_id``, ``object_id``, the transaction digests,
+the nonce -- means what it does on a blob relay write, so the error boundary
+and the ``RESUMABLE`` recovery described above apply unchanged. ``blob_id``
+IS the quilt id.
+
+**Patches come back sorted by identifier, not in the order you passed them.**
+Packing order fixes each patch's column range and therefore its
+``QuiltPatchId``, so it has to be a function of the batch's content rather
+than of how a caller happened to list it. Match patches by ``identifier``,
+never by position.
+
+Identifier rules -- non-empty, no trailing whitespace, no control
+characters, and a 65535-byte ceiling that is a BYTE count rather than a
+character one -- are enforced during assembly, which is pre-spend, so a bad
+identifier raises before anything is paid for. To check a batch WITHOUT
+assembling it, which is worth doing when identifiers come from user input,
+call :py:func:`~pytusk.validate_quilt_identifier` on each one first.
+
+.. warning::
+
+   The relay's unadvertised request-body limit -- in practice about 1 GiB --
+   applies to the ASSEMBLED quilt, not to any single patch. A batch of
+   individually small files can cross it. Use native upload above that size.
+
+Composing the Quilt Relay Write by Hand
+''''''''''''''''''''''''''''''''''''''''
+
+Assembly and encoding are the only stages that differ from
+``Composing the Relay Write by Hand`` above. From the tip quote onward the
+two paths are the same calls in the same order, so only the quilt-specific
+front half is shown here.
+
+One hard rule beyond the tip-first rule: **assemble and encode against the
+SAME shard count.** The committee is never cached, so two separate fetches
+can straddle an epoch change and disagree -- and a quilt assembled for one
+``n_shards`` then encoded against another is a perfectly valid blob whose
+geometry no reader can decode. Read the committee once, through
+:py:func:`~pytusk.prepare_chain_context`, then take the encode's shard count
+from the :py:class:`~pytusk.AssembledQuilt`'s own ``n_shards`` rather than
+reading the committee a second time. The assembled quilt records what it was
+packed for, so the two cannot drift apart.
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import (
+        QUILT_BLOB_ATTRIBUTES,
+        PytuskConfiguration,
+        QuiltPatchInput,
+        WalrusClient,
+        add_registration_sequence,
+        assemble_quilt,
+        encode_blob,
+        prepare_chain_context,
+        quilt_patch_id,
+    )
+
+    async def main():
+        config = PytuskConfiguration(active_network="testnet")
+        patches = [
+            QuiltPatchInput(identifier="readme.md", contents=b"# hello"),
+            QuiltPatchInput(identifier="notes.txt", contents=b"second patch"),
+        ]
+
+        async with WalrusClient(pytusk_config=config) as client:
+            # One read for the committee, System object and package id.
+            chain = await prepare_chain_context(client=client)
+
+            # Pack the batch. Raises PRE-SPEND on a bad identifier or a
+            # collision, which is the point of doing it before anything
+            # is registered.
+            assembled = assemble_quilt(
+                patches=patches, n_shards=chain.committee.n_shards
+            )
+
+            # From here the buffer is an ordinary blob. The shard count
+            # comes from the assembled quilt, not a second read of the
+            # committee -- the quilt carries what it was packed for.
+            encoded = encode_blob(
+                data=assembled.data, n_shards=assembled.n_shards
+            )
+
+            # Patch ids need the assembled quilt's blob id, so they cannot
+            # be composed before this point -- but they need nothing from
+            # the chain, so they are known BEFORE Tx1 is signed.
+            patch_ids = {
+                layout.identifier: quilt_patch_id(
+                    quilt_id=encoded.blob_id, layout=layout
+                )
+                for layout in assembled.patches
+            }
+
+            # Compose Tx1. add_registration_sequence orders the commands
+            # for you -- tip first, then reserve+register, then the
+            # attribute writes, then the transfer that consumes the Blob.
+            txn = await client.transaction()
+            await add_registration_sequence(
+                txn=txn,
+                encoded=encoded,
+                epochs=5,
+                deletable=True,
+                package_id=chain.package_id,
+                system_object=chain.system_object,
+                recipient=sender,
+                wal_payment_coin=payment_coin,
+                tip=tip_composition,
+                attributes=QUILT_BLOB_ATTRIBUTES,
+            )
+
+            # Sign and submit Tx1, then upload and certify exactly as in
+            # Composing the Relay Write by Hand above -- upload_to_relay,
+            # parse_relay_certificate, then certify_blob in Tx2.
+
+    asyncio.run(main())
+
+``sender``, ``payment_coin`` and ``tip_composition`` above stand in for your
+own resolution of those: the address you are signing as, a ``Coin<WAL>`` you
+own, and the tip built from ``quote_tip`` and ``build_auth_package``.
+``wal_payment_coin`` is required here because
+:py:func:`~pytusk.add_registration_sequence` is pure PTB composition and
+makes no network calls, so it cannot resolve "no coin given" into a concrete
+coin itself.
+
+Passing ``attributes=QUILT_BLOB_ATTRIBUTES`` is not decoration: it is the
+only on-chain record that these bytes are a quilt, and upstream Walrus
+writes it on every quilt store. ``pytusk`` can still read a quilt stored
+without it, because it parses the index out of the buffer itself, but the
+stored blob would not identify itself as a quilt on chain.
+
 Burning a Blob
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

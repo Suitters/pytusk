@@ -136,13 +136,19 @@ supported; which to use is a per-application choice.
      - ~13.6 GiB, the Walrus protocol maximum
      - ~1 GiB relay request-body limit, which the relay does not advertise
    * - CLI commands
-     - ``store_blob``, ``read_blob``
+     - ``store_blob``, ``read_blob``, ``store_quilt``, ``read_quilt``
      - ``store_blob_native``, ``certify_blob``
-     - ``store_blob_relay``, ``relay_configs``, ``certify_blob``
+     - ``store_blob_relay``, ``store_quilt_relay``, ``relay_configs``,
+       ``certify_blob``
    * - Library entry point
      - :py:class:`~pytusk.StoreBlob`
      - :py:func:`~pytusk.store_blob_native`
-     - :py:func:`~pytusk.store_blob_relay`
+     - :py:func:`~pytusk.store_blob_relay`,
+       :py:func:`~pytusk.store_quilt_relay`
+   * - Quilt writes
+     - Yes, via a publisher -- ``store_quilt``
+     - Not exposed by ``pytusk``
+     - Yes -- ``store_quilt_relay``
 
 **Publisher/Aggregator (HTTP)** — :py:class:`~pytusk.StoreBlob`,
 :py:class:`~pytusk.ReadBlob`, and the other :py:class:`~pytusk.WalrusCommand`
@@ -168,8 +174,13 @@ certificate the relay returns. ``pytusk`` still encodes locally on this
 path -- that is how the blob id and root hash the registration needs are
 derived -- but the relay re-encodes and performs the sliver fan-out that
 native upload does on the client, which is what makes it practical for
-Mainnet writes. See :doc:`transactions` for the
-underlying PTBs and :doc:`tusky` for the CLI commands.
+Mainnet writes. :py:func:`~pytusk.store_quilt_relay` (and
+``tusky store_quilt_relay``) writes a QUILT over that same path: the batch
+is assembled into one blob locally, then registered, uploaded and certified
+exactly as a single blob is, so a batch of small files costs one
+registration and one certification instead of one each. See
+:doc:`transactions` for the underlying PTBs and :doc:`tusky` for the CLI
+commands.
 
 Reasons to choose Publisher/Aggregator:
 
@@ -211,6 +222,10 @@ Reasons to choose Upload Relay:
   confirmation certificate, but your own Tx2 submits it. The relay never
   takes custody of the blob's on-chain identity, and cannot certify on
   your behalf.
+- **It is the only path that writes quilts on Mainnet** — the publisher
+  path needs a publisher Mainnet does not provide, and ``pytusk`` exposes
+  no native-upload quilt command, so ``store_quilt_relay`` is how a batch
+  of small files gets written there.
 
 The trade-off is real: both native upload and the relay take two Sui
 transactions instead of one HTTP call, are correspondingly slower, and can
