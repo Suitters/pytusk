@@ -43,9 +43,11 @@ from pytusk.commands.walrus_command import (
     BlobSlice,
     QuiltPatch,
     QuiltReceipt,
+    StorageNodeEnvelopeError,
     WalrusCommand,
     error_reason,
     http_failure_message,
+    unwrap_storage_node_envelope,
 )
 
 # Write commands
@@ -72,8 +74,10 @@ from pytusk.core.certification import (
     QuorumNotReachedError,
     build_certificate,
     confirmation_message,
+    is_above_validity,
     is_quorum,
     min_weight_for_quorum,
+    min_weight_for_validity,
     pack_signers_bitmap,
     unpack_signers_bitmap,
     verify_certificate,
@@ -97,6 +101,7 @@ from pytusk.core.chain import (
     matches_wal_coin_type,
     require_success,
 )
+from pytusk.core.chain.events import event_object_id, fetch_event_object_id
 
 # Encoding (RedStuff, blob-ID and root-hash conversions)
 from pytusk.core.encoding import (
@@ -184,6 +189,7 @@ from pytusk.core.ops import (
     wait_for_finality,
     wal_balance_and_decimals,
 )
+from pytusk.core.ops.blob_status import fetch_blob_status
 
 # End-to-end write pipelines (the compose functions that own stage order and
 # receipt construction -- see pytusk.core.pipelines's module docstring)
@@ -216,11 +222,23 @@ from pytusk.core.types import (
     FROM_GAS,
     AssembledQuilt,
     AuthPackage,
+    BlobStatus,
+    BlobStatusReport,
     CertifyResult,
     ChainContextError,
+    CommitteeAndNodeClient,
     ConstTip,
+    DeletableCounts,
+    DeletableStatus,
+    DissentReason,
+    EventRef,
     ExecuteOnlyClient,
+    InvalidStatus,
     LinearTip,
+    NodeDissent,
+    NodeRef,
+    NonexistentStatus,
+    PermanentStatus,
     QuiltPatchInput,
     QuiltPatchLayout,
     QuiltPatchReceipt,
@@ -229,6 +247,7 @@ from pytusk.core.types import (
     RegistrationPendingError,
     RelayUploadOutcome,
     RelayUploadResult,
+    Resolution,
     SplitResult,
     StageTimingsProtocol,
     StorageObject,
@@ -238,6 +257,7 @@ from pytusk.core.types import (
     TipKind,
     TipQuote,
     TipResult,
+    UnresolvedStatus,
     UploadReceipt,
 )
 from pytusk.version import __version__
@@ -282,6 +302,7 @@ __all__ = [  # noqa: RUF022
     "find_created_object_id",
     "require_success",
     # Command base and response types
+    "StorageNodeEnvelopeError",
     "WalrusCommand",
     "BlobData",
     "BlobSlice",
@@ -290,6 +311,7 @@ __all__ = [  # noqa: RUF022
     "QuiltReceipt",
     "error_reason",
     "http_failure_message",
+    "unwrap_storage_node_envelope",
     # Read commands
     "ReadBlob",
     "ReadBlobPartial",
@@ -316,7 +338,23 @@ __all__ = [  # noqa: RUF022
     "RS2_REQUIRED_ALIGNMENT",
     "BlobTooLargeError",
     "EncodedBlob",
+    "BlobStatus",
+    "BlobStatusReport",
+    "DeletableCounts",
+    "DeletableStatus",
+    "DissentReason",
+    "EventRef",
+    "InvalidStatus",
+    "NodeDissent",
+    "NodeRef",
+    "NonexistentStatus",
+    "PermanentStatus",
+    "Resolution",
+    "UnresolvedStatus",
     "blob_id_from_url_base64",
+    "event_object_id",
+    "fetch_blob_status",
+    "fetch_event_object_id",
     "blob_id_to_u256",
     "blob_id_to_url_base64",
     "decode_standard_base64",
@@ -343,8 +381,10 @@ __all__ = [  # noqa: RUF022
     "QuorumNotReachedError",
     "build_certificate",
     "confirmation_message",
+    "is_above_validity",
     "is_quorum",
     "min_weight_for_quorum",
+    "min_weight_for_validity",
     "pack_signers_bitmap",
     "unpack_signers_bitmap",
     "verify_certificate",
@@ -443,5 +483,6 @@ __all__ = [  # noqa: RUF022
     "StageTimingsProtocol",
     "UploadReceipt",
     # Client protocols
+    "CommitteeAndNodeClient",
     "ExecuteOnlyClient",
 ]

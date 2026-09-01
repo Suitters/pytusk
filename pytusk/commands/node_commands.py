@@ -15,17 +15,26 @@ an explicit ``base_url`` to :meth:`~pytusk.client.walrus_client.WalrusClient.exe
 
 import binascii
 import dataclasses
-import json
 from typing import ClassVar
 
 import httpx
 from pysui import SuiRpcResult
 
 from pytusk.commands.walrus_command import (
+    StorageNodeEnvelopeError,
     WalrusCommand,
     http_failure_message,
+    unwrap_storage_node_envelope,
 )
 from pytusk.core.encoding import blob_id_to_url_base64, decode_standard_base64
+from pytusk.core.types.blob_status import (
+    DeletableCounts,
+    DeletableStatus,
+    EventRef,
+    InvalidStatus,
+    NonexistentStatus,
+    PermanentStatus,
+)
 
 _VALID_SLIVER_TYPES = ("primary", "secondary")
 
@@ -269,33 +278,36 @@ class GetStorageConfirmation(WalrusCommand):
         return params
 
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
+        context = (
+            f"blob_id={blob_id_to_url_base64(blob_id=self.blob_id)} "
+            f"object_id={self.object_id!r}"
+        )
         if response.is_error:
-            context = (
-                f"blob_id={blob_id_to_url_base64(blob_id=self.blob_id)} "
-                f"object_id={self.object_id!r}"
-            )
             return SuiRpcResult(
                 False, http_failure_message(response=response, context=context)
             )
 
+        # The `success`/`data` unwrap is the shared storage-node envelope,
+        # not a confirmation concern -- see unwrap_storage_node_envelope.
+        # Everything below the unwrap IS confirmation-specific payload shape.
         try:
-            data = response.json()
-        except json.JSONDecodeError as exc:
-            return SuiRpcResult(
-                False, f"Malformed confirmation response body: {exc}"
+            inner = unwrap_storage_node_envelope(
+                response=response, context=context
             )
-        success = data.get("success") if isinstance(data, dict) else None
-        if not isinstance(success, dict):
-            return SuiRpcResult(False, f"Unexpected confirmation response: {data}")
-        inner = success.get("data")
+        except StorageNodeEnvelopeError as exc:
+            return SuiRpcResult(False, str(exc))
         if not isinstance(inner, dict):
             return SuiRpcResult(
-                False, f"Unexpected confirmation response: missing 'data': {data}"
+                False,
+                f"Unexpected confirmation response: 'data' is not an object "
+                f"[{context}]: {inner!r}",
             )
         signed = inner.get("signed")
         if not isinstance(signed, dict):
             return SuiRpcResult(
-                False, f"Unexpected confirmation response: missing 'signed': {data}"
+                False,
+                f"Unexpected confirmation response: missing 'signed' "
+                f"[{context}]: {inner}",
             )
         serialized_message_b64 = signed.get("serializedMessage")
         signature_b64 = signed.get("signature")
@@ -305,7 +317,7 @@ class GetStorageConfirmation(WalrusCommand):
             return SuiRpcResult(
                 False,
                 "Unexpected confirmation response: missing 'serializedMessage' or "
-                f"'signature': {data}",
+                f"'signature' [{context}]: {inner}",
             )
 
         # Standard PADDED base64 here -- deliberately different from the
@@ -332,3 +344,225 @@ class GetStorageConfirmation(WalrusCommand):
                 False,
                 f"Malformed confirmation response signature encoding: {exc}",
             )
+
+
+def _parse_event_ref(*, raw: object, context: str) -> EventRef:
+    """Build an :class:`EventRef` from a node's event object.
+
+    ``eventSeq`` arrives as a JSON STRING -- Walrus serialises ``u64`` that
+    way for human-readable formats -- so it is converted here rather than
+    left for callers to trip over.
+
+    Args:
+        raw (object): The decoded ``statusEvent``/``event`` member.
+        context (str): Diagnostic context for error messages.
+
+    Returns:
+        EventRef: The normalised reference.
+
+    Raises:
+        TypeError: If the shape is wrong (wrong JSON type, missing member).
+        ValueError: If the sequence encoding is unusable. Both are converted
+            by the caller into a failed ``SuiRpcResult``; neither escapes
+            ``parse_response``.
+    """
+    if not isinstance(raw, dict):
+        raise TypeError(f"event is not an object [{context}]: {raw!r}")
+    tx_digest = raw.get("txDigest")
+    event_seq = raw.get("eventSeq")
+    if not isinstance(tx_digest, str):
+        raise TypeError(f"event missing 'txDigest' [{context}]: {raw}")
+    # Accept int defensively: the wire form is a string, but a numeric
+    # encoding would still be unambiguous and rejecting it would buy
+    # nothing.
+    if not isinstance(event_seq, (str, int)) or isinstance(event_seq, bool):
+        raise TypeError(f"event missing 'eventSeq' [{context}]: {raw}")
+    try:
+        return EventRef(tx_digest=tx_digest, event_seq=int(event_seq))
+    except ValueError as exc:
+        raise ValueError(f"event has non-integer 'eventSeq' [{context}]: {exc}") from exc
+
+
+def _parse_deletable_counts(*, raw: object, context: str) -> DeletableCounts:
+    """Build :class:`DeletableCounts` from a node's ``deletableCounts`` object.
+
+    NOTE the mixed casing, which is a real property of the wire format and
+    not a transcription slip: the KEY is camelCase (``deletableCounts``)
+    while its CHILDREN are snake_case (``count_deletable_total``,
+    ``count_deletable_certified``). Verified against a live testnet node.
+
+    Args:
+        raw (object): The decoded ``deletableCounts`` member.
+        context (str): Diagnostic context for error messages.
+
+    Returns:
+        DeletableCounts: The parsed counts.
+
+    Raises:
+        TypeError: If the shape is unusable.
+    """
+    if not isinstance(raw, dict):
+        raise TypeError(f"deletableCounts is not an object [{context}]: {raw!r}")
+    total = raw.get("count_deletable_total")
+    certified = raw.get("count_deletable_certified")
+    if not isinstance(total, int) or isinstance(total, bool):
+        raise TypeError(
+            f"deletableCounts missing 'count_deletable_total' [{context}]: {raw}"
+        )
+    if not isinstance(certified, int) or isinstance(certified, bool):
+        raise TypeError(
+            f"deletableCounts missing 'count_deletable_certified' [{context}]: {raw}"
+        )
+    return DeletableCounts(total=total, certified=certified)
+
+
+def _parse_optional_epoch(*, raw: object, field: str, context: str) -> int | None:
+    """Read an ``Option<Epoch>`` member, which is genuinely nullable.
+
+    Args:
+        raw (object): The decoded member, possibly ``None`` or absent.
+        field (str): Member name, for error messages.
+        context (str): Diagnostic context for error messages.
+
+    Returns:
+        int | None: The epoch, or None when unset.
+
+    Raises:
+        TypeError: If present but not an integer.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise TypeError(f"{field} is not an integer [{context}]: {raw!r}")
+    return raw
+
+
+@dataclasses.dataclass(kw_only=True)
+class GetBlobStatus(WalrusCommand):
+    """Ask ONE storage node for its view of a blob's status.
+
+    ``GET /v1/blobs/{blob_id}/status``. This is a per-node opinion, never a
+    verdict: a single node can be stale, byzantine, or simply not yet aware
+    of a recent registration. Establishing a verdict requires fanning this
+    command across the committee and applying a shard-weight threshold --
+    see the blob-status orchestration in :mod:`pytusk.core.ops`.
+
+    ``base_url`` is a specific storage node's address resolved from the
+    committee -- see :attr:`endpoint_role`.
+
+    Parse failures come back as a failed ``SuiRpcResult`` rather than
+    raising, matching :class:`GetStorageConfirmation`: one bad node
+    response must never abort the whole fan-out.
+
+    Attributes:
+        blob_id (bytes): Raw 32-byte blob ID.
+    """
+
+    endpoint_role: ClassVar[str] = "storage_node"
+
+    blob_id: bytes
+
+    def http_method(self) -> str:
+        return "GET"
+
+    def url_path(self, base_url: str) -> str:
+        blob_id_b64 = blob_id_to_url_base64(blob_id=self.blob_id)
+        return f"{base_url}/v1/blobs/{blob_id_b64}/status"
+
+    def parse_response(self, response: httpx.Response) -> SuiRpcResult:
+        context = f"blob_id={blob_id_to_url_base64(blob_id=self.blob_id)}"
+        if response.is_error:
+            return SuiRpcResult(
+                False, http_failure_message(response=response, context=context)
+            )
+
+        try:
+            data = unwrap_storage_node_envelope(response=response, context=context)
+        except StorageNodeEnvelopeError as exc:
+            return SuiRpcResult(False, str(exc))
+
+        # Externally tagged serde enum: a UNIT variant is a bare string,
+        # every other variant a single-key object. Both are valid; assuming
+        # an object here breaks on a legitimate `nonexistent` response.
+        if isinstance(data, str):
+            if data == "nonexistent":
+                return SuiRpcResult(True, "", NonexistentStatus())
+            return SuiRpcResult(
+                False, f"Unknown blob-status variant [{context}]: {data!r}"
+            )
+
+        if len(data) != 1:
+            return SuiRpcResult(
+                False,
+                f"Expected exactly one blob-status variant [{context}]: "
+                f"{sorted(data)}",
+            )
+        variant, payload = next(iter(data.items()))
+        if not isinstance(payload, dict):
+            return SuiRpcResult(
+                False,
+                f"blob-status variant {variant!r} payload is not an object "
+                f"[{context}]: {payload!r}",
+            )
+
+        try:
+            if variant == "permanent":
+                end_epoch = payload.get("endEpoch")
+                is_certified = payload.get("isCertified")
+                if not isinstance(end_epoch, int) or isinstance(end_epoch, bool):
+                    raise ValueError(f"missing 'endEpoch' [{context}]: {payload}")
+                if not isinstance(is_certified, bool):
+                    raise ValueError(f"missing 'isCertified' [{context}]: {payload}")
+                return SuiRpcResult(
+                    True,
+                    "",
+                    PermanentStatus(
+                        end_epoch=end_epoch,
+                        is_certified=is_certified,
+                        status_event=_parse_event_ref(
+                            raw=payload.get("statusEvent"), context=context
+                        ),
+                        deletable_counts=_parse_deletable_counts(
+                            raw=payload.get("deletableCounts"), context=context
+                        ),
+                        initial_certified_epoch=_parse_optional_epoch(
+                            raw=payload.get("initialCertifiedEpoch"),
+                            field="initialCertifiedEpoch",
+                            context=context,
+                        ),
+                    ),
+                )
+            if variant == "deletable":
+                return SuiRpcResult(
+                    True,
+                    "",
+                    DeletableStatus(
+                        deletable_counts=_parse_deletable_counts(
+                            raw=payload.get("deletableCounts"), context=context
+                        ),
+                        initial_certified_epoch=_parse_optional_epoch(
+                            raw=payload.get("initialCertifiedEpoch"),
+                            field="initialCertifiedEpoch",
+                            context=context,
+                        ),
+                    ),
+                )
+            if variant == "invalid":
+                return SuiRpcResult(
+                    True,
+                    "",
+                    InvalidStatus(
+                        status_event=_parse_event_ref(
+                            raw=payload.get("event"), context=context
+                        )
+                    ),
+                )
+        except (TypeError, ValueError) as exc:
+            # TypeError for a wrong-shaped member, ValueError for a
+            # well-shaped one that will not convert. Neither may escape:
+            # one bad node response must not abort the fan-out.
+            return SuiRpcResult(
+                False, f"Malformed blob-status {variant!r} payload: {exc}"
+            )
+
+        return SuiRpcResult(False, f"Unknown blob-status variant [{context}]: {variant!r}")

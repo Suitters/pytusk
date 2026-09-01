@@ -36,6 +36,80 @@ class ExecuteOnlyClient(typing.Protocol):
     ) -> SuiRpcResult: ...
 
 
+class CommitteeAndNodeClient(typing.Protocol):
+    """Structural type for functions that query the committee AND its nodes.
+
+    Neither existing protocol suffices alone, and the gap is real rather
+    than cosmetic:
+
+    * :class:`ExecuteOnlyClient` carries ``base_url`` and accepts a
+      :class:`~pytusk.commands.walrus_command.WalrusCommand`, which is what
+      a per-storage-node call needs -- but has no ``execute_for_all``.
+    * :class:`~pytusk.core.chain.committee.ChainReader` has
+      ``execute_for_all``, which ``fetch_committee`` requires -- but takes
+      only a ``SuiCommand`` and has no ``base_url``.
+
+    A blob-status query needs both halves: fetch the committee from chain,
+    then fan a ``WalrusCommand`` out across its members by URL. This
+    protocol is the honest union of the two.
+
+    It is deliberately NOT declared by inheriting both protocols. They
+    each define ``execute`` with different signatures, so multiple
+    inheritance would resolve the conflict by MRO order rather than by
+    intent. Spelling the members out once keeps that implicit.
+
+    Because protocol METHOD PARAMETERS are checked CONTRAVARIANTLY, the
+    wider ``command`` union and the extra defaulted ``base_url`` below
+    still make this a structural subtype of ``ChainReader``: anything
+    satisfying this protocol can be passed to ``fetch_committee(reader=)``
+    with no cast. ``WalrusClient`` satisfies it, and so does a test fake --
+    which is the whole reason for depending on a protocol rather than the
+    concrete client.
+    """
+
+    async def execute(
+        self,
+        *,
+        command: WalrusCommand | SuiCommand,
+        timeout: float | None = None,
+        headers: dict | None = None,
+        base_url: str | None = None,
+    ) -> SuiRpcResult:
+        """Execute one command, optionally against an explicit ``base_url``.
+
+        Args:
+            command (WalrusCommand | SuiCommand): The command to execute.
+            timeout (float | None): Request timeout in seconds.
+            headers (dict | None): Optional transport headers.
+            base_url (str | None): Explicit endpoint, required for
+                storage-node commands whose address comes from the
+                committee rather than from configuration.
+
+        Returns:
+            SuiRpcResult: The result of the command.
+        """
+        ...
+
+    async def execute_for_all(
+        self,
+        *,
+        command: SuiCommand,
+        timeout: float | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> SuiRpcResult:
+        """Execute a paged Sui command, collecting every page.
+
+        Args:
+            command (SuiCommand): The paged command to execute.
+            timeout (float | None): Request timeout in seconds.
+            headers (dict[str, str] | None): Optional transport headers.
+
+        Returns:
+            SuiRpcResult: The result carrying all pages.
+        """
+        ...
+
+
 @typing.runtime_checkable
 class StageTimingsProtocol(typing.Protocol):
     """The honest intersection of ``StageTimings`` and ``RelayStageTimings``.

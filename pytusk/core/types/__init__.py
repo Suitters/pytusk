@@ -13,6 +13,21 @@ what dissolves the import cycle that previously required
 ``pytusk.core.relay_types`` to live outside :mod:`pytusk.core.relay_upload`.
 """
 
+from pytusk.core.types.blob_status import (
+    BlobStatus,
+    BlobStatusReport,
+    DeletableCounts,
+    DeletableStatus,
+    DissentReason,
+    EventRef,
+    InvalidStatus,
+    NodeDissent,
+    NodeRef,
+    NonexistentStatus,
+    PermanentStatus,
+    Resolution,
+    UnresolvedStatus,
+)
 from pytusk.core.types.errors import (
     CertifyTransactionError,
     ChainContextError,
@@ -33,6 +48,7 @@ from pytusk.core.types.errors import (
 )
 from pytusk.core.types.outcomes import RelayOutcome, RelayUploadOutcome
 from pytusk.core.types.protocols import (
+    CommitteeAndNodeClient,
     ExecuteOnlyClient,
     StageTimingsProtocol,
     UploadReceipt,
@@ -72,18 +88,30 @@ __all__ = [
     "FROM_GAS",
     "AssembledQuilt",
     "AuthPackage",
+    "BlobStatus",
+    "BlobStatusReport",
     "CertifyResult",
     "CertifyTransactionError",
     "ChainContextError",
+    "CommitteeAndNodeClient",
     "ConfirmationCollectionError",
     "ConfirmationMismatchError",
     "ConstTip",
+    "DeletableCounts",
+    "DeletableStatus",
+    "DissentReason",
     "EpochMismatchError",
+    "EventRef",
     "ExecuteOnlyClient",
     "InvalidConfirmationError",
+    "InvalidStatus",
     "LinearTip",
     "NativeBlobReceipt",
     "NativeUploadError",
+    "NodeDissent",
+    "NodeRef",
+    "NonexistentStatus",
+    "PermanentStatus",
     "QuiltPatchInput",
     "QuiltPatchLayout",
     "QuiltPatchReceipt",
@@ -99,6 +127,7 @@ __all__ = [
     "RelayUploadError",
     "RelayUploadOutcome",
     "RelayUploadResult",
+    "Resolution",
     "SliverUploadError",
     "SplitResult",
     "StageTimings",
@@ -113,5 +142,6 @@ __all__ = [
     "TipPaymentError",
     "TipQuote",
     "TipResult",
+    "UnresolvedStatus",
     "UploadReceipt",
 ]

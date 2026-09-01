@@ -16,6 +16,7 @@ set on each subparser via `set_defaults`.
 """
 
 import argparse
+import binascii
 from pathlib import Path
 
 from pysui.sui.sui_common.validators import (
@@ -26,6 +27,8 @@ from pysui.sui.sui_common.validators import (
     ValidatePositive,
     valid_sui_address,
 )
+
+from pytusk import blob_id_from_url_base64
 
 
 class ValidateObjectIDAppend(argparse.Action):
@@ -50,6 +53,81 @@ class ValidateObjectIDAppend(argparse.Action):
         items = list(getattr(namespace, self.dest, None) or [])
         items.append(values)
         setattr(namespace, self.dest, items)
+
+
+# A Walrus blob ID is a 32-byte content hash rendered as URL-safe base64
+# with no padding, which is always exactly 43 characters.
+_BLOB_ID_BYTES = 32
+_BLOB_ID_B64_LENGTH = 43
+
+# The alphabet MUST be checked explicitly. `base64.urlsafe_b64decode` maps
+# '-'/'_' onto '+'/'/' and then decodes with validate=False, which silently
+# DISCARDS characters outside the standard alphabet. A blob ID containing
+# '+' or '/' therefore decodes cleanly to 32 bytes and would be accepted --
+# as a DIFFERENT blob ID than the operator typed. Length and byte-count
+# checks alone do not catch this.
+_BLOB_ID_ALPHABET = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
+
+
+class ValidateBlobID(argparse.Action):
+    """Validate a Walrus blob ID before it reaches a storage-node URL.
+
+    Every object-ID flag in this CLI already runs ``ValidateObjectID``,
+    while ``-b``/``--blob-id`` was an unchecked string. That gap mattered
+    little when ``-b`` only fed a read, but blob-status makes a blob ID the
+    KEY of a committee-wide query, so a malformed value would otherwise be
+    interpolated into a URL and fanned out to every storage node before
+    anything noticed.
+
+    Rejecting at parse time gives the operator a message on stderr and a
+    non-zero exit before any network call happens.
+    """
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str,
+        option_string: str | None = None,
+    ) -> None:
+        """Validate the blob ID, then store the ORIGINAL string.
+
+        The decoded bytes are deliberately discarded: handlers already
+        convert as needed, and storing bytes here would make ``dest`` hold
+        a different type than every other string argument.
+        """
+        if len(values) != _BLOB_ID_B64_LENGTH:
+            parser.error(
+                f"'{values}' is not a valid Walrus blob id: expected "
+                f"{_BLOB_ID_B64_LENGTH} URL-safe base64 characters, got "
+                f"{len(values)}."
+            )
+        invalid = sorted(set(values) - _BLOB_ID_ALPHABET)
+        if invalid:
+            parser.error(
+                f"'{values}' is not a valid Walrus blob id: contains "
+                f"{invalid} which are not URL-safe base64. The URL-safe "
+                "alphabet uses '-' and '_', never '+' or '/'."
+            )
+        try:
+            decoded = blob_id_from_url_base64(value=values)
+        except (binascii.Error, ValueError):
+            # binascii.Error subclasses ValueError; both are caught so a
+            # malformed alphabet and a malformed length report identically.
+            parser.error(
+                f"'{values}' is not a valid Walrus blob id: not URL-safe "
+                "base64. Note the URL-safe alphabet uses '-' and '_', never "
+                "'+' or '/'."
+            )
+            return
+        if len(decoded) != _BLOB_ID_BYTES:
+            parser.error(
+                f"'{values}' is not a valid Walrus blob id: decodes to "
+                f"{len(decoded)} bytes, expected {_BLOB_ID_BYTES}."
+            )
+        setattr(namespace, self.dest, values)
 
 
 def _add_config_args(subp: argparse.ArgumentParser) -> None:
@@ -172,6 +250,7 @@ def _add_blob_id_arg(
         "-b",
         "--blob-id",
         dest="blob_id",
+        action=ValidateBlobID,
         required=required,
         help=help_text,
     )
@@ -248,6 +327,69 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     _add_object_id_arg(p_blob)
     _add_config_args(p_blob)
+
+    # Defined adjacent to `blob` deliberately: the two are read together.
+    # It is a TOP-LEVEL command like every other, NOT nested under `blob` --
+    # this CLI has a single flat command level and introducing the first
+    # nested subparser here would break every existing `tusky blob -o <id>`
+    # invocation.
+    p_blob_status = subparsers.add_parser(
+        "blob_status",
+        help="Show storage-node quorum status for one blob.",
+        description=(
+            "Ask the Walrus storage committee what it knows about a blob and "
+            "resolve the answers against shard-weight thresholds. Unlike "
+            "'blob', which reads one on-chain object you name, this answers "
+            "for the CONTENT regardless of who owns it. On-chain lease "
+            "details are added when they can be reached; a thin result means "
+            "no object was reachable, NOT that the blob has no objects."
+        ),
+    )
+    blob_status_id = p_blob_status.add_mutually_exclusive_group(required=True)
+    blob_status_id.add_argument(
+        "-b",
+        "--blob-id",
+        dest="blob_id",
+        action=ValidateBlobID,
+        help=(
+            "Walrus blob ID (URL-safe base64, content hash). Lease details "
+            "are added when a Blob object can be reached for it."
+        ),
+    )
+    blob_status_id.add_argument(
+        "-o",
+        "--object-id",
+        dest="object_id",
+        action=ValidateObjectID,
+        help=(
+            "Sui object ID of a Blob (0x-prefixed) — not the Walrus blob ID. "
+            "The blob ID is read from the object, so lease details are "
+            "always available."
+        ),
+    )
+    p_blob_status.add_argument(
+        "--details",
+        dest="details",
+        action="store_true",
+        help=(
+            "List every committee member: those confirming the verdict, and "
+            "those dissenting with the reason each did not contribute."
+        ),
+    )
+    p_blob_status.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=10.0,
+        help=(
+            "Overall deadline for the status query, in seconds (default: 10). "
+            "This bounds the WHOLE operation, not each request — unlike "
+            "store_blob_relay's --timeout, which is per-attempt. The fan-out "
+            "stops early once a threshold is met, so this mostly governs "
+            "stragglers."
+        ),
+    )
+    _add_config_args(p_blob_status)
 
     p_epoch = subparsers.add_parser(
         "epoch",

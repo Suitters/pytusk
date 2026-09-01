@@ -18,11 +18,21 @@ import sys
 from pysui import GetCoins, GetObject, GetObjectsOwnedByAddress
 
 from pytusk import (
+    DeletableStatus,
+    DissentReason,
+    InvalidStatus,
+    NonexistentStatus,
+    PermanentStatus,
+    Resolution,
+    UnresolvedStatus,
     WalrusClient,
     blob_certified_epoch,
     blob_deletable_and_end_epoch,
     blob_id_from_object,
+    blob_id_from_url_base64,
     blob_id_to_url_base64,
+    fetch_blob_status,
+    fetch_event_object_id,
     storage_from_blob,
 )
 from pytusk.tusky.tusky_cmds_common import (
@@ -172,6 +182,213 @@ async def blob(args: argparse.Namespace) -> None:
         print(f"Error fetching object: {result.result_string}", file=sys.stderr)
         sys.exit(1)
     print(result.result_data.to_json(indent=2))
+
+
+# Verdict variant -> the word printed for it. A mapping rather than a
+# derived name so the CLI vocabulary is chosen here, not inherited from
+# Python class names that exist for other reasons.
+_STATUS_WORD = {
+    PermanentStatus: "permanent",
+    DeletableStatus: "deletable",
+    NonexistentStatus: "nonexistent",
+    InvalidStatus: "invalid",
+    UnresolvedStatus: "unresolved",
+}
+
+# Exit code for "the committee could not tell us", kept DISTINCT from the
+# 1 used for ordinary CLI failures: an automation caller must be able to
+# separate "your invocation was wrong" from "the network did not answer".
+_EXIT_UNRESOLVED = 2
+
+
+def _epochs_remaining(count: int) -> str:
+    """Render an epoch count with singular/plural agreement.
+
+    Args:
+        count (int): Number of epochs remaining.
+
+    Returns:
+        str: e.g. "1 epoch remaining" or "2 epochs remaining".
+    """
+    unit = "epoch" if count == 1 else "epochs"
+    return f"{count} {unit} remaining"
+
+
+async def blob_status(args: argparse.Namespace) -> None:
+    """Report the storage committee's verdict on one blob, with lease facts.
+
+    Answers for the CONTENT, not for an object: the verdict comes from
+    fanning a status read across the whole committee and resolving the
+    answers against shard-weight thresholds. On-chain lease details are
+    then layered on where they can be reached, via the four-tier ladder
+    described in the ``-b`` help text. A thin result means no object was
+    reachable, NOT that the blob has none.
+
+    Args:
+        args (argparse.Namespace): Parsed `blob_status` subcommand
+            arguments. Exactly one of ``blob_id`` / ``object_id`` is set,
+            enforced by a required mutually-exclusive group.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        staking_object = client.config.network.staking_object
+        owner = client.pysui_client.config.active_address
+
+        leases = []
+        if args.object_id is not None:
+            named = await client.execute(command=GetObject(object_id=args.object_id))
+            if not named.is_ok():
+                print(
+                    f"Error fetching object: {named.result_string}", file=sys.stderr
+                )
+                sys.exit(1)
+            # A well-formed object ID that names nothing comes back OK with
+            # an empty Object (no fields set) -- distinct from an object that
+            # exists but is not a Blob. Check for empty object_id to distinguish
+            # the case and report a clearer message than "not a Walrus Blob object",
+            # which sends the operator looking for a type error when the ID is
+            # simply wrong or the object was deleted/pruned.
+            if named.result_data is None or not named.result_data.object_id:
+                print(
+                    f"No object found for {args.object_id}. It may never have "
+                    "existed, or has been deleted or pruned.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            try:
+                blob_id = blob_id_from_object(obj=named.result_data)
+            except ValueError as exc:
+                print(f"Not a Walrus Blob object: {exc}", file=sys.stderr)
+                sys.exit(1)
+            # -o always lands at tier-2 richness: the object is in hand.
+            leases.append(named.result_data)
+        else:
+            blob_id = blob_id_from_url_base64(value=args.blob_id)
+
+        try:
+            report = await fetch_blob_status(
+                client=client,
+                blob_id=blob_id,
+                staking_object=staking_object,
+                timeout_seconds=args.timeout,
+            )
+        except (RuntimeError, KeyError, TypeError, ValueError) as exc:
+            print(f"Cannot query blob status: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        tier = 2 if leases else 1
+        if not leases:
+            # Tier 2: one scan returns every sibling lease, so owning any
+            # object for this blob yields ALL of them with no follow-up.
+            owned = await client.execute_for_all(
+                command=GetObjectsOwnedByAddress(owner=owner)
+            )
+            if owned.is_ok():
+                for obj in owned.result_data.objects:
+                    if not (obj.object_type and "::blob::Blob" in obj.object_type):
+                        continue
+                    try:
+                        if blob_id_from_object(obj=obj) == blob_id:
+                            leases.append(obj)
+                    except ValueError:
+                        # One malformed object must not sink the listing.
+                        continue
+            if leases:
+                tier = 2
+
+        if not leases and isinstance(report.status, PermanentStatus):
+            # Tier 3: resolve an UNOWNED permanent blob to its object via
+            # the status event. Sui objects are publicly readable, so
+            # ownership gates nothing. Never available for deletable --
+            # that variant carries no event.
+            object_id = await fetch_event_object_id(
+                reader=client,
+                tx_digest=report.status.status_event.tx_digest,
+                event_seq=report.status.status_event.event_seq,
+            )
+            if object_id is not None:
+                found = await client.execute(command=GetObject(object_id=object_id))
+                if found.is_ok():
+                    leases.append(found.result_data)
+                    tier = 3
+
+        if not leases:
+            tier = 4
+
+    word = _STATUS_WORD.get(type(report.status), "unknown")
+    print(f"blob_id: {blob_id_to_url_base64(blob_id=report.blob_id)}")
+    print(f"status: {word}")
+    # Three buckets, not one. A node that never answered has NOT dissented:
+    # collapsing "unreachable" into "dissenting" reads as a committee split
+    # when the committee is actually near-unanimous and merely patchy in
+    # reachability -- on a real testnet query that was 2 genuine dissents
+    # reported as 28. Same principle as E4: a failure to determine must
+    # never render identically to a determination.
+    dissented = sum(
+        1
+        for d in report.dissenting
+        if d.reason in (DissentReason.DISAGREED, DissentReason.NOT_STORED)
+    )
+    unreachable = sum(
+        1
+        for d in report.dissenting
+        if d.reason in (DissentReason.ERROR, DissentReason.TIMEOUT)
+    )
+    not_checked = sum(
+        1 for d in report.dissenting if d.reason is DissentReason.NOT_CHECKED
+    )
+    print(
+        f"resolution: {report.resolution.value.upper()} "
+        f"({len(report.confirming)} confirming, {dissented} dissenting, "
+        f"{unreachable} unreachable, {not_checked} not-checked)"
+    )
+    print(f"committee_epoch: {report.committee_epoch}")
+    print(f"ladder_tier: {tier}")
+
+    if isinstance(report.status, PermanentStatus):
+        remaining = report.status.end_epoch - report.committee_epoch
+        print(
+            f"end_epoch: {report.status.end_epoch} "
+            f"({_epochs_remaining(remaining)})"
+        )
+        print(f"certified: {report.status.is_certified}")
+        if report.status.initial_certified_epoch is not None:
+            print(f"initial_certified_epoch: {report.status.initial_certified_epoch}")
+    if isinstance(report.status, (PermanentStatus, DeletableStatus)):
+        counts = report.status.deletable_counts
+        print(f"deletable_objects: {counts.total} total, {counts.certified} certified")
+
+    for obj in leases:
+        try:
+            deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
+        except ValueError:
+            deletable, end_epoch = False, 0
+        remaining = end_epoch - report.committee_epoch
+        print(
+            f"lease: {obj.object_id}  deletable={deletable}  "
+            f"end_epoch={end_epoch} ({_epochs_remaining(remaining)})"
+        )
+
+    if args.details:
+        print("confirming:")
+        for node in report.confirming:
+            print(f"  {node.node_id}  {node.weight:>4} shards  {node.network_address}")
+        print("dissenting:")
+        for dissent in report.dissenting:
+            print(
+                f"  {dissent.node.node_id}  {dissent.node.weight:>4} shards  "
+                f"{dissent.reason.value}"
+            )
+
+    if report.resolution is Resolution.UNRESOLVED:
+        total = len(report.confirming) + len(report.dissenting)
+        print(
+            f"No verdict: {unreachable + not_checked} of {total} committee "
+            f"members supplied no status before the deadline; {dissented} "
+            "answered but no status reached a threshold.",
+            file=sys.stderr,
+        )
+        sys.exit(_EXIT_UNRESOLVED)
 
 
 async def epoch(args: argparse.Namespace) -> None:

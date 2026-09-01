@@ -26,8 +26,9 @@ a circular import) and fails if any of them names a client or
 transaction-executor type.
 
 The same client-free requirement also applies, for a different reason, to
-``pytusk.core.types``, ``pytusk.core.encoding``, ``pytusk.core.chain``, and
-``pytusk.core.certification``: these packages sit BELOW ``pytusk/client/``
+``pytusk.core.types``, ``pytusk.core.encoding``, ``pytusk.core.chain``,
+``pytusk.core.certification``, and ``pytusk.core.committee_fanout``: these packages
+sit BELOW ``pytusk/client/``
 in the project's layering (``client/walrus_client.py`` imports from
 ``core.chain``, and transitively from the others), so a client import in
 any of them is not a style violation -- it is a real import cycle
@@ -76,11 +77,19 @@ def _below_client_modules() -> list[Path]:
 
     Covers ``pytusk.core.types``, ``pytusk.core.encoding``,
     ``pytusk.core.chain`` (every ``*.py`` file in each, including
-    ``__init__.py``), plus the single module ``pytusk.core.certification``.
-    ``client/walrus_client.py`` imports from ``core.chain``, so any of
-    these packages importing a client back would be a genuine import
-    cycle, not merely an inconsistency -- see this file's module
-    docstring.
+    ``__init__.py``), plus the single modules ``pytusk.core.certification``
+    and ``pytusk.core.committee_fanout``. ``client/walrus_client.py`` imports from
+    ``core.chain``, so any of these packages importing a client back would
+    be a genuine import cycle, not merely an inconsistency -- see this
+    file's module docstring.
+
+    ``pytusk.core.committee_fanout`` is here because it declares itself client-free
+    in its own module docstring: it drives committee fan-out from tasks the
+    CALLER already created, so it never needs a client and must never
+    acquire one. Note this is deliberately NOT extended to
+    ``pytusk.core.native_upload``, which legitimately takes a client (via
+    the ``ExecuteOnlyClient`` protocol) and therefore sits ABOVE the seam
+    where this rule does not apply.
     """
     package_dirs = (
         _CORE_DIR / "types",
@@ -91,6 +100,7 @@ def _below_client_modules() -> list[Path]:
         module_path for package_dir in package_dirs for module_path in package_dir.glob("*.py")
     ]
     modules.append(_CORE_DIR / "certification.py")
+    modules.append(_CORE_DIR / "committee_fanout.py")
     return sorted(modules)
 
 
@@ -187,8 +197,9 @@ class TestComposeModulesNeverImportAClient:
 
 class TestBelowClientModulesNeverImportAClient:
     """No module in ``pytusk.core.types``, ``pytusk.core.encoding``,
-    ``pytusk.core.chain``, or ``pytusk.core.certification`` may import or
-    reference a client / transaction-executor.
+    ``pytusk.core.chain``, ``pytusk.core.certification``, or
+    ``pytusk.core.committee_fanout`` may import or reference a client /
+    transaction-executor.
 
     These packages sit BELOW ``pytusk/client/`` in the project's layering:
     ``pytusk.client.walrus_client`` imports from ``pytusk.core.chain``, so
@@ -247,8 +258,8 @@ class TestBelowClientModulesNeverImportAClient:
         A typo in ``_CORE_DIR`` or the package directories would make
         every parametrized case above vacuously pass -- this pins that at
         least ``pytusk.core.types``, ``pytusk.core.encoding``,
-        ``pytusk.core.chain``, and ``pytusk.core.certification`` were all
-        found (one module per package plus ``certification.py`` at a
-        minimum).
+        ``pytusk.core.chain``, ``pytusk.core.certification``, and
+        ``pytusk.core.committee_fanout`` were all found (one module per package plus
+        the two single modules at a minimum).
         """
-        assert len(_below_client_modules()) >= 4
+        assert len(_below_client_modules()) >= 5

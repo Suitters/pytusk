@@ -142,6 +142,77 @@ def error_reason(*, response: httpx.Response) -> str | None:
     return None
 
 
+class StorageNodeEnvelopeError(ValueError):
+    """Raised when a storage-node 2xx body is not a valid success envelope.
+
+    Public rather than underscore-prefixed because it crosses a module
+    boundary -- callers catch it by name. Same reasoning that made
+    :func:`http_failure_message` public at Plan #28 step 11.
+    """
+
+
+def unwrap_storage_node_envelope(
+    *, response: httpx.Response, context: str
+) -> dict[str, object] | str:
+    """Return the ``data`` member of a storage-node success envelope.
+
+    Storage nodes wrap every 2xx payload::
+
+        {"success": {"code": 200, "data": <payload>}}
+
+    ``data`` is USUALLY an object but is NOT always: an externally tagged
+    Rust enum with a unit variant serialises as a bare JSON string. The
+    blob-status ``"nonexistent"`` variant is the live example, verified
+    against testnet 2026-09-01. The return type is a union for exactly that
+    reason, and callers MUST branch on ``str`` versus ``dict`` rather than
+    assuming an object.
+
+    THIS IS THE STORAGE-NODE ENVELOPE ONLY. Publisher responses
+    (``StoreBlob``/``StoreQuilt``) use a different ``newlyCreated`` /
+    ``alreadyCertified`` shape with no ``success`` wrapper and must never be
+    passed here. Error bodies are not wrapped in ``success`` either -- they
+    carry the AIP-193 shape :func:`error_reason` parses -- so call this only
+    after ``response.is_error`` has been checked.
+
+    Args:
+        response (httpx.Response): A non-error storage-node response.
+        context (str): Caller-supplied identifying context for diagnostics,
+            following the same convention as :func:`http_failure_message`.
+
+    Returns:
+        dict[str, object] | str: The unwrapped ``data`` member.
+
+    Raises:
+        StorageNodeEnvelopeError: If the body is not JSON, is not an object,
+            or lacks a well-formed ``success``/``data`` envelope.
+    """
+    try:
+        body = response.json()
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise StorageNodeEnvelopeError(
+            f"Malformed storage-node response body [{context}]: {exc}"
+        ) from exc
+    if not isinstance(body, dict):
+        raise StorageNodeEnvelopeError(
+            f"Unexpected storage-node response [{context}]: {body}"
+        )
+    success = body.get("success")
+    if not isinstance(success, dict):
+        raise StorageNodeEnvelopeError(
+            f"Unexpected storage-node response, missing 'success' [{context}]: {body}"
+        )
+    if "data" not in success:
+        raise StorageNodeEnvelopeError(
+            f"Unexpected storage-node response, missing 'data' [{context}]: {body}"
+        )
+    data = success["data"]
+    if not isinstance(data, (dict, str)):
+        raise StorageNodeEnvelopeError(
+            f"Unexpected storage-node 'data' member [{context}]: {data!r}"
+        )
+    return data
+
+
 @dataclasses.dataclass(kw_only=True)
 class WalrusCommand(ABC):
     """Abstract base class for all Walrus HTTP operations.
