@@ -73,18 +73,51 @@ class TestObjectIdArguments:
             build_parser(in_args=["delete_blob"])
 
 
+# A real testnet blob ID: 32-byte content hash, URL-safe base64, unpadded,
+# hence exactly 43 characters. Placeholders no longer work here -- -b is
+# validated by ValidateBlobID as of Plan #22, because blob_status makes a
+# blob ID the key of a committee-wide query rather than just a read arg.
+BLOB_ID = "8XiGin_tGIB1hpkJINtSgKToT0EFo3qdYMY4U9nBJK4"
+
+
 class TestBlobIdArgument:
     """-b/--blob-id parses to dest blob_id, distinct from object_id."""
 
     def test_read_blob_blob_id_short_flag(self) -> None:
         """read_blob accepts -b as a Walrus blob ID (not object-id validated)."""
-        args = build_parser(in_args=["read_blob", "-b", "not-an-object-id-format"])
-        assert args.blob_id == "not-an-object-id-format"
+        args = build_parser(in_args=["read_blob", "-b", BLOB_ID])
+        assert args.blob_id == BLOB_ID
 
     def test_read_blob_blob_id_long_flag(self) -> None:
         """read_blob accepts --blob-id."""
-        args = build_parser(in_args=["read_blob", "--blob-id", "somewalrusblobid"])
-        assert args.blob_id == "somewalrusblobid"
+        args = build_parser(in_args=["read_blob", "--blob-id", BLOB_ID])
+        assert args.blob_id == BLOB_ID
+
+    def test_rejects_wrong_length(self) -> None:
+        """A blob ID that is not 43 characters cannot be a 32-byte hash."""
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["read_blob", "-b", "somewalrusblobid"])
+
+    def test_rejects_standard_base64_plus(self) -> None:
+        """'+' belongs to the STANDARD alphabet, never the URL-safe one.
+
+        This is the case length and byte-count checks alone do not catch:
+        ``urlsafe_b64decode`` maps '-'/'_' onto '+'/'/' and then decodes
+        with validate=False, so a '+' decodes cleanly to 32 bytes and
+        would be accepted as a DIFFERENT blob ID than the one typed.
+        """
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["read_blob", "-b", BLOB_ID.replace("_", "+", 1)])
+
+    def test_rejects_standard_base64_slash(self) -> None:
+        """'/' is rejected for the same reason as '+'."""
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["read_blob", "-b", BLOB_ID.replace("_", "/", 1)])
+
+    def test_rejects_too_long(self) -> None:
+        """44 characters decodes to more than 32 bytes."""
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["read_blob", "-b", BLOB_ID + "A"])
 
 
 class TestBurnBlobRepeatable:

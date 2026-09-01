@@ -14,8 +14,10 @@ from pytusk.commands.walrus_command import (
     BlobSlice,
     QuiltPatch,
     QuiltReceipt,
+    StorageNodeEnvelopeError,
     WalrusCommand,
     http_failure_message,
+    unwrap_storage_node_envelope,
 )
 
 
@@ -181,3 +183,105 @@ class TestResponseBodyForLog:
             context="blob_id=abc",
         )
         assert "line1\n\tline2" in message
+
+
+# Captured verbatim from four testnet storage nodes on 2026-09-01, which all
+# returned byte-identical bodies. Not an invented shape: the camelCase outer
+# keys alongside the snake_case children of `deletableCounts` are real, and a
+# hand-written fixture would very likely have normalised that away.
+_LIVE_PERMANENT_STATUS_BODY = {
+    "success": {
+        "code": 200,
+        "data": {
+            "permanent": {
+                "endEpoch": 508,
+                "isCertified": True,
+                "statusEvent": {
+                    "txDigest": "DaRmjvMBZoU6cU1iZUM3qMdakFYa5jJcmWFyaxW2aReN",
+                    "eventSeq": "0",
+                },
+                "deletableCounts": {
+                    "count_deletable_total": 0,
+                    "count_deletable_certified": 0,
+                },
+                "initialCertifiedEpoch": 507,
+            }
+        },
+    }
+}
+
+
+class TestUnwrapStorageNodeEnvelope:
+    """The shared storage-node success envelope.
+
+    Storage nodes wrap every 2xx payload as
+    ``{"success": {"code": ..., "data": ...}}``. This is deliberately NOT the
+    publisher envelope (``newlyCreated``/``alreadyCertified``), which has no
+    ``success`` wrapper and must never be passed to this helper.
+    """
+
+    def test_object_data_is_returned(self) -> None:
+        """A real permanent blob-status body unwraps to its inner object."""
+        data = unwrap_storage_node_envelope(
+            response=httpx.Response(200, json=_LIVE_PERMANENT_STATUS_BODY),
+            context="blob_id=abc",
+        )
+        assert isinstance(data, dict)
+        assert "permanent" in data
+
+    def test_bare_string_data_is_returned(self) -> None:
+        """``data`` is a BARE STRING for an externally tagged unit variant.
+
+        The blob-status ``nonexistent`` variant is the live example. A caller
+        assuming an object here breaks on a perfectly valid response -- which
+        is precisely why the return type is a union.
+        """
+        body = {"success": {"code": 200, "data": "nonexistent"}}
+        data = unwrap_storage_node_envelope(
+            response=httpx.Response(200, json=body), context="blob_id=abc"
+        )
+        assert data == "nonexistent"
+
+    def test_missing_success_raises(self) -> None:
+        body = {"code": 200, "data": {}}
+        with pytest.raises(StorageNodeEnvelopeError):
+            unwrap_storage_node_envelope(
+                response=httpx.Response(200, json=body), context="blob_id=abc"
+            )
+
+    def test_missing_data_raises(self) -> None:
+        body = {"success": {"code": 200}}
+        with pytest.raises(StorageNodeEnvelopeError):
+            unwrap_storage_node_envelope(
+                response=httpx.Response(200, json=body), context="blob_id=abc"
+            )
+
+    def test_non_json_body_raises(self) -> None:
+        with pytest.raises(StorageNodeEnvelopeError):
+            unwrap_storage_node_envelope(
+                response=httpx.Response(200, text="not json at all"),
+                context="blob_id=abc",
+            )
+
+    def test_non_object_body_raises(self) -> None:
+        with pytest.raises(StorageNodeEnvelopeError):
+            unwrap_storage_node_envelope(
+                response=httpx.Response(200, json=[1, 2, 3]),
+                context="blob_id=abc",
+            )
+
+    def test_unusable_data_member_raises(self) -> None:
+        """``data`` that is neither an object nor a string is not a variant."""
+        body = {"success": {"code": 200, "data": 7}}
+        with pytest.raises(StorageNodeEnvelopeError):
+            unwrap_storage_node_envelope(
+                response=httpx.Response(200, json=body), context="blob_id=abc"
+            )
+
+    def test_context_is_carried_into_the_message(self) -> None:
+        """Diagnostics must name WHICH request failed, as elsewhere."""
+        body = {"nope": True}
+        with pytest.raises(StorageNodeEnvelopeError, match="blob_id=xyz"):
+            unwrap_storage_node_envelope(
+                response=httpx.Response(200, json=body), context="blob_id=xyz"
+            )

@@ -34,6 +34,7 @@ _DISPATCH = {
     "store_quilt": tusky_cmds_write.store_quilt,
     "blobs": tusky_cmds_query.blobs,
     "blob": tusky_cmds_query.blob,
+    "blob_status": tusky_cmds_query.blob_status,
     "epoch": tusky_cmds_query.epoch,
     "committee": tusky_cmds_query.committee,
     "expiry_report": tusky_cmds_query.expiry_report,

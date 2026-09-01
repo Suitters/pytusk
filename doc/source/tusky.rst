@@ -303,6 +303,91 @@ Example (``bcs`` payload abbreviated for readability):
 The ``json.deletable`` field is the authoritative on-chain persistence
 state for the blob.
 
+blob_status
+~~~~~~~~~~~
+
+Ask the Walrus storage committee what it knows about a blob, and resolve
+the answers against shard-weight thresholds.
+
+Unlike `blob`_, which reads one on-chain object you name, this answers for
+the CONTENT regardless of who owns it. On-chain lease details are layered
+on afterwards where they can be reached.
+
+.. code-block:: console
+
+   tusky blob_status -b BLOB_ID
+   tusky blob_status -o OBJECT_ID
+
+``-b`` / ``--blob-id``
+   The **Walrus blob ID** (URL-safe base64, content hash). Validated at
+   parse time — a malformed ID is rejected before any network call.
+
+``-o`` / ``--object-id``
+   The **Sui object ID** of a ``Blob``. The blob ID is read from the
+   object, so lease details are always available. Mutually exclusive with
+   ``-b``; exactly one is required.
+
+``--details``
+   List every committee member: those confirming the verdict, and those
+   dissenting with the reason each did not contribute.
+
+``--timeout``
+   Overall deadline for the whole query, in seconds (default: 10). NOTE
+   this differs from ``store_blob_relay``'s ``--timeout``, which bounds
+   each attempt. Because the fan-out stops early once a threshold is met,
+   this mostly governs stragglers rather than the common case.
+
+**Lease enrichment ladder.** How much on-chain detail accompanies the
+verdict depends on what can be reached:
+
+1. Node verdict — always.
+2. The configured address owns a lease for this blob → every owned lease
+   is listed.
+3. Otherwise, if the blob is permanent → its status event is resolved to
+   the ``Blob`` object, so lease facts appear even for a blob you do not
+   own. Never available for a deletable blob, which has no status event.
+4. Otherwise (deletable-and-unowned, or nonexistent/invalid) → node status
+   only.
+
+The tier reached is printed as ``ladder_tier``. A thin result means no
+object was reachable, **not** that the blob has no objects.
+
+**Exit codes.**
+
+``0``
+   A verdict was reached, by quorum or by validity.
+
+``1``
+   The invocation failed — no such object, not a ``Blob`` object, or the
+   committee could not be fetched.
+
+``2``
+   No verdict. The committee did not produce enough agreeing weight before
+   the deadline. Distinct from ``1`` on purpose: a script must be able to
+   tell "your invocation was wrong" from "the network did not answer."
+
+Example:
+
+.. code-block:: console
+
+   $ tusky blob_status -b lATLPe9-w0AkcvWAtDThx49IlvNrn8GLWkh2tv9pXGw
+   blob_id: lATLPe9-w0AkcvWAtDThx49IlvNrn8GLWkh2tv9pXGw
+   status: permanent
+   resolution: QUORUM (73 confirming, 2 dissenting, 26 unreachable, 0 not-checked)
+   committee_epoch: 507
+   ladder_tier: 2
+   end_epoch: 508 (1 epoch remaining)
+   certified: True
+   initial_certified_epoch: 507
+   deletable_objects: 0 total, 0 certified
+   lease: 0x7ad6fc95a7b557cc4bae10040f46ac85f974bb930575914b9036dad2346a8269  deletable=False  end_epoch=508 (1 epoch remaining)
+
+The four counts on the ``resolution`` line are deliberately separate.
+*dissenting* nodes answered with a different status; *unreachable* nodes
+supplied no answer at all; *not-checked* nodes were never queried or were
+cancelled once the verdict had already settled. Collapsing them would
+report a committee as split when it is merely patchy in reachability.
+
 epoch
 ~~~~~
 

@@ -53,6 +53,15 @@ dataclass below is the payload carried on its ``result_data`` attribute:
   accepted a blob-metadata PUT
 * :py:class:`~pytusk.SignedConfirmation` — a storage node's signed
   confirmation that it holds a blob's slivers
+* :py:class:`~pytusk.BlobStatus` — one storage node's view of a blob's
+  status. Unlike every entry above, this is a UNION rather than a single
+  dataclass: :py:class:`~pytusk.NonexistentStatus`,
+  :py:class:`~pytusk.InvalidStatus`, :py:class:`~pytusk.PermanentStatus`,
+  :py:class:`~pytusk.DeletableStatus`, or
+  :py:class:`~pytusk.UnresolvedStatus`. The variants mirror the protocol's
+  own enum, so fields that are meaningful on only one of them (such as
+  ``end_epoch``, which a deletable registration does not have) cannot be
+  read on a variant that lacks them
 
 Command Reference
 --------------------
@@ -97,6 +106,10 @@ Command Reference
    * - :py:class:`~pytusk.GetStorageConfirmation`
      - Fetch a storage node's signed confirmation for a blob's slivers.
      - Result data: :py:class:`~pytusk.SignedConfirmation`.
+   * - :py:class:`~pytusk.GetBlobStatus`
+     - Ask ONE storage node for its view of a blob's status.
+     - Result data: one of the :py:class:`~pytusk.BlobStatus` variants. A
+       per-node opinion, never a verdict.
 
 Read Commands
 ----------------
@@ -411,3 +424,24 @@ The result's ``serialized_message`` is passed VERBATIM into
 ``certify_blob``; the client never reconstructs it.
 
 Result data: :py:class:`~pytusk.SignedConfirmation`.
+
+GetBlobStatus
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Ask one storage node what it knows about a blob:
+``GET /v1/blobs/{blob_id}/status``.
+
+This is a per-node OPINION, never a verdict. A single node can be stale,
+byzantine, or simply unaware of a recent registration. Establishing a
+verdict means fanning this command across the committee and applying a
+shard-weight threshold — which is what
+:py:func:`~pytusk.fetch_blob_status` does. Reach for that unless you
+specifically want one node's answer.
+
+* ``blob_id: bytes`` — raw 32-byte blob ID.
+
+Parse failures come back as a failed ``SuiRpcResult`` rather than raising,
+matching ``GetStorageConfirmation``: one bad node response must never
+abort a committee-wide fan-out.
+
+Result data: one of the :py:class:`~pytusk.BlobStatus` variants.

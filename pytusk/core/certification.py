@@ -57,8 +57,10 @@ __all__ = [
     "QuorumNotReachedError",
     "build_certificate",
     "confirmation_message",
+    "is_above_validity",
     "is_quorum",
     "min_weight_for_quorum",
+    "min_weight_for_validity",
     "pack_signers_bitmap",
     "unpack_signers_bitmap",
     "verify_certificate",
@@ -236,6 +238,52 @@ def min_weight_for_quorum(*, n_shards: int) -> int:
         int: The minimum weight satisfying quorum.
     """
     return -(-(2 * n_shards + 1) // 3)
+
+
+def is_above_validity(*, weight: int, n_shards: int) -> bool:
+    """Return whether ``weight`` meets the Walrus validity threshold.
+
+    The validity threshold is the weight at which at least one honest node
+    must have contributed -- weaker than quorum, and enough to trust a
+    reported fact without proving agreement on it. ``weight`` is a SHARD
+    COUNT, never a node count, exactly as for :func:`is_quorum`. The
+    threshold, per ``bls_aggregate.move``'s ``includes_one_correct_node``,
+    is ``3 * weight >= n_shards + 1``.
+
+    Walrus does not call this "f + 1" in code: Move names it
+    ``includes_one_correct_node`` and the Rust client names it
+    ``is_above_validity``. This function follows the Rust vocabulary, as
+    :func:`is_quorum` already does.
+
+    Args:
+        weight (int): Accumulated shard weight to test.
+        n_shards (int): Total shard count for the committee.
+
+    Returns:
+        bool: True if ``weight`` reaches the validity threshold.
+    """
+    return 3 * weight >= n_shards + 1
+
+
+def min_weight_for_validity(*, n_shards: int) -> int:
+    """Return the smallest weight that reaches validity for ``n_shards``.
+
+    Computed as ``ceil((n_shards + 1) / 3)``, the smallest ``weight`` for
+    which :func:`is_above_validity` returns True.
+
+    Do NOT reach for ``max_n_faulty`` or ``min_n_correct`` from
+    ``pytusk.core.encoding`` as a substitute: those describe RedStuff
+    erasure-decoding parameters, a different concept that merely shares the
+    same Byzantine arithmetic. The caution :func:`min_weight_for_quorum`
+    documents against ``min_n_correct`` applies here for the same reason.
+
+    Args:
+        n_shards (int): Total shard count for the committee.
+
+    Returns:
+        int: The minimum weight satisfying the validity threshold.
+    """
+    return -(-(n_shards + 1) // 3)
 
 
 def confirmation_message(
