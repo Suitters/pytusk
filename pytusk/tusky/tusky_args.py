@@ -340,9 +340,10 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
             "Ask the Walrus storage committee what it knows about a blob and "
             "resolve the answers against shard-weight thresholds. Unlike "
             "'blob', which reads one on-chain object you name, this answers "
-            "for the CONTENT regardless of who owns it. On-chain lease "
-            "details are added when they can be reached; a thin result means "
-            "no object was reachable, NOT that the blob has no objects."
+            "for the CONTENT regardless of who owns it. On-chain "
+            "blob_sui_object details are added when they can be reached; a "
+            "thin result means no object was reachable, NOT that the blob "
+            "has no objects."
         ),
     )
     blob_status_id = p_blob_status.add_mutually_exclusive_group(required=True)
@@ -352,8 +353,9 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         dest="blob_id",
         action=ValidateBlobID,
         help=(
-            "Walrus blob ID (URL-safe base64, content hash). Lease details "
-            "are added when a Blob object can be reached for it."
+            "Walrus blob ID (URL-safe base64, content hash). "
+            "blob_sui_object details are added when a Blob object can be "
+            "reached for it."
         ),
     )
     blob_status_id.add_argument(
@@ -363,8 +365,8 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         action=ValidateObjectID,
         help=(
             "Sui object ID of a Blob (0x-prefixed) — not the Walrus blob ID. "
-            "The blob ID is read from the object, so lease details are "
-            "always available."
+            "The blob ID is read from the object, so blob_sui_object "
+            "details are always available."
         ),
     )
     p_blob_status.add_argument(
@@ -465,6 +467,48 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         help="Key identifying the patch within the quilt.",
     )
     _add_config_args(p_read_quilt)
+
+    p_quilt_patches = subparsers.add_parser(
+        "quilt_patches",
+        help="List the patches contained in a quilt via the Walrus HTTP aggregator.",
+        description=(
+            "List the patches contained in a quilt via the Walrus HTTP "
+            "aggregator. Gates on expiry first: resolves the committee's "
+            "own verdict before ever reaching the aggregator, since a "
+            "quilt is a blob like any other and its content can be "
+            "expired or never-existed -- both of which the aggregator "
+            "reports identically as a bare BLOB_NOT_FOUND."
+        ),
+    )
+    quilt_patches_id = p_quilt_patches.add_mutually_exclusive_group(required=True)
+    quilt_patches_id.add_argument(
+        "-b",
+        "--blob-id",
+        dest="blob_id",
+        action=ValidateBlobID,
+        help="Walrus blob ID (URL-safe base64, content hash) of the quilt.",
+    )
+    quilt_patches_id.add_argument(
+        "-o",
+        "--object-id",
+        dest="object_id",
+        action=ValidateObjectID,
+        help=(
+            "Sui object ID of the quilt's Blob (0x-prefixed) — not the "
+            "Walrus blob ID. The blob ID is read from the object."
+        ),
+    )
+    p_quilt_patches.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=float,
+        default=10.0,
+        help=(
+            "Overall deadline for the committee status query used to gate "
+            "on expiry, in seconds (default: 10)."
+        ),
+    )
+    _add_config_args(p_quilt_patches)
 
     # --- HTTP action command (no --mode; no transaction involved) ---
 

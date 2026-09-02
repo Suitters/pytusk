@@ -20,11 +20,11 @@ checking rather than production.
 across every variant and is the SOLE return value of the SDK entry point. It
 carries the verdict plus the evidence behind it.
 
-Deliberately absent: lease facts (object IDs, ``deletable`` flags, owned-lease
-lists, quilt markers). Those are chain-derived, and the blob-status SDK path
-does no chain work beyond fetching the committee. Callers wanting lease
-enrichment layer it on top -- that is what the ``tusky`` resolution ladder
-does.
+Deliberately absent: blob_sui_object facts (object IDs, ``deletable`` flags,
+owned-blob_sui_object lists, quilt markers). Those are chain-derived, and the
+blob-status SDK path does no chain work beyond fetching the committee.
+Callers wanting blob_sui_object enrichment layer it on top -- that is what
+the ``tusky`` resolution ladder does.
 """
 
 import dataclasses
@@ -99,7 +99,8 @@ class PermanentStatus:
     content may back both.
 
     Attributes:
-        end_epoch (int): Epoch at which the permanent lease expires.
+        end_epoch (int): Epoch at which this permanent registration's
+            storage period ends.
         is_certified (bool): Whether the permanent registration is certified
             rather than merely registered.
         status_event (EventRef): The event establishing this status.

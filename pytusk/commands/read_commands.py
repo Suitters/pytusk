@@ -15,6 +15,8 @@ from pytusk.commands.walrus_command import (
     BlobData,
     BlobSlice,
     QuiltPatch,
+    QuiltPatchItem,
+    QuiltPatchListing,
     WalrusCommand,
     http_failure_message,
 )
@@ -223,6 +225,43 @@ class ReadQuiltPatch(WalrusCommand):
             content_type=QuiltPatch,
             context=f"quilt_id={self.quilt_id} patch_key={self.patch_key}",
         )
+
+
+@dataclasses.dataclass(kw_only=True)
+class ListQuiltPatches(WalrusCommand):
+    """List the patches contained in a quilt.
+
+    GET {aggregator}/v1/quilts/{quilt_id}/patches
+
+    Args:
+        quilt_id (str): Walrus quilt identifier.
+    """
+
+    quilt_id: str
+
+    def http_method(self) -> str:
+        return "GET"
+
+    def url_path(self, base_url: str) -> str:
+        return f"{base_url}/v1/quilts/{self.quilt_id}/patches"
+
+    def parse_response(self, response: httpx.Response) -> SuiRpcResult:
+        if response.is_error:
+            return SuiRpcResult(
+                False,
+                http_failure_message(
+                    response=response, context=f"quilt_id={self.quilt_id}"
+                ),
+            )
+        patches = [
+            QuiltPatchItem(
+                patch_key=item.get("identifier", ""),
+                patch_id=item.get("patch_id", ""),
+                tags=item.get("tags", {}),
+            )
+            for item in response.json()
+        ]
+        return SuiRpcResult(True, "", QuiltPatchListing(patches=patches))
 
 
 @dataclasses.dataclass(kw_only=True)

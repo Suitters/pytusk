@@ -23,6 +23,7 @@ from pytusk.commands.node_commands import (
 # Read commands
 from pytusk.commands.read_commands import (
     ConcatBlobs,
+    ListQuiltPatches,
     ReadBlob,
     ReadBlobByObjectId,
     ReadBlobPartial,
@@ -42,6 +43,8 @@ from pytusk.commands.walrus_command import (
     BlobReceipt,
     BlobSlice,
     QuiltPatch,
+    QuiltPatchItem,
+    QuiltPatchListing,
     QuiltReceipt,
     StorageNodeEnvelopeError,
     WalrusCommand,
@@ -189,7 +192,7 @@ from pytusk.core.ops import (
     wait_for_finality,
     wal_balance_and_decimals,
 )
-from pytusk.core.ops.blob_status import fetch_blob_status
+from pytusk.core.ops.blob_status import fetch_blob_status, resolve_blob_sui_objects
 
 # End-to-end write pipelines (the compose functions that own stage order and
 # receipt construction -- see pytusk.core.pipelines's module docstring)
@@ -307,6 +310,8 @@ __all__ = [  # noqa: RUF022
     "BlobData",
     "BlobSlice",
     "QuiltPatch",
+    "QuiltPatchItem",
+    "QuiltPatchListing",
     "BlobReceipt",
     "QuiltReceipt",
     "error_reason",
@@ -317,6 +322,7 @@ __all__ = [  # noqa: RUF022
     "ReadBlobPartial",
     "ReadBlobByObjectId",
     "ReadQuiltPatch",
+    "ListQuiltPatches",
     "ConcatBlobs",
     # Relay commands
     "GetTipConfig",
@@ -355,6 +361,7 @@ __all__ = [  # noqa: RUF022
     "event_object_id",
     "fetch_blob_status",
     "fetch_event_object_id",
+    "resolve_blob_sui_objects",
     "blob_id_to_u256",
     "blob_id_to_url_base64",
     "decode_standard_base64",

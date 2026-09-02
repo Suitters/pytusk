@@ -30,6 +30,7 @@ from pytusk.tusky.tusky_args import build_parser
 _DISPATCH = {
     "read_blob": tusky_cmds_read.read_blob,
     "read_quilt": tusky_cmds_read.read_quilt,
+    "quilt_patches": tusky_cmds_read.quilt_patches,
     "store_blob": tusky_cmds_write.store_blob,
     "store_quilt": tusky_cmds_write.store_quilt,
     "blobs": tusky_cmds_query.blobs,

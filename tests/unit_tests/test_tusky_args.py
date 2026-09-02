@@ -209,6 +209,43 @@ class TestStoreQuiltPatchFlags:
         assert args.content == "hello"
 
 
+class TestQuiltPatches:
+    """quilt_patches requires exactly one of -b/--blob-id or -o/--object-id."""
+
+    def test_blob_id_flag(self) -> None:
+        """-b/--blob-id parses to dest blob_id."""
+        args = build_parser(
+            in_args=[
+                "quilt_patches",
+                "--blob-id",
+                "A" * 43,
+            ]
+        )
+        assert args.blob_id == "A" * 43
+
+    def test_blob_id_short_flag(self) -> None:
+        """-b parses to the same dest blob_id."""
+        args = build_parser(in_args=["quilt_patches", "-b", "A" * 43])
+        assert args.blob_id == "A" * 43
+
+    def test_object_id_flag(self) -> None:
+        """-o/--object-id parses to dest object_id."""
+        args = build_parser(in_args=["quilt_patches", "-o", OBJECT_ID])
+        assert args.object_id == OBJECT_ID
+
+    def test_missing_both_rejected(self) -> None:
+        """Omitting both -b and -o exits non-zero."""
+        with pytest.raises(SystemExit):
+            build_parser(in_args=["quilt_patches"])
+
+    def test_both_given_rejected(self) -> None:
+        """Passing both -b and -o exits non-zero (mutually exclusive)."""
+        with pytest.raises(SystemExit):
+            build_parser(
+                in_args=["quilt_patches", "-b", "A" * 43, "-o", OBJECT_ID]
+            )
+
+
 class TestTipGasSource:
     """--tip-gas-source parses to dest tip_gas_source (was --tip-source)."""
 

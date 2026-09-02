@@ -32,7 +32,7 @@ from pytusk import (
     blob_id_from_url_base64,
     blob_id_to_url_base64,
     fetch_blob_status,
-    fetch_event_object_id,
+    resolve_blob_sui_objects,
     storage_from_blob,
 )
 from pytusk.tusky.tusky_cmds_common import (
@@ -215,14 +215,14 @@ def _epochs_remaining(count: int) -> str:
 
 
 async def blob_status(args: argparse.Namespace) -> None:
-    """Report the storage committee's verdict on one blob, with lease facts.
+    """Report the storage committee's verdict on one blob, with blob_sui_object facts.
 
     Answers for the CONTENT, not for an object: the verdict comes from
     fanning a status read across the whole committee and resolving the
-    answers against shard-weight thresholds. On-chain lease details are
-    then layered on where they can be reached, via the four-tier ladder
-    described in the ``-b`` help text. A thin result means no object was
-    reachable, NOT that the blob has none.
+    answers against shard-weight thresholds. On-chain blob_sui_object
+    details are then layered on where they can be reached, via the
+    four-tier ladder described in the ``-b`` help text. A thin result
+    means no object was reachable, NOT that the blob has none.
 
     Args:
         args (argparse.Namespace): Parsed `blob_status` subcommand
@@ -234,7 +234,7 @@ async def blob_status(args: argparse.Namespace) -> None:
         staking_object = client.config.network.staking_object
         owner = client.pysui_client.config.active_address
 
-        leases = []
+        known_blob_sui_object = None
         if args.object_id is not None:
             named = await client.execute(command=GetObject(object_id=args.object_id))
             if not named.is_ok():
@@ -261,7 +261,7 @@ async def blob_status(args: argparse.Namespace) -> None:
                 print(f"Not a Walrus Blob object: {exc}", file=sys.stderr)
                 sys.exit(1)
             # -o always lands at tier-2 richness: the object is in hand.
-            leases.append(named.result_data)
+            known_blob_sui_object = named.result_data
         else:
             blob_id = blob_id_from_url_base64(value=args.blob_id)
 
@@ -276,44 +276,13 @@ async def blob_status(args: argparse.Namespace) -> None:
             print(f"Cannot query blob status: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        tier = 2 if leases else 1
-        if not leases:
-            # Tier 2: one scan returns every sibling lease, so owning any
-            # object for this blob yields ALL of them with no follow-up.
-            owned = await client.execute_for_all(
-                command=GetObjectsOwnedByAddress(owner=owner)
-            )
-            if owned.is_ok():
-                for obj in owned.result_data.objects:
-                    if not (obj.object_type and "::blob::Blob" in obj.object_type):
-                        continue
-                    try:
-                        if blob_id_from_object(obj=obj) == blob_id:
-                            leases.append(obj)
-                    except ValueError:
-                        # One malformed object must not sink the listing.
-                        continue
-            if leases:
-                tier = 2
-
-        if not leases and isinstance(report.status, PermanentStatus):
-            # Tier 3: resolve an UNOWNED permanent blob to its object via
-            # the status event. Sui objects are publicly readable, so
-            # ownership gates nothing. Never available for deletable --
-            # that variant carries no event.
-            object_id = await fetch_event_object_id(
-                reader=client,
-                tx_digest=report.status.status_event.tx_digest,
-                event_seq=report.status.status_event.event_seq,
-            )
-            if object_id is not None:
-                found = await client.execute(command=GetObject(object_id=object_id))
-                if found.is_ok():
-                    leases.append(found.result_data)
-                    tier = 3
-
-        if not leases:
-            tier = 4
+        blob_sui_objects, tier = await resolve_blob_sui_objects(
+            client=client,
+            blob_id=blob_id,
+            owner=owner,
+            report=report,
+            known_blob_sui_object=known_blob_sui_object,
+        )
 
     word = _STATUS_WORD.get(type(report.status), "unknown")
     print(f"blob_id: {blob_id_to_url_base64(blob_id=report.blob_id)}")
@@ -358,14 +327,14 @@ async def blob_status(args: argparse.Namespace) -> None:
         counts = report.status.deletable_counts
         print(f"deletable_objects: {counts.total} total, {counts.certified} certified")
 
-    for obj in leases:
+    for obj in blob_sui_objects:
         try:
             deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
         except ValueError:
             deletable, end_epoch = False, 0
         remaining = end_epoch - report.committee_epoch
         print(
-            f"lease: {obj.object_id}  deletable={deletable}  "
+            f"blob_sui_object: {obj.object_id}  deletable={deletable}  "
             f"end_epoch={end_epoch} ({_epochs_remaining(remaining)})"
         )
 

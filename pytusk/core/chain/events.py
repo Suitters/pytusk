@@ -7,9 +7,9 @@
 
 A storage node reports the event that established a blob's status as an
 ``(tx_digest, event_seq)`` pair. Turning that into the ``Blob`` object ID is
-what lets a caller enrich a status verdict with lease facts for a blob it
-does not own -- Sui objects are publicly readable, so ownership gates
-nothing here.
+what lets a caller enrich a status verdict with blob_sui_object facts for a
+blob it does not own -- Sui objects are publicly readable, so ownership
+gates nothing here.
 
 WHY THIS DECODES BCS RATHER THAN READING FIELDS. ``Event.json`` is UNSET
 when an event is carried inside its own transaction's ``events`` list -- the

@@ -34,11 +34,14 @@ import asyncio
 import logging
 import time
 
-from pysui import SuiRpcResult
+import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
+from pysui import GetObject, GetObjectsOwnedByAddress, SuiRpcResult
 
 from pytusk.commands.node_commands import GetBlobStatus
 from pytusk.core.certification import min_weight_for_quorum, min_weight_for_validity
+from pytusk.core.chain.blob_fields import blob_id_from_object
 from pytusk.core.chain.committee import WalrusCommitteeMember, fetch_committee
+from pytusk.core.chain.events import fetch_event_object_id
 from pytusk.core.committee_fanout import fan_out_to_committee
 from pytusk.core.types.blob_status import (
     BlobStatus,
@@ -47,6 +50,7 @@ from pytusk.core.types.blob_status import (
     NodeDissent,
     NodeRef,
     NonexistentStatus,
+    PermanentStatus,
     Resolution,
     UnresolvedStatus,
 )
@@ -374,3 +378,91 @@ def _resolve(
         return candidates[0], Resolution.VALIDITY
 
     return UnresolvedStatus(), Resolution.UNRESOLVED
+
+
+async def resolve_blob_sui_objects(
+    *,
+    client: CommitteeAndNodeClient,
+    blob_id: bytes,
+    owner: str,
+    report: BlobStatusReport,
+    known_blob_sui_object: sui_prot.Object | None = None,
+) -> tuple[list[sui_prot.Object], int]:
+    """Resolve a blob_id to its on-chain blob_sui_object(s) via the tiered ladder.
+
+    Layers on-chain detail atop a committee status verdict, in four tiers of
+    decreasing certainty:
+
+    1. Nothing resolved (returned list stays empty).
+    2. ``known_blob_sui_object`` was already in hand (e.g. from an explicit
+       ``-o``/object-id lookup), or is found among ``owner``'s owned objects.
+    3. Unowned but the blob is a ``PermanentStatus`` registration -- resolved
+       via its certification event. Never available for a deletable blob,
+       which carries no status event.
+    4. Nothing could be resolved at all.
+
+    This is a lossless extraction of the ladder `tusky blob_status` has
+    always run -- behavior here matches that command's prior inline logic
+    exactly, so both it and any other caller (e.g. a future gate that must
+    short-circuit on an expired blob) see identical resolution.
+
+    Args:
+        client (CommitteeAndNodeClient): Transport for the owned-objects scan
+            and any object fetch this needs.
+        blob_id (bytes): Raw 32-byte blob ID being resolved.
+        owner (str): Active Sui address to scan for owned Blob objects.
+        report (BlobStatusReport): The already-fetched committee verdict;
+            drives tier-3 eligibility (``PermanentStatus`` only) and supplies
+            the status event it resolves through.
+        known_blob_sui_object (sui_prot.Object | None): An already-resolved
+            Blob object (e.g. from an explicit object-id lookup), folded in
+            as an immediate tier-2 result with no extra network calls.
+
+    Returns:
+        tuple[list[sui_prot.Object], int]: Resolved blob_sui_object(s) (may
+            be empty) and the tier at which resolution stopped (1-4).
+    """
+    blob_sui_objects: list[sui_prot.Object] = []
+    if known_blob_sui_object is not None:
+        blob_sui_objects.append(known_blob_sui_object)
+
+    tier = 2 if blob_sui_objects else 1
+    if not blob_sui_objects:
+        # Tier 2: one scan returns every sibling blob_sui_object, so owning
+        # any object for this blob yields ALL of them with no follow-up.
+        owned = await client.execute_for_all(
+            command=GetObjectsOwnedByAddress(owner=owner)
+        )
+        if owned.is_ok():
+            for obj in owned.result_data.objects:
+                if not (obj.object_type and "::blob::Blob" in obj.object_type):
+                    continue
+                try:
+                    if blob_id_from_object(obj=obj) == blob_id:
+                        blob_sui_objects.append(obj)
+                except ValueError:
+                    # One malformed object must not sink the listing.
+                    continue
+        if blob_sui_objects:
+            tier = 2
+
+    if not blob_sui_objects and isinstance(report.status, PermanentStatus):
+        # Tier 3: resolve an UNOWNED permanent blob to its object via
+        # the status event. Sui objects are publicly readable, so
+        # ownership gates nothing. Never available for deletable --
+        # that variant carries no event.
+        object_id = await fetch_event_object_id(
+            reader=client,
+            tx_digest=report.status.status_event.tx_digest,
+            event_seq=report.status.status_event.event_seq,
+        )
+        if object_id is not None:
+            found = await client.execute(command=GetObject(object_id=object_id))
+            if found.is_ok():
+                blob_sui_objects.append(found.result_data)
+                tier = 3
+
+    if not blob_sui_objects:
+        tier = 4
+
+    return blob_sui_objects, tier

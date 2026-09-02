@@ -392,3 +392,37 @@ class QuiltReceipt(DataClassJsonMixin):
     cost: int = dataclasses.field(default=0)
     expiry_epoch: int = dataclasses.field(default=0)
     object_id: str = dataclasses.field(default="")
+
+
+@dataclasses.dataclass
+class QuiltPatchItem(DataClassJsonMixin):
+    """One patch's identity within a quilt.
+
+    Used by: ListQuiltPatches.
+
+    Args:
+        patch_key (str): Patch key assigned within the quilt. Named to
+            match ``QuiltReceipt.patch_keys`` and ``read_quilt``'s
+            ``--patch-key`` argument, though the aggregator's own wire
+            field is ``identifier``.
+        patch_id (str): Walrus QuiltPatchId (URL-safe base64) addressing
+            this patch directly, independent of its containing quilt.
+        tags (dict[str, str]): Tags attached to the patch.
+    """
+
+    patch_key: str = dataclasses.field(default="")
+    patch_id: str = dataclasses.field(default="")
+    tags: dict[str, str] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass
+class QuiltPatchListing(DataClassJsonMixin):
+    """Patches contained in a quilt, as returned by list-patches-in-quilt.
+
+    Used by: ListQuiltPatches.
+
+    Args:
+        patches (list[QuiltPatchItem]): One entry per patch in the quilt.
+    """
+
+    patches: list[QuiltPatchItem] = dataclasses.field(default_factory=list)

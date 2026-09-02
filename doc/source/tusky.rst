@@ -237,6 +237,77 @@ Example, continuing from the ``store_quilt`` example above:
    $ tusky read_quilt --quilt-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHY --patch-key patch1
    hello quilt
 
+quilt_patches
+~~~~~~~~~~~~~
+
+List the patches contained in a quilt, gating on expiry first: since a
+quilt is a blob like any other, its content can be expired or
+never-existed, both of which the aggregator's list-patches-in-quilt
+endpoint reports identically as a bare ``BLOB_NOT_FOUND``. Resolving the
+committee's own verdict first gives a clearer answer, and for a still-live
+quilt avoids ever reaching that ambiguity at all.
+
+.. code-block:: console
+
+   tusky quilt_patches -b BLOB_ID
+   tusky quilt_patches -o OBJECT_ID
+
+``-b`` / ``--blob-id``
+   The **Walrus blob ID** (URL-safe base64, content hash) of the quilt.
+   Validated at parse time — a malformed ID is rejected before any network
+   call.
+
+``-o`` / ``--object-id``
+   The **Sui object ID** of the quilt's ``Blob``. The blob ID is read from
+   the object. Mutually exclusive with ``-b``; exactly one is required.
+
+``--timeout``
+   Overall deadline for the committee status query used to gate on
+   expiry, in seconds (default: 10).
+
+**Expiry gate.** How the check is made depends on the committee's verdict:
+
+1. ``NonexistentStatus`` / ``InvalidStatus`` → the quilt does not exist;
+   exits before any aggregator call.
+2. ``PermanentStatus`` → checked directly against its own ``end_epoch``, no
+   extra network call needed.
+3. ``DeletableStatus`` → committee status alone carries no ``end_epoch``,
+   so the on-chain ``Blob`` object(s) are resolved and checked instead. An
+   object that could not be resolved is never treated as evidence of
+   expiry — only an object actually resolved and found expired blocks the
+   read, and only if every resolved object agrees.
+4. ``UnresolvedStatus`` → no committee verdict reached, so there is no
+   reliable expiry signal either way; the read proceeds and the aggregator
+   answers.
+
+Output is JSON, enriched with the facts resolved during the gate:
+
+.. code-block:: console
+
+   $ tusky quilt_patches -b 8XiGin_tGIB1hpkJINtSgKToT0EFo3qdYMY4U9nBJK4
+   {
+     "blob_id": "8XiGin_tGIB1hpkJINtSgKToT0EFo3qdYMY4U9nBJK4",
+     "status": "PermanentStatus",
+     "committee_epoch": 507,
+     "end_epoch": 508,
+     "patches": [
+       {
+         "patch_key": "testdata_10mb.bin",
+         "patch_id": "8XiGin_tGIB1hpkJINtSgKToT0EFo3qdYMY4U9nBJK4BAQBdAg",
+         "tags": {}
+       },
+       {
+         "patch_key": "testdata_1mb.bin",
+         "patch_id": "8XiGin_tGIB1hpkJINtSgKToT0EFo3qdYMY4U9nBJK4BXQKaAg",
+         "tags": {}
+       }
+     ]
+   }
+
+``ladder_tier`` appears alongside ``end_epoch`` when the ``DeletableStatus``
+resolution path actually ran; it is omitted when the ``PermanentStatus``
+fast path answered directly, or when nothing could be resolved at all.
+
 Blob Inspection & Reporting
 -----------------------------
 
@@ -310,8 +381,8 @@ Ask the Walrus storage committee what it knows about a blob, and resolve
 the answers against shard-weight thresholds.
 
 Unlike `blob`_, which reads one on-chain object you name, this answers for
-the CONTENT regardless of who owns it. On-chain lease details are layered
-on afterwards where they can be reached.
+the CONTENT regardless of who owns it. On-chain blob_sui_object details are
+layered on afterwards where they can be reached.
 
 .. code-block:: console
 
@@ -324,8 +395,8 @@ on afterwards where they can be reached.
 
 ``-o`` / ``--object-id``
    The **Sui object ID** of a ``Blob``. The blob ID is read from the
-   object, so lease details are always available. Mutually exclusive with
-   ``-b``; exactly one is required.
+   object, so blob_sui_object details are always available. Mutually
+   exclusive with ``-b``; exactly one is required.
 
 ``--details``
    List every committee member: those confirming the verdict, and those
@@ -337,15 +408,16 @@ on afterwards where they can be reached.
    each attempt. Because the fan-out stops early once a threshold is met,
    this mostly governs stragglers rather than the common case.
 
-**Lease enrichment ladder.** How much on-chain detail accompanies the
-verdict depends on what can be reached:
+**blob_sui_object enrichment ladder.** How much on-chain detail
+accompanies the verdict depends on what can be reached:
 
 1. Node verdict — always.
-2. The configured address owns a lease for this blob → every owned lease
-   is listed.
+2. The configured address owns a blob_sui_object for this blob → every
+   owned blob_sui_object is listed.
 3. Otherwise, if the blob is permanent → its status event is resolved to
-   the ``Blob`` object, so lease facts appear even for a blob you do not
-   own. Never available for a deletable blob, which has no status event.
+   the ``Blob`` object, so blob_sui_object facts appear even for a blob
+   you do not own. Never available for a deletable blob, which has no
+   status event.
 4. Otherwise (deletable-and-unowned, or nonexistent/invalid) → node status
    only.
 
@@ -380,7 +452,7 @@ Example:
    certified: True
    initial_certified_epoch: 507
    deletable_objects: 0 total, 0 certified
-   lease: 0x7ad6fc95a7b557cc4bae10040f46ac85f974bb930575914b9036dad2346a8269  deletable=False  end_epoch=508 (1 epoch remaining)
+   blob_sui_object: 0x7ad6fc95a7b557cc4bae10040f46ac85f974bb930575914b9036dad2346a8269  deletable=False  end_epoch=508 (1 epoch remaining)
 
 The four counts on the ``resolution`` line are deliberately separate.
 *dissenting* nodes answered with a different status; *unreachable* nodes

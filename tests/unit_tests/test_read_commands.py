@@ -12,12 +12,18 @@ import pytest
 
 from pytusk.commands.read_commands import (
     ConcatBlobs,
+    ListQuiltPatches,
     ReadBlob,
     ReadBlobByObjectId,
     ReadBlobPartial,
     ReadQuiltPatch,
 )
-from pytusk.commands.walrus_command import BlobData, BlobSlice, QuiltPatch
+from pytusk.commands.walrus_command import (
+    BlobData,
+    BlobSlice,
+    QuiltPatch,
+    QuiltPatchListing,
+)
 
 AGG = "https://aggregator.example.com"
 
@@ -29,6 +35,7 @@ def mock_response(
     content: bytes = b"",
     status_code: int | None = None,
     reason_phrase: str | None = None,
+    json_body: list[dict[str, object]] | None = None,
 ) -> MagicMock:
     """Build a stand-in for an aggregator response.
 
@@ -55,6 +62,9 @@ def mock_response(
     r.request = MagicMock(spec=httpx.Request)
     r.request.url = f"{AGG}/v1/blobs/abc"
     r.json.side_effect = ValueError("response body is not JSON")
+    if json_body is not None:
+        r.json.side_effect = None
+        r.json.return_value = json_body
     return r
 
 
@@ -168,6 +178,38 @@ class TestReadQuiltPatch:
     def test_parse_response_error(self) -> None:
         cmd = ReadQuiltPatch(quilt_id="q1", patch_key="file_a")
         result = cmd.parse_response(mock_response(is_error=True, text="Patch not found"))
+        assert result.is_err()
+
+
+class TestListQuiltPatches:
+    def test_http_method(self) -> None:
+        assert ListQuiltPatches(quilt_id="q1").http_method() == "GET"
+
+    def test_url_path(self) -> None:
+        cmd = ListQuiltPatches(quilt_id="q1")
+        assert cmd.url_path(AGG) == f"{AGG}/v1/quilts/q1/patches"
+
+    def test_query_params_empty(self) -> None:
+        assert ListQuiltPatches(quilt_id="q1").query_params() == {}
+
+    def test_parse_response_success(self) -> None:
+        cmd = ListQuiltPatches(quilt_id="q1")
+        body = [
+            {"identifier": "file_a", "patch_id": "patch1", "tags": {"k": "v"}},
+            {"identifier": "file_b", "patch_id": "patch2", "tags": {}},
+        ]
+        result = cmd.parse_response(mock_response(json_body=body))
+        assert result.is_ok()
+        assert isinstance(result.result_data, QuiltPatchListing)
+        assert len(result.result_data.patches) == 2
+        assert result.result_data.patches[0].patch_key == "file_a"
+        assert result.result_data.patches[0].patch_id == "patch1"
+        assert result.result_data.patches[0].tags == {"k": "v"}
+        assert result.result_data.patches[1].tags == {}
+
+    def test_parse_response_error(self) -> None:
+        cmd = ListQuiltPatches(quilt_id="q1")
+        result = cmd.parse_response(mock_response(is_error=True, text="Quilt not found"))
         assert result.is_err()
 
 
