@@ -246,6 +246,36 @@ class TestQuiltPatches:
             )
 
 
+class TestReadQuiltArguments:
+    """read_quilt's --quilt-id/--patch-key/--patch-id all default to None at
+    the parser level -- the pair-vs-single exactly-one-of requirement is
+    validated in the read_quilt() handler, not expressible as a single
+    argparse mutually exclusive group."""
+
+    def test_quilt_id_and_patch_key_flags(self) -> None:
+        """--quilt-id/--patch-key parse to their dests; --patch-id defaults None."""
+        args = build_parser(
+            in_args=["read_quilt", "--quilt-id", "q1", "--patch-key", "file_a"]
+        )
+        assert args.quilt_id == "q1"
+        assert args.patch_key == "file_a"
+        assert args.patch_id is None
+
+    def test_patch_id_flag(self) -> None:
+        """--patch-id parses to its dest; --quilt-id/--patch-key default None."""
+        args = build_parser(in_args=["read_quilt", "--patch-id", "patch1"])
+        assert args.patch_id == "patch1"
+        assert args.quilt_id is None
+        assert args.patch_key is None
+
+    def test_no_flags_accepted_by_parser(self) -> None:
+        """Omitting all three is accepted by argparse -- read_quilt() rejects it."""
+        args = build_parser(in_args=["read_quilt"])
+        assert args.quilt_id is None
+        assert args.patch_key is None
+        assert args.patch_id is None
+
+
 class TestTipGasSource:
     """--tip-gas-source parses to dest tip_gas_source (was --tip-source)."""
 

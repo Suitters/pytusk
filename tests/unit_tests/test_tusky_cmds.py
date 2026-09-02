@@ -14,6 +14,9 @@ under test. Covers:
 - ``store_blob_native``'s simulate mode with an unsignable sponsor
 - ``tusky_cmds_storage``'s split predicates and ``_destroy_storage_batches``
 - ``relay_configs``: per-relay quoting and failure isolation
+- ``read_quilt``: the exactly-one-of-two-addressing-modes validation that
+  argparse itself can't express (pair-vs-single), and dispatch to the
+  right command class per mode
 
 Argument parsing and ``tusky_format`` rendering are deliberately not
 covered here.
@@ -27,7 +30,14 @@ import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 import pytest
 from pysui import SuiRpcResult
 
-from pytusk import NativeBlobReceipt, StageTimings, StorageObject
+from pytusk import (
+    NativeBlobReceipt,
+    QuiltPatch,
+    ReadQuiltPatch,
+    ReadQuiltPatchById,
+    StageTimings,
+    StorageObject,
+)
 from pytusk.core.encoding import EncodedBlob
 from pytusk.core.ops import blob_execute as blob_execute_module
 from pytusk.core.relay_upload.common import TipQuote
@@ -35,6 +45,7 @@ from pytusk.core.types import ConstTip
 from pytusk.tusky import (
     tusky_cmds_common,
     tusky_cmds_native_upload,
+    tusky_cmds_read,
     tusky_cmds_relay,
     tusky_cmds_storage,
 )
@@ -963,3 +974,99 @@ class TestRelayConfigs:
         _patch_relay_configs(monkeypatch=monkeypatch, config=config, quotes={})
         with pytest.raises(SystemExit):
             await tusky_cmds_relay.relay_configs(_relay_configs_args(size=-1))
+
+
+def _read_quilt_args(**overrides: object) -> argparse.Namespace:
+    """Build a Namespace with every attribute read_quilt reads."""
+    defaults: dict[str, object] = {
+        "quilt_id": None,
+        "patch_key": None,
+        "patch_id": None,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+class _FakeReadQuiltClient:
+    """Fake WalrusClient recording whichever command read_quilt built."""
+
+    def __init__(self, *, result: SuiRpcResult) -> None:
+        self._result = result
+        self.received_command: object = None
+
+    async def __aenter__(self) -> "_FakeReadQuiltClient":
+        """Enter the fake client's async context, returning itself."""
+        return self
+
+    async def __aexit__(
+        self, exc_type: object, exc_val: object, exc_tb: object
+    ) -> None:
+        """Exit the fake client's async context; nothing to clean up."""
+        return
+
+    async def execute(self, *, command: object) -> SuiRpcResult:
+        """Record the command it was given and return the canned result."""
+        self.received_command = command
+        return self._result
+
+
+class TestReadQuilt:
+    """read_quilt requires exactly one of --patch-id or --quilt-id+--patch-key,
+    a pair-vs-single shape argparse can't express as one mutually exclusive
+    group, so it's validated in the handler instead -- and dispatches to the
+    matching command class per mode."""
+
+    async def test_missing_all_flags_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(_read_quilt_args())
+
+    async def test_patch_id_with_quilt_id_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(
+                _read_quilt_args(patch_id="patch1", quilt_id="q1")
+            )
+
+    async def test_patch_id_with_patch_key_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(
+                _read_quilt_args(patch_id="patch1", patch_key="file_a")
+            )
+
+    async def test_partial_pair_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(_read_quilt_args(quilt_id="q1"))
+
+    async def test_patch_id_mode_dispatches_read_quilt_patch_by_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _FakeReadQuiltClient(
+            result=SuiRpcResult(True, "", QuiltPatch(content=b"hello"))
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        await tusky_cmds_read.read_quilt(_read_quilt_args(patch_id="patch1"))
+        assert isinstance(client.received_command, ReadQuiltPatchById)
+        assert client.received_command.patch_id == "patch1"
+
+    async def test_quilt_id_patch_key_mode_dispatches_read_quilt_patch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _FakeReadQuiltClient(
+            result=SuiRpcResult(True, "", QuiltPatch(content=b"hello"))
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        await tusky_cmds_read.read_quilt(
+            _read_quilt_args(quilt_id="q1", patch_key="file_a")
+        )
+        assert isinstance(client.received_command, ReadQuiltPatch)
+        assert client.received_command.quilt_id == "q1"
+        assert client.received_command.patch_key == "file_a"

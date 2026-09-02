@@ -17,6 +17,7 @@ from pytusk.commands.read_commands import (
     ReadBlobByObjectId,
     ReadBlobPartial,
     ReadQuiltPatch,
+    ReadQuiltPatchById,
 )
 from pytusk.commands.walrus_command import (
     BlobData,
@@ -177,6 +178,30 @@ class TestReadQuiltPatch:
 
     def test_parse_response_error(self) -> None:
         cmd = ReadQuiltPatch(quilt_id="q1", patch_key="file_a")
+        result = cmd.parse_response(mock_response(is_error=True, text="Patch not found"))
+        assert result.is_err()
+
+
+class TestReadQuiltPatchById:
+    def test_http_method(self) -> None:
+        assert ReadQuiltPatchById(patch_id="patch1").http_method() == "GET"
+
+    def test_url_path(self) -> None:
+        cmd = ReadQuiltPatchById(patch_id="patch1")
+        assert cmd.url_path(AGG) == f"{AGG}/v1/blobs/by-quilt-patch-id/patch1"
+
+    def test_query_params_empty(self) -> None:
+        assert ReadQuiltPatchById(patch_id="patch1").query_params() == {}
+
+    def test_parse_response_success(self) -> None:
+        cmd = ReadQuiltPatchById(patch_id="patch1")
+        result = cmd.parse_response(mock_response(content=b"patch data"))
+        assert result.is_ok()
+        assert isinstance(result.result_data, QuiltPatch)
+        assert result.result_data.content == b"patch data"
+
+    def test_parse_response_error(self) -> None:
+        cmd = ReadQuiltPatchById(patch_id="patch1")
         result = cmd.parse_response(mock_response(is_error=True, text="Patch not found"))
         assert result.is_err()
 

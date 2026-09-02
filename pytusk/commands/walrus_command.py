@@ -343,7 +343,7 @@ class BlobSlice(DataClassJsonMixin):
 class QuiltPatch(DataClassJsonMixin):
     """Quilt patch content returned by a quilt patch read.
 
-    Used by: ReadQuiltPatch.
+    Used by: ReadQuiltPatch, ReadQuiltPatchById.
 
     Args:
         content (bytes): Raw patch bytes.

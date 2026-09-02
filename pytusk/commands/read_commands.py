@@ -228,6 +228,33 @@ class ReadQuiltPatch(WalrusCommand):
 
 
 @dataclasses.dataclass(kw_only=True)
+class ReadQuiltPatchById(WalrusCommand):
+    """Read a single patch from a quilt directly by its QuiltPatchId.
+
+    GET {aggregator}/v1/blobs/by-quilt-patch-id/{patch_id}
+
+    Args:
+        patch_id (str): Walrus QuiltPatchId (URL-safe base64) addressing
+            the patch directly, independent of its containing quilt.
+    """
+
+    patch_id: str
+
+    def http_method(self) -> str:
+        return "GET"
+
+    def url_path(self, base_url: str) -> str:
+        return f"{base_url}/v1/blobs/by-quilt-patch-id/{self.patch_id}"
+
+    def parse_response(self, response: httpx.Response) -> SuiRpcResult:
+        return _content_result(
+            response=response,
+            content_type=QuiltPatch,
+            context=f"patch_id={self.patch_id}",
+        )
+
+
+@dataclasses.dataclass(kw_only=True)
 class ListQuiltPatches(WalrusCommand):
     """List the patches contained in a quilt.
 

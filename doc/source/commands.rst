@@ -85,6 +85,9 @@ Command Reference
    * - :py:class:`~pytusk.ReadQuiltPatch`
      - Read a single patch from a quilt by quilt ID and patch key.
      - Result data: :py:class:`~pytusk.QuiltPatch`.
+   * - :py:class:`~pytusk.ReadQuiltPatchById`
+     - Read a single patch from a quilt directly by its QuiltPatchId.
+     - Result data: :py:class:`~pytusk.QuiltPatch`.
    * - :py:class:`~pytusk.ConcatBlobs`
      - Read and concatenate multiple blobs into a single response.
      - Result data: :py:class:`~pytusk.BlobData`. Uses the ``v1alpha`` endpoint.
@@ -236,6 +239,36 @@ Result data: :py:class:`~pytusk.QuiltPatch`.
         async with WalrusClient(pytusk_config=config) as client:
             result = await client.execute(
                 command=ReadQuiltPatch(quilt_id="...", patch_key="report.pdf")
+            )
+            if result.is_ok():
+                patch = result.result_data
+                print(len(patch.content))
+
+    asyncio.run(main())
+
+ReadQuiltPatchById
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Read a single patch from a quilt directly by its QuiltPatchId.
+
+* ``patch_id: str`` — Walrus QuiltPatchId (URL-safe base64) addressing the patch directly, independent of its containing quilt.
+
+Result data: :py:class:`~pytusk.QuiltPatch`.
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import PytuskConfiguration, WalrusClient, ReadQuiltPatchById
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            result = await client.execute(
+                command=ReadQuiltPatchById(patch_id="...")
             )
             if result.is_ok():
                 patch = result.result_data

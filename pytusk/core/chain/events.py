@@ -29,6 +29,8 @@ number means.
 ``contents`` is NOT the bare Move payload. It is the BCS encoding of Sui's
 own ``Event`` envelope, which wraps the payload in five preceding fields:
 
+::
+
     package_id: 32 bytes (the CALLING package, which differs from the
                 package that DEFINES the event type)
     transaction_module: ULEB-length string

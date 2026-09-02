@@ -452,19 +452,33 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     p_read_quilt = subparsers.add_parser(
         "read_quilt",
         help="Read a single patch from a quilt via the Walrus HTTP aggregator.",
-        description="Read a single patch from a quilt via the Walrus HTTP aggregator.",
+        description=(
+            "Read a single patch from a quilt via the Walrus HTTP "
+            "aggregator. Two addressing modes: --quilt-id and --patch-key "
+            "together (the name given at store time), or --patch-id alone "
+            "(the opaque QuiltPatchId, e.g. from 'quilt_patches')."
+        ),
     )
     p_read_quilt.add_argument(
         "--quilt-id",
         dest="quilt_id",
-        required=True,
-        help="Walrus quilt identifier.",
+        default=None,
+        help="Walrus quilt identifier. Used with --patch-key.",
     )
     p_read_quilt.add_argument(
         "--patch-key",
         dest="patch_key",
-        required=True,
-        help="Key identifying the patch within the quilt.",
+        default=None,
+        help="Key identifying the patch within the quilt. Used with --quilt-id.",
+    )
+    p_read_quilt.add_argument(
+        "--patch-id",
+        dest="patch_id",
+        default=None,
+        help=(
+            "Walrus QuiltPatchId (URL-safe base64) addressing the patch "
+            "directly. Not combined with --quilt-id/--patch-key."
+        ),
     )
     _add_config_args(p_read_quilt)
 

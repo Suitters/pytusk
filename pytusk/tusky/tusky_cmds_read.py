@@ -28,6 +28,7 @@ from pytusk import (
     QuiltPatchListing,
     ReadBlob,
     ReadQuiltPatch,
+    ReadQuiltPatchById,
     WalrusClient,
     blob_deletable_and_end_epoch,
     blob_id_from_object,
@@ -60,14 +61,36 @@ async def read_blob(args: argparse.Namespace) -> None:
 async def read_quilt(args: argparse.Namespace) -> None:
     """Read a single quilt patch via the Walrus HTTP aggregator and write it to stdout.
 
+    Two mutually exclusive addressing modes: ``--patch-id`` alone, or
+    ``--quilt-id``/``--patch-key`` together. Argparse can't express this
+    pair-vs-single shape as a single mutually exclusive group, so it's
+    validated here instead.
+
     Args:
         args (argparse.Namespace): Parsed `read_quilt` subcommand arguments.
     """
-    config = config_from_args(args)
-    async with WalrusClient(pytusk_config=config) as client:
-        result = await client.execute(
-            command=ReadQuiltPatch(quilt_id=args.quilt_id, patch_key=args.patch_key)
+    if args.patch_id and (args.quilt_id or args.patch_key):
+        print(
+            "Error: --patch-id is not combined with --quilt-id/--patch-key.",
+            file=sys.stderr,
         )
+        sys.exit(1)
+    if not args.patch_id and not (args.quilt_id and args.patch_key):
+        print(
+            "Error: provide either --patch-id, or both --quilt-id and "
+            "--patch-key.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    config = config_from_args(args)
+    command = (
+        ReadQuiltPatchById(patch_id=args.patch_id)
+        if args.patch_id
+        else ReadQuiltPatch(quilt_id=args.quilt_id, patch_key=args.patch_key)
+    )
+    async with WalrusClient(pytusk_config=config) as client:
+        result = await client.execute(command=command)
     if not result.is_ok():
         print(f"Error reading quilt patch: {result.result_string}", file=sys.stderr)
         sys.exit(1)

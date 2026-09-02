@@ -216,19 +216,26 @@ read_quilt
 ~~~~~~~~~~
 
 Read a single patch from a quilt via the Walrus HTTP aggregator, writing
-its raw bytes to stdout.
+its raw bytes to stdout. Two mutually exclusive addressing modes: either
+``--quilt-id`` and ``--patch-key`` together, or ``--patch-id`` alone.
 
 .. code-block:: console
 
    tusky read_quilt --quilt-id QUILT_ID --patch-key KEY
+   tusky read_quilt --patch-id PATCH_ID
 
 ``--quilt-id``
    The quilt's Walrus identifier (as returned in ``store_quilt``'s
-   ``quilt_id`` field).
+   ``quilt_id`` field). Used with ``--patch-key``.
 
 ``--patch-key``
    The key identifying the patch within the quilt (as returned in
-   ``store_quilt``'s ``patch_keys`` list).
+   ``store_quilt``'s ``patch_keys`` list). Used with ``--quilt-id``.
+
+``--patch-id``
+   The patch's Walrus QuiltPatchId (as returned in ``quilt_patches``'
+   per-patch ``patch_id`` field), addressing it directly without a
+   separate quilt ID. Not combined with ``--quilt-id``/``--patch-key``.
 
 Example, continuing from the ``store_quilt`` example above:
 
@@ -236,6 +243,24 @@ Example, continuing from the ``store_quilt`` example above:
 
    $ tusky read_quilt --quilt-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHY --patch-key patch1
    hello quilt
+
+Or, reading the same patch directly by its ``QuiltPatchId``:
+
+.. code-block:: console
+
+   $ tusky read_quilt --patch-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHYBAQBdAg
+   hello quilt
+
+Blob & Quilt Inspection & Reporting
+-----------------------------------
+
+.. note::
+
+   Except for ``read_blob`` above (which takes ``-b``/``--blob-id``),
+   every ``-o``/``--object-id`` argument in ``tusky`` — including
+   throughout this section and the lifecycle commands below — takes the
+   blob's **Sui object ID** (0x-prefixed), not the Walrus blob ID (content
+   hash).
 
 quilt_patches
 ~~~~~~~~~~~~~
@@ -307,17 +332,6 @@ Output is JSON, enriched with the facts resolved during the gate:
 ``ladder_tier`` appears alongside ``end_epoch`` when the ``DeletableStatus``
 resolution path actually ran; it is omitted when the ``PermanentStatus``
 fast path answered directly, or when nothing could be resolved at all.
-
-Blob Inspection & Reporting
------------------------------
-
-.. note::
-
-   Except for ``read_blob`` above (which takes ``-b``/``--blob-id``),
-   every ``-o``/``--object-id`` argument in ``tusky`` — including
-   throughout this section and the lifecycle commands below — takes the
-   blob's **Sui object ID** (0x-prefixed), not the Walrus blob ID (content
-   hash).
 
 blobs
 ~~~~~

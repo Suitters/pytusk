@@ -28,6 +28,7 @@ from pytusk.commands.read_commands import (
     ReadBlobByObjectId,
     ReadBlobPartial,
     ReadQuiltPatch,
+    ReadQuiltPatchById,
 )
 
 # Relay commands (upload-relay tip config and blob upload)
@@ -322,6 +323,7 @@ __all__ = [  # noqa: RUF022
     "ReadBlobPartial",
     "ReadBlobByObjectId",
     "ReadQuiltPatch",
+    "ReadQuiltPatchById",
     "ListQuiltPatches",
     "ConcatBlobs",
     # Relay commands
