@@ -21,6 +21,7 @@ __all__ = [
     "BalanceChangeCosts",
     "extract_balance_change_costs",
     "find_created_object_id",
+    "find_created_shared_object_id",
     "require_success",
 ]
 
@@ -204,6 +205,56 @@ def find_created_object_id(
     raise RuntimeError(
         f"Could not find a newly created object owned by {owner} in the "
         "transaction effects."
+    )
+
+
+def find_created_shared_object_id(
+    *, effects: sui_prot.TransactionEffects, object_type_substring: str
+) -> str:
+    """Find the object ID of the single object created and shared, by type.
+
+    Companion to :func:`find_created_object_id` for a Move call that shares
+    its output internally (``transfer::share_object``) rather than
+    transferring it to an address -- a ``SHARED``-kind ``output_owner``
+    carries no wallet address to filter on (``Owner.address`` is populated
+    for ``ADDRESS``/``OBJECT`` owners, not ``SHARED``), so this filters by
+    ``object_type`` instead.
+
+    Verified against the installed pysui proto definitions:
+    ``ChangedObject.id_operation``, ``ChangedObject.output_owner.kind``
+    (``sui_prot.OwnerOwnerKind.SHARED``), and ``ChangedObject.object_type``.
+    First use case:
+    :func:`~pytusk.core.ops.shared_blob_execute.execute_share_blob`, whose
+    ``shared_blob::new`` move_call returns unit and shares the new
+    ``SharedBlob`` internally, so its object ID is only knowable from these
+    effects.
+
+    Args:
+        effects (sui_prot.TransactionEffects): Effects of a successfully
+            executed transaction.
+        object_type_substring (str): Substring the created object's
+            ``object_type`` must contain (e.g. ``"shared_blob::SharedBlob"``).
+
+    Returns:
+        str: Object ID of the created, shared object matching
+        ``object_type_substring``.
+
+    Raises:
+        RuntimeError: If no such object is found in ``effects``.
+    """
+    for change in effects.changed_objects or []:
+        if (
+            change.id_operation == sui_prot.ChangedObjectIdOperation.CREATED
+            and change.output_owner
+            and change.output_owner.kind == sui_prot.OwnerOwnerKind.SHARED
+            and change.object_type
+            and object_type_substring in change.object_type
+            and change.object_id
+        ):
+            return change.object_id
+    raise RuntimeError(
+        f"Could not find a newly created shared object matching "
+        f"{object_type_substring!r} in the transaction effects."
     )
 
 

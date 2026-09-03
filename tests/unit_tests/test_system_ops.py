@@ -49,6 +49,7 @@ from pytusk.core.certification import Certificate
 from pytusk.core.chain import (
     blob_deletable_and_end_epoch,
     find_created_object_id,
+    find_created_shared_object_id,
     require_success,
 )
 from pytusk.core.encoding import EncodedBlob, encoded_blob_length
@@ -126,8 +127,11 @@ def _blob_object(*, end_epoch: float | None = 42.0, deletable: bool | None = Tru
 class _FakeOwner:
     """Stand-in for ``sui_prot.Owner``."""
 
-    def __init__(self, *, address: str) -> None:
+    def __init__(
+        self, *, address: str | None = None, kind: object | None = None
+    ) -> None:
         self.address = address
+        self.kind = kind
 
 
 class _FakeChangedObject:
@@ -139,10 +143,12 @@ class _FakeChangedObject:
         object_id: str | None,
         id_operation: object,
         output_owner: _FakeOwner | None = None,
+        object_type: str | None = None,
     ) -> None:
         self.object_id = object_id
         self.id_operation = id_operation
         self.output_owner = output_owner
+        self.object_type = object_type
 
 
 class _FakeEffects:
@@ -397,6 +403,75 @@ class TestFindCreatedObjectId:
         """An empty changed_objects list raises RuntimeError."""
         with pytest.raises(RuntimeError):
             find_created_object_id(effects=_FakeEffects(), owner="0xsender")  # type: ignore[arg-type]
+
+
+class TestFindCreatedSharedObjectId:
+    """Locating the single object created and shared, matched by type."""
+
+    def test_finds_created_and_shared(self) -> None:
+        """A CREATED, SHARED-kind entry matching the type substring is returned."""
+        effects = _FakeEffects(
+            changed_objects=[
+                _FakeChangedObject(
+                    object_id="0xgas",
+                    id_operation=sui_prot.ChangedObjectIdOperation.NONE,
+                    output_owner=_FakeOwner(address="0xsender"),
+                ),
+                _FakeChangedObject(
+                    object_id="0xshared",
+                    id_operation=sui_prot.ChangedObjectIdOperation.CREATED,
+                    output_owner=_FakeOwner(kind=sui_prot.OwnerOwnerKind.SHARED),
+                    object_type="0xpkg::shared_blob::SharedBlob",
+                ),
+            ]
+        )
+        assert (
+            find_created_shared_object_id(
+                effects=effects, object_type_substring="shared_blob::SharedBlob"
+            )  # type: ignore[arg-type]
+            == "0xshared"
+        )
+
+    def test_ignores_address_owned_created_object(self) -> None:
+        """A CREATED entry that is ADDRESS-owned (not SHARED) is not a match."""
+        effects = _FakeEffects(
+            changed_objects=[
+                _FakeChangedObject(
+                    object_id="0xblob",
+                    id_operation=sui_prot.ChangedObjectIdOperation.CREATED,
+                    output_owner=_FakeOwner(address="0xsender"),
+                    object_type="0xpkg::shared_blob::SharedBlob",
+                ),
+            ]
+        )
+        with pytest.raises(RuntimeError):
+            find_created_shared_object_id(
+                effects=effects, object_type_substring="shared_blob::SharedBlob"
+            )  # type: ignore[arg-type]
+
+    def test_ignores_mismatched_object_type(self) -> None:
+        """A CREATED, SHARED-kind entry whose type doesn't match is not a match."""
+        effects = _FakeEffects(
+            changed_objects=[
+                _FakeChangedObject(
+                    object_id="0xother",
+                    id_operation=sui_prot.ChangedObjectIdOperation.CREATED,
+                    output_owner=_FakeOwner(kind=sui_prot.OwnerOwnerKind.SHARED),
+                    object_type="0xpkg::other::OtherShared",
+                ),
+            ]
+        )
+        with pytest.raises(RuntimeError):
+            find_created_shared_object_id(
+                effects=effects, object_type_substring="shared_blob::SharedBlob"
+            )  # type: ignore[arg-type]
+
+    def test_no_changed_objects_raises(self) -> None:
+        """An empty changed_objects list raises RuntimeError."""
+        with pytest.raises(RuntimeError):
+            find_created_shared_object_id(
+                effects=_FakeEffects(), object_type_substring="shared_blob::SharedBlob"
+            )  # type: ignore[arg-type]
 
 
 class TestRequireSuccess:

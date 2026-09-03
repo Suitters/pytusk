@@ -417,6 +417,49 @@ class BlobMetadataOpResult:
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
+class SharedBlobReceipt:
+    """Outcome of creating a new ``SharedBlob``.
+
+    Returned by :func:`~pytusk.core.ops.shared_blob_execute.execute_share_blob`.
+    Not :class:`StorageOpResult` despite the identical two-field shape --
+    ``shared_blob::new`` DOES create a new object (unlike the storage-fuse/
+    metadata ops :class:`StorageOpResult` serves), so this is a distinct
+    type naming what it actually reports: a fresh ``SharedBlob``'s object
+    ID, not the ``Blob`` that was wrapped into it.
+
+    Attributes:
+        object_id (str): Object ID of the newly created, shared
+            ``SharedBlob`` -- read back from the transaction's effects,
+            since ``shared_blob::new`` shares its output internally and
+            returns nothing to the PTB.
+        digest (str): The transaction digest.
+    """
+
+    object_id: str
+    digest: str
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class SharedBlobOpResult:
+    """Outcome of a SharedBlob operation that creates no new object.
+
+    Returned by :func:`~pytusk.core.ops.shared_blob_execute.execute_fund_shared_blob`
+    and :func:`~pytusk.core.ops.shared_blob_execute.execute_extend_shared_blob`.
+    Mirrors :class:`StorageOpResult`/:class:`BlobMetadataOpResult`'s shape
+    for the same reason: neither ``fund`` nor ``extend`` return anything a
+    caller needs to consume, so there is no created object to report --
+    only which ``SharedBlob`` was acted on and the transaction that did it.
+
+    Attributes:
+        object_id (str): Object ID of the ``SharedBlob`` acted on.
+        digest (str): The transaction digest.
+    """
+
+    object_id: str
+    digest: str
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
 class SplitResult:
     """Outcome of splitting a ``Storage`` object.
 

@@ -55,6 +55,7 @@ from pytusk.core.chain.effects import (
     BalanceChangeCosts,
     extract_balance_change_costs,
     find_created_object_id,
+    find_created_shared_object_id,
     require_success,
 )
 
@@ -71,6 +72,7 @@ __all__ = [
     "fetch_committee",
     "fetch_epoch",
     "find_created_object_id",
+    "find_created_shared_object_id",
     "matches_wal_coin_type",
     "pack_signers_bitmap",
     "require_success",

@@ -26,6 +26,9 @@
   :mod:`pytusk.core.chain` package.
 - :mod:`pytusk.core.ops.coins`: client-driven WAL coin selection and
   validation.
+- :mod:`pytusk.core.ops.shared_blob_compose` / :mod:`pytusk.core.ops.shared_blob_execute`:
+  ``SharedBlob`` creation, funding, and extension -- same COMPOSE/EXECUTE
+  split as the blob and storage modules above.
 
 Every public name from all eight submodules is re-exported here so callers
 can import from :mod:`pytusk.core.ops` directly without knowing which
@@ -61,8 +64,19 @@ from pytusk.core.ops.blob_metadata_execute import (
 from pytusk.core.ops.coins import (
     assert_coin_usable,
     matches_wal_coin_type,
+    prepare_wal_coin_for_amount,
     select_wal_payment_coin,
     wal_balance_and_decimals,
+)
+from pytusk.core.ops.shared_blob_compose import (
+    add_extend_shared_blob,
+    add_fund_shared_blob,
+    add_share_blob,
+)
+from pytusk.core.ops.shared_blob_execute import (
+    execute_extend_shared_blob,
+    execute_fund_shared_blob,
+    execute_share_blob,
 )
 from pytusk.core.ops.storage_compose import (
     add_destroy_storage,
@@ -103,10 +117,13 @@ __all__ = [
     "add_destroy_storage",
     "add_drop_blob_metadata_all",
     "add_drop_blob_metadata_keys",
+    "add_extend_shared_blob",
+    "add_fund_shared_blob",
     "add_fuse",
     "add_registration_sequence",
     "add_reserve_and_register",
     "add_set_blob_metadata",
+    "add_share_blob",
     "add_split_by_epoch",
     "add_split_by_size",
     "add_tip",
@@ -115,10 +132,13 @@ __all__ = [
     "execute_destroy_storage",
     "execute_drop_blob_metadata_all",
     "execute_drop_blob_metadata_keys",
+    "execute_extend_shared_blob",
+    "execute_fund_shared_blob",
     "execute_fuse",
     "execute_registration_txn",
     "execute_reserve_and_register",
     "execute_set_blob_metadata",
+    "execute_share_blob",
     "execute_split_by_epoch",
     "execute_split_by_size",
     "fuse_incompatibility",
@@ -128,6 +148,7 @@ __all__ = [
     "preflight_payment",
     "preflight_sponsor",
     "prepare_chain_context",
+    "prepare_wal_coin_for_amount",
     "resolve_package_id",
     "select_wal_payment_coin",
     "storage_from_blob",

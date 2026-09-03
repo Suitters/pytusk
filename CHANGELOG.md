@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [Feature](https://github.com/Suitters/pytusk/issues/11) - Added local quilt assembly, relay support and reading
 - tusky CLI added relay blob and quilt commands
 - tusky CLI added blob metadata CRUD commands
+- tusky CLI added makeing blob shared object and extension commands.
 
 ### Fixed
 

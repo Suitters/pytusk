@@ -24,8 +24,14 @@ from pytusk import (
     WalrusClient,
     add_drop_blob_metadata_all,
     add_drop_blob_metadata_keys,
+    add_extend_shared_blob,
+    add_fund_shared_blob,
     add_set_blob_metadata,
+    add_share_blob,
     blob_deletable_and_end_epoch,
+    find_created_shared_object_id,
+    prepare_wal_coin_for_amount,
+    require_success,
     validate_blob_metadata_exists,
     validate_blob_metadata_keys_exist,
 )
@@ -657,3 +663,158 @@ async def burn_blob(args: argparse.Namespace) -> None:
             sponsor=sponsor,
             mode=args.mode,
         )
+
+
+async def share_blob(args: argparse.Namespace) -> None:
+    """Wrap a Blob into a new shared SharedBlob via shared_blob::new.
+
+    The wrapped Blob must be permanent (deletable blobs cannot be shared)
+    and is consumed by this call -- it can no longer be used as an owned
+    object afterward. The new SharedBlob's object ID is only known after
+    the transaction actually executes (--mode execute); in --mode simulate
+    (the default) it is only a prediction.
+
+    Args:
+        args (argparse.Namespace): Parsed `share_blob` subcommand
+            arguments.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        _, walrus_pkg = await walrus_package_id(client=client)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        await add_share_blob(txn=txn, package_id=walrus_pkg, blob_object=args.object_id)
+        txdict = await txn.build_and_sign()
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in share_blob: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Shared {args.object_id} as a new SharedBlob.")
+        if args.mode == "execute":
+            effects = require_success(result_data=result.result_data, label="share_blob")
+            try:
+                new_id = find_created_shared_object_id(
+                    effects=effects, object_type_substring="shared_blob::SharedBlob"
+                )
+                print(f"New SharedBlob object ID: {new_id}")
+            except RuntimeError as exc:
+                print(f"Warning: {exc}", file=sys.stderr)
+        print(result.result_data.to_json(indent=2))
+
+
+async def fund_shared_blob(args: argparse.Namespace) -> None:
+    """Fund an existing SharedBlob via shared_blob::fund.
+
+    --amount prepares a coin holding exactly that amount (splitting or
+    merging owned WAL coins as needed via prepare_wal_coin_for_amount);
+    --wal-coin instead donates a specific owned coin's entire balance
+    (fund consumes its Coin<WAL> argument in full either way).
+
+    Args:
+        args (argparse.Namespace): Parsed `fund_shared_blob` subcommand
+            arguments. Exactly one of `amount`/`wal_coin` is set, enforced
+            by a required mutually exclusive group.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        _, walrus_pkg = await walrus_package_id(client=client)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        if args.wal_coin:
+            payment_coin: str | bcs.Argument = args.wal_coin
+        else:
+            try:
+                payment_coin = await prepare_wal_coin_for_amount(
+                    txn=txn, client=client, owner=sender, amount=args.amount
+                )
+            except RuntimeError as exc:
+                print(f"Error preparing WAL payment: {exc}", file=sys.stderr)
+                sys.exit(1)
+        await add_fund_shared_blob(
+            txn=txn,
+            package_id=walrus_pkg,
+            shared_blob_object=args.object_id,
+            payment_coin=payment_coin,
+        )
+        txdict = await txn.build_and_sign()
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in fund_shared_blob: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Funded SharedBlob {args.object_id}.")
+        print(result.result_data.to_json(indent=2))
+
+
+async def extend_shared_blob(args: argparse.Namespace) -> None:
+    """Extend a SharedBlob's wrapped Blob via shared_blob::extend.
+
+    Payment is drawn from the SharedBlob's own pooled WAL funds, not a
+    coin supplied by the caller -- this can abort on-chain if the pooled
+    balance is insufficient, unlike extend_blob_expiration, which cannot
+    be pre-checked client-side.
+
+    Args:
+        args (argparse.Namespace): Parsed `extend_shared_blob` subcommand
+            arguments.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        system_obj_id, walrus_pkg = await walrus_package_id(client=client)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        await add_extend_shared_blob(
+            txn=txn,
+            package_id=walrus_pkg,
+            shared_blob_object=args.object_id,
+            system_object=system_obj_id,
+            extended_epochs=args.epochs,
+        )
+        txdict = await txn.build_and_sign()
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in extend_shared_blob: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(
+            f"Extended SharedBlob {args.object_id}'s wrapped blob by "
+            f"{args.epochs} epoch(s)."
+        )
+        print(result.result_data.to_json(indent=2))

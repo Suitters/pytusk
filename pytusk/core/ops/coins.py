@@ -17,6 +17,8 @@ is client-free and belongs below ``pytusk/client/``.
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 from pysui import GetAddressCoinBalances, GetCoinMetaData, GetCoins, GetObject
+from pysui.sui.sui_bcs import bcs
+from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 
 from pytusk.client.walrus_client import WalrusClient
 from pytusk.core.chain.coin_types import matches_wal_coin_type
@@ -24,6 +26,7 @@ from pytusk.core.chain.coin_types import matches_wal_coin_type
 __all__ = [
     "assert_coin_usable",
     "matches_wal_coin_type",
+    "prepare_wal_coin_for_amount",
     "select_wal_payment_coin",
     "wal_balance_and_decimals",
 ]
@@ -225,3 +228,92 @@ async def assert_coin_usable(
             f"Coin {coin_id} balance {obj.balance} is below the required "
             f"{minimum_balance}."
         )
+
+
+async def prepare_wal_coin_for_amount(
+    *, txn: AsyncSuiTransaction, client: WalrusClient, owner: str, amount: int
+) -> str | bcs.Argument:
+    """Ensure a ``Coin<WAL>`` worth exactly ``amount`` is available within ``txn``.
+
+    Composes whatever PTB commands are needed to produce a coin argument
+    holding exactly ``amount`` (in WAL's base units), for a Move call that
+    consumes its ``Coin<WAL>`` argument BY VALUE (e.g.
+    :func:`~pytusk.core.ops.shared_blob_compose.add_fund_shared_blob`'s
+    ``shared_blob::fund``, whose ``added_funds: Coin<WAL>`` is not ``&mut``
+    and is fully consumed) -- unlike :func:`select_wal_payment_coin`, whose
+    caller passes the coin BY REFERENCE and needs no exact-amount coin at
+    all.
+
+    Algorithm, evaluated in order against ``owner``'s WAL coins sorted
+    largest-balance-first:
+
+    1. Pre-verify the owner's total WAL balance covers ``amount`` -- a
+       caller-side precondition checked before any PTB command is added.
+    2. If any single coin's balance equals ``amount`` exactly, return its
+       object ID directly -- no PTB command is composed.
+    3. Else if the largest coin's balance exceeds ``amount``, split
+       ``amount`` off it via ``txn.split_coin`` and return the split
+       result.
+    4. Else, merge additional coins (largest-first) into the largest coin
+       via ``txn.merge_coins`` until the merged balance covers ``amount``,
+       then split ``amount`` off the MERGED COIN'S OBJECT ID (not
+       ``merge_coins``'s own result, which pysui documents as not usable
+       in a subsequent command) and return the split result.
+
+    Args:
+        txn (AsyncSuiTransaction): The caller's already-created transaction
+            to add merge/split commands to, if needed.
+        client (WalrusClient): Client used to query balances and coins.
+        owner (str): Address whose WAL coins are selected from.
+        amount (int): Exact amount the returned coin must hold, in WAL's
+            base units (FROST).
+
+    Returns:
+        str | bcs.Argument: Object ID of an existing coin already holding
+        exactly ``amount`` (no PTB command added), or the ``bcs.Argument``
+        command result of a ``split_coin`` composed to produce it.
+
+    Raises:
+        RuntimeError: If balances or coins cannot be listed, or the
+            owner's total WAL balance is less than ``amount``.
+    """
+    wal_entry, _decimals = await wal_balance_and_decimals(client=client, owner=owner)
+
+    coins_result = await client.execute_for_all(
+        command=GetCoins(owner=owner, coin_type=f"0x2::coin::Coin<{wal_entry.coin_type}>")
+    )
+    if not coins_result.is_ok():
+        raise RuntimeError(
+            f"Cannot list WAL coins for {owner}: {coins_result.result_string}"
+        )
+    coins = sorted(
+        coins_result.result_data.objects, key=lambda c: c.balance or 0, reverse=True
+    )
+    if not coins:
+        raise RuntimeError(f"No WAL coin objects found for {owner}.")
+
+    total_balance = sum(coin.balance or 0 for coin in coins)
+    if total_balance < amount:
+        raise RuntimeError(
+            f"Owner {owner} holds {total_balance} FROST across all WAL "
+            f"coins, less than the requested {amount}."
+        )
+
+    exact_match = next((coin for coin in coins if (coin.balance or 0) == amount), None)
+    if exact_match is not None:
+        return exact_match.object_id
+
+    primary = coins[0]
+    primary_balance = primary.balance or 0
+    if primary_balance > amount:
+        return await txn.split_coin(coin=primary.object_id, amounts=[amount])
+
+    merge_from: list[str] = []
+    running_balance = primary_balance
+    for coin in coins[1:]:
+        if running_balance >= amount:
+            break
+        merge_from.append(coin.object_id)
+        running_balance += coin.balance or 0
+    await txn.merge_coins(merge_to=primary.object_id, merge_from=merge_from)
+    return await txn.split_coin(coin=primary.object_id, amounts=[amount])

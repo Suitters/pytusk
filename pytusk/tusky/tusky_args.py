@@ -1232,6 +1232,85 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     _add_signing_args(p_burn_blob)
     _add_config_args(p_burn_blob)
 
+    p_share_blob = subparsers.add_parser(
+        "share_blob",
+        help="Wrap a Blob into a new shared SharedBlob.",
+        description=(
+            "Wrap an existing Blob into a new SharedBlob via "
+            "shared_blob::new, so anyone can fund and extend it. Only "
+            "permanent blobs can be shared; the wrapped Blob is consumed "
+            "and can no longer be used as an owned object."
+        ),
+    )
+    _add_object_id_arg(p_share_blob)
+    _add_signing_args(p_share_blob)
+    _add_config_args(p_share_blob)
+
+    p_fund_shared_blob = subparsers.add_parser(
+        "fund_shared_blob",
+        help="Fund an existing SharedBlob with WAL.",
+        description=(
+            "Deposit WAL into a SharedBlob's pooled funds via "
+            "shared_blob::fund. --amount prepares a coin holding exactly "
+            "that amount (splitting/merging owned WAL coins as needed); "
+            "--wal-coin donates a specific owned coin's entire balance "
+            "instead."
+        ),
+    )
+    _add_object_id_arg(
+        p_fund_shared_blob,
+        help_text="Sui object ID of the SharedBlob to fund (0x-prefixed).",
+    )
+    fund_source_group = p_fund_shared_blob.add_mutually_exclusive_group(required=True)
+    fund_source_group.add_argument(
+        "--amount",
+        action=ValidatePositive,
+        help=(
+            "Exact amount of WAL to deposit, in FROST. A coin holding "
+            "this exact amount is prepared automatically. Mutually "
+            "exclusive with --wal-coin."
+        ),
+    )
+    fund_source_group.add_argument(
+        "--wal-coin",
+        dest="wal_coin",
+        action=ValidateObjectID,
+        help=(
+            "Object ID of a WAL coin to donate in full -- its entire "
+            "balance is deposited. Mutually exclusive with --amount."
+        ),
+    )
+    _add_signing_args(p_fund_shared_blob)
+    _add_config_args(p_fund_shared_blob)
+
+    p_extend_shared_blob = subparsers.add_parser(
+        "extend_shared_blob",
+        help="Extend a SharedBlob's wrapped Blob using its pooled funds.",
+        description=(
+            "Extend the storage expiration of a SharedBlob's wrapped Blob "
+            "via shared_blob::extend, paid from the SharedBlob's own "
+            "pooled WAL funds rather than a coin supplied by the caller. "
+            "Can abort on-chain if the pooled balance is insufficient -- "
+            "unlike extend_blob_expiration, this cannot be pre-checked "
+            "client-side."
+        ),
+    )
+    _add_object_id_arg(
+        p_extend_shared_blob,
+        help_text="Sui object ID of the SharedBlob to extend (0x-prefixed).",
+    )
+    p_extend_shared_blob.add_argument(
+        "--epochs",
+        action=ValidatePositive,
+        required=True,
+        help=(
+            "Number of epochs to extend the wrapped blob's storage by, "
+            "counted from its current end_epoch."
+        ),
+    )
+    _add_signing_args(p_extend_shared_blob)
+    _add_config_args(p_extend_shared_blob)
+
     p_exchange_for_wal = subparsers.add_parser(
         "exchange_for_wal",
         help="Exchange SUI for WAL.",
