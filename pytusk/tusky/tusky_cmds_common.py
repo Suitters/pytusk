@@ -30,6 +30,7 @@ import io
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
@@ -296,21 +297,42 @@ async def walrus_package_id(*, client: WalrusClient) -> tuple[str, str]:
 # than through this CLI module.
 
 
-async def submit(*, client: WalrusClient, txdict: dict, mode: str) -> SuiRpcResult:
+async def submit(
+    *,
+    client: WalrusClient,
+    txdict: dict,
+    mode: str,
+    _time_execute: bool = False,
+) -> SuiRpcResult:
     """Simulate or execute a signed transaction dict, per --mode.
 
     Args:
         client (WalrusClient): Client used to submit the transaction.
         txdict (dict): Result of AsyncSuiTransaction.build_and_sign().
         mode (str): "simulate" or "execute".
+        _time_execute (bool): Diagnostic-only flag (default False, so no
+            existing caller's behavior changes). When True and mode is
+            "execute", wraps just the ``client.execute(command=
+            ExecuteTransaction(...))`` round trip in a timer and attaches
+            the elapsed seconds to the returned ``SuiRpcResult`` as a
+            private ``_execute_duration`` attribute for the caller to read
+            back. Added for Task #19's ``set_blob_metadata`` timing
+            instrumentation; not intended as a general profiling pattern.
 
     Returns:
-        SuiRpcResult: The result of the simulate or execute RPC call.
+        SuiRpcResult: The result of the simulate or execute RPC call. When
+            ``_time_execute`` is True and mode is "execute", carries an
+            additional ``_execute_duration: float`` attribute (seconds).
     """
     if mode == "simulate":
         return await client.execute(
             command=SimulateTransaction(tx_bytestr=txdict["tx_bytestr"])
         )
+    if _time_execute:
+        start = time.perf_counter()
+        result = await client.execute(command=ExecuteTransaction(**txdict))
+        result._execute_duration = time.perf_counter() - start
+        return result
     return await client.execute(command=ExecuteTransaction(**txdict))
 
 

@@ -30,6 +30,9 @@ holds :func:`~pytusk.core.chain.coin_types.matches_wal_coin_type`, moved
 here from :mod:`pytusk.core.ops.coins` at Plan #28's architect review since
 it is client-free and :mod:`pytusk.core.chain.effects` needed it without a
 function-local import to dodge the ``chain -> ops -> client -> chain`` cycle.
+:mod:`pytusk.core.chain.blob_metadata` reads a Blob's on-chain metadata
+(Walrus "attribute") dynamic field, following the same list-and-filter
+``GetDynamicFields`` pattern as :func:`~pytusk.core.chain.committee.fetch_staking_inner`.
 """
 
 from pytusk.core.chain.blob_fields import (
@@ -37,6 +40,7 @@ from pytusk.core.chain.blob_fields import (
     blob_deletable_and_end_epoch,
     blob_id_from_object,
 )
+from pytusk.core.chain.blob_metadata import fetch_blob_metadata
 from pytusk.core.chain.coin_types import matches_wal_coin_type
 from pytusk.core.chain.committee import (
     ChainReader,
@@ -63,6 +67,7 @@ __all__ = [
     "blob_deletable_and_end_epoch",
     "blob_id_from_object",
     "extract_balance_change_costs",
+    "fetch_blob_metadata",
     "fetch_committee",
     "fetch_epoch",
     "find_created_object_id",

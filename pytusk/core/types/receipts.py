@@ -394,6 +394,29 @@ class StorageOpResult:
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
+class BlobMetadataOpResult:
+    """Outcome of a Blob metadata operation.
+
+    Returned by :func:`~pytusk.core.ops.blob_metadata_execute.execute_set_blob_metadata`,
+    :func:`~pytusk.core.ops.blob_metadata_execute.execute_drop_blob_metadata_keys`,
+    and :func:`~pytusk.core.ops.blob_metadata_execute.execute_drop_blob_metadata_all`.
+    Mirrors :class:`StorageOpResult`'s shape for the same reason: none of
+    ``insert_or_update_metadata_pair``, ``remove_metadata_pair``, or
+    ``take_metadata`` return anything a caller needs to consume, so there is
+    no created object to report -- only which ``Blob`` was acted on and the
+    transaction that did it.
+
+    Attributes:
+        object_id (str): Object ID of the ``Blob`` whose metadata was
+            written or removed.
+        digest (str): The transaction digest.
+    """
+
+    object_id: str
+    digest: str
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
 class SplitResult:
     """Outcome of splitting a ``Storage`` object.
 

@@ -13,6 +13,7 @@ what dissolves the import cycle that previously required
 ``pytusk.core.relay_types`` to live outside :mod:`pytusk.core.relay_upload`.
 """
 
+from pytusk.core.types.blob_metadata import BlobMetadata, Metadata
 from pytusk.core.types.blob_status import (
     BlobStatus,
     BlobStatusReport,
@@ -60,6 +61,7 @@ from pytusk.core.types.quilts import (
     QuiltPatchReceipt,
 )
 from pytusk.core.types.receipts import (
+    BlobMetadataOpResult,
     CertifyResult,
     NativeBlobReceipt,
     QuiltRelayReceipt,
@@ -88,6 +90,8 @@ __all__ = [
     "FROM_GAS",
     "AssembledQuilt",
     "AuthPackage",
+    "BlobMetadata",
+    "BlobMetadataOpResult",
     "BlobStatus",
     "BlobStatusReport",
     "CertifyResult",
@@ -106,6 +110,7 @@ __all__ = [
     "InvalidConfirmationError",
     "InvalidStatus",
     "LinearTip",
+    "Metadata",
     "NativeBlobReceipt",
     "NativeUploadError",
     "NodeDissent",

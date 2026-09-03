@@ -227,6 +227,162 @@ transfers back to the sender.
 
     asyncio.run(main())
 
+Blob Metadata
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A Blob's on-chain metadata (Walrus's "attribute" concept) is a
+``VecMap<String, String>`` held in a dynamic field, separate from the
+``Blob`` struct's own fields. Three standalone, post-registration
+operations manage it: setting/updating pairs, dropping pairs, and reading
+them back.
+
+**Setting metadata.** ``insert_or_update_metadata_pair`` gives upsert
+semantics -- a key not yet present is inserted, an existing key's value is
+overwritten. One ``move_call`` per pair is composed into a single PTB;
+:func:`~pytusk.add_set_blob_metadata` does the composition:
+
+.. code-block:: python
+
+    import asyncio
+    from pysui import ExecuteTransaction, GetObject
+    from pytusk import PytuskConfiguration, WalrusClient, add_set_blob_metadata
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            system_obj_id = client.config.network.system_object
+            sys_result = await client.execute(
+                command=GetObject(object_id=system_obj_id)
+            )
+            walrus_pkg = sys_result.result_data.json.struct_value.fields[
+                "package_id"
+            ].string_value
+            blob_object_id = "0x..."  # the blob's Sui object ID, not its Walrus blob ID
+
+            txn = await client.transaction(initial_sender=sender)
+            await add_set_blob_metadata(
+                txn=txn,
+                package_id=walrus_pkg,
+                blob_object=blob_object_id,
+                pairs={"content-type": "application/octet-stream"},
+            )
+
+            txdict = await txn.build_and_sign()
+            result = await client.execute(command=ExecuteTransaction(**txdict))
+            if result.is_ok():
+                print(result.result_data)
+
+    asyncio.run(main())
+
+**Dropping metadata.** Two Move entry points cover this, with no batch
+primitive for either: ``remove_metadata_pair`` removes one named key (one
+``move_call`` per requested key, composed into one PTB via
+:func:`~pytusk.add_drop_blob_metadata_keys`); ``take_metadata`` drops the
+whole metadata set in a single call
+(:func:`~pytusk.add_drop_blob_metadata_all`). Both abort on chain
+(``EMissingMetadata``) if the ``Blob`` has no metadata field at all, and
+``remove_metadata_pair`` additionally aborts (``vec_map::remove``) if a
+requested key is not present. Rather than pay gas for a transaction
+guaranteed to abort, :func:`~pytusk.validate_blob_metadata_keys_exist` /
+:func:`~pytusk.validate_blob_metadata_exists` fetch the blob's current
+metadata and raise ``ValueError`` **before any PTB is composed** if the
+target key(s) -- or any metadata at all, for the drop-all case -- don't
+exist:
+
+.. code-block:: python
+
+    import asyncio
+    from pysui import ExecuteTransaction, GetObject
+    from pytusk import (
+        PytuskConfiguration,
+        WalrusClient,
+        add_drop_blob_metadata_keys,
+        validate_blob_metadata_keys_exist,
+    )
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            system_obj_id = client.config.network.system_object
+            sys_result = await client.execute(
+                command=GetObject(object_id=system_obj_id)
+            )
+            walrus_pkg = sys_result.result_data.json.struct_value.fields[
+                "package_id"
+            ].string_value
+            blob_object_id = "0x..."  # the blob's Sui object ID, not its Walrus blob ID
+
+            # Raises ValueError pre-spend if "content-type" isn't currently set,
+            # rather than letting remove_metadata_pair abort after gas is spent.
+            await validate_blob_metadata_keys_exist(
+                client=client, blob_object=blob_object_id, keys=["content-type"]
+            )
+
+            txn = await client.transaction(initial_sender=sender)
+            await add_drop_blob_metadata_keys(
+                txn=txn,
+                package_id=walrus_pkg,
+                blob_object=blob_object_id,
+                keys=["content-type"],
+            )
+
+            txdict = await txn.build_and_sign()
+            result = await client.execute(command=ExecuteTransaction(**txdict))
+            if result.is_ok():
+                print(result.result_data)
+
+    asyncio.run(main())
+
+Dropping everything instead swaps ``add_drop_blob_metadata_keys``/``keys=[...]``
+for ``add_drop_blob_metadata_all`` (no ``keys`` argument), and
+``validate_blob_metadata_keys_exist`` for ``validate_blob_metadata_exists``
+-- the rest of the PTB is identical.
+
+**Reading metadata.** There is no Move getter -- ``metadata()`` /
+``metadata_or_create()`` are private in ``blob.move`` -- so a read is a
+pure client-side operation, no PTB involved:
+:meth:`~pytusk.client.walrus_client.WalrusClient.get_blob_metadata` fetches
+the blob's ``metadata`` dynamic field directly and returns ``None`` if it
+doesn't exist at all:
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import PytuskConfiguration, WalrusClient
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            blob_object_id = "0x..."  # the blob's Sui object ID, not its Walrus blob ID
+            metadata = await client.get_blob_metadata(blob_object=blob_object_id)
+            if metadata is None:
+                print(f"{blob_object_id} has no metadata set.")
+            else:
+                for entry in metadata.data:
+                    print(entry.key, entry.value)
+
+    asyncio.run(main())
+
+See `Quilt Upload Relay`_ below for the other place
+``insert_or_update_metadata_pair`` is used in this project -- there it is
+composed INSIDE Tx1's registration sequence, to write the
+``_walrusBlobType = "quilt"`` marker at store time, rather than as a
+standalone post-registration transaction like the operations above.
+
 Storage Management
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -989,7 +1145,9 @@ publisher exists. See :doc:`intro` for choosing between the write paths and
 Only two things distinguish a quilt write from the blob write above. Tx1
 carries one extra command -- ``insert_or_update_metadata_pair`` writing
 ``_walrusBlobType = "quilt"`` -- and the bytes registered are the assembled
-buffer rather than a caller's blob. Tx2 is the same ``certify_blob``.
+buffer rather than a caller's blob. Tx2 is the same ``certify_blob``. See
+`Blob Metadata`_ above for the standalone, post-registration form of the
+same move_call, and how it differs from this write-time use inside Tx1.
 
 The highest-level entry point runs the whole pipeline in one call:
 

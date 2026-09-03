@@ -57,9 +57,10 @@ Signing options (PTB commands only)
 The commands that build and submit a Programmable Transaction Block (PTB)
 -- ``store_blob_native``, ``store_blob_relay``, ``store_quilt_relay``,
 ``certify_blob``, ``exchange_for_wal``, ``exchange_for_sui``,
-``extend_blob_expiration``, ``delete_blob``, ``burn_blob``,
-``split_storage``, ``fuse_storage``, ``reclaim_storage`` and
-``extend_blob_with_storage`` -- additionally accept:
+``extend_blob_expiration``, ``set_blob_metadata``, ``drop_blob_metadata``,
+``delete_blob``, ``burn_blob``, ``split_storage``, ``fuse_storage``,
+``reclaim_storage`` and ``extend_blob_with_storage`` -- additionally
+accept:
 
 ``--sender``
    Address to build and sign the transaction as (default: active address).
@@ -340,7 +341,7 @@ List all Walrus ``Blob`` objects owned by the active address.
 
 .. code-block:: console
 
-   tusky blobs [--deletable any|true|false] [--status any|active|expired]
+   tusky blobs [--deletable any|true|false] [--status any|active|expired] [--show-type]
 
 ``--deletable``
    Filter by deletable status (default: ``any``).
@@ -349,12 +350,38 @@ List all Walrus ``Blob`` objects owned by the active address.
    Filter by expiry status relative to the current Walrus epoch (default:
    ``any``).
 
+``--show-type``
+   Also show each blob's type (blob/quilt), read from the
+   ``_walrusBlobType`` metadata attribute pytusk itself writes at store
+   time -- NOT an authoritative content check: correct only for as long
+   as that tag is set and retained. A real quilt reports as ``blob`` if
+   the tag was never set (e.g. stored by other tooling) or was later
+   removed via ``drop_blob_metadata`` (default: off, since this costs
+   one extra RPC call per listed blob).
+
+.. warning::
+   ``--show-type`` reports quilt vs. blob purely by reading the
+   ``_walrusBlobType`` metadata attribute that pytusk itself writes when
+   storing a quilt. It is **not** an authoritative content check. The
+   result is correct only for as long as that tag remains set: a real
+   quilt reports as ``blob`` if the tag was never written (e.g. stored by
+   other tooling) or was later removed (e.g. via ``drop_blob_metadata
+   --all`` or ``--keys _walrusBlobType``).
+
 Each matching blob prints one line:
 
 .. code-block:: console
 
    $ tusky blobs
-   0x9726699cf5440c3bb6e62568becefc4b1f519b3d3c70442d20007074f5dde627  blob_id=vj24cJ8WBaO0Cs99h1_7Ozp_u5HZ9VAQnGvuYxpgWjM  deletable=True  end_epoch=496  status=active
+   0x9726699cf5440c3bb6e62568becefc4b1f519b3d3c70442d20007074f5dde627  blob_id=vj24cJ8WBaO0Cs99h1_7Ozp_u5HZ9VAQnGvuYxpgWjM  deletable=True  end_epoch=496  status=active  size=1048576
+
+With ``--show-type``, each line gains a trailing ``type=blob``/``type=quilt``
+field:
+
+.. code-block:: console
+
+   $ tusky blobs --show-type
+   0x9726699cf5440c3bb6e62568becefc4b1f519b3d3c70442d20007074f5dde627  blob_id=vj24cJ8WBaO0Cs99h1_7Ozp_u5HZ9VAQnGvuYxpgWjM  deletable=True  end_epoch=496  status=active  size=1048576  type=blob
 
 blob
 ~~~~
@@ -473,6 +500,34 @@ The four counts on the ``resolution`` line are deliberately separate.
 supplied no answer at all; *not-checked* nodes were never queried or were
 cancelled once the verdict had already settled. Collapsing them would
 report a committee as split when it is merely patchy in reachability.
+
+get_blob_metadata
+~~~~~~~~~~~~~~~~~~
+
+Show a blob's on-chain metadata (Walrus "attribute") key/value pairs, read
+directly from its metadata dynamic field. Pure read -- no transaction is
+built or submitted.
+
+.. code-block:: console
+
+   tusky get_blob_metadata -o OBJECT_ID
+
+``-o`` / ``--object-id``
+   Sui object ID of the blob (not the Walrus blob ID).
+
+A blob with no metadata set at all prints a one-line message instead of a
+table. Otherwise, output is a two-column Key/Value table sized to its
+content:
+
+.. code-block:: console
+
+   $ tusky get_blob_metadata -o 0x9726699cf5440c3bb6e62568becefc4b1f519b3d3c70442d20007074f5dde627
+   Key           Value
+   ------------  ----------------------
+   content-type  application/octet-stream
+
+See :doc:`transactions`'s Blob Metadata section for the underlying read
+and the PTB-based ``set_blob_metadata``/``drop_blob_metadata`` operations.
 
 epoch
 ~~~~~
@@ -721,6 +776,60 @@ batched, same as ``delete_blob --all``.
    blobs, or blobs you're willing to destroy outright without the
    eligibility check. Both are irreversible for what they consume; only
    ``delete_blob`` returns anything back.
+
+set_blob_metadata
+~~~~~~~~~~~~~~~~~~
+
+Insert or update one or more metadata (Walrus "attribute") key/value
+pairs on a blob via ``insert_or_update_metadata_pair`` -- one
+``move_call`` per pair, in one PTB.
+
+.. code-block:: console
+
+   tusky set_blob_metadata -o OBJECT_ID --attr KEY VALUE [--attr KEY VALUE ...]
+                            [--sender ADDRESS] [--sponsor ADDRESS] [--mode simulate|execute]
+
+``-o`` / ``--object-id``
+   Sui object ID of the blob (not the Walrus blob ID).
+
+``--attr``
+   Metadata key and value to set (repeatable, e.g. ``--attr k1 v1 --attr
+   k2 v2``); at least one is required.
+
+Upsert semantics: a key not yet present is inserted; an existing key's
+value is overwritten. Because every pair either inserts or overwrites,
+there is no guaranteed-abort condition to pre-check, unlike
+``drop_blob_metadata`` below.
+
+drop_blob_metadata
+~~~~~~~~~~~~~~~~~~~
+
+Drop metadata (Walrus "attribute") from a blob: ``--keys`` removes one or
+more named keys via ``remove_metadata_pair`` (one ``move_call`` per key,
+in one PTB); ``--all`` drops the whole metadata set via a single
+``take_metadata`` call.
+
+.. code-block:: console
+
+   tusky drop_blob_metadata -o OBJECT_ID (--keys KEY [KEY ...] | --all)
+                             [--sender ADDRESS] [--sponsor ADDRESS] [--mode simulate|execute]
+
+``-o`` / ``--object-id``
+   Sui object ID of the blob (not the Walrus blob ID).
+
+``--keys`` / ``--all``
+   Mutually exclusive, one required. ``--keys`` takes one or more
+   metadata keys to remove; ``--all`` removes all metadata from the blob.
+
+Both modes check existence against the blob's current metadata *before*
+composing any transaction: ``--keys`` requires every named key to
+currently exist, and ``--all`` requires some metadata to exist at all. A
+failed check reports a clean error instead of paying gas for a
+guaranteed on-chain abort (``EMissingMetadata`` / ``vec_map::remove``).
+
+See :doc:`transactions`'s Blob Metadata section for the underlying PTB
+composition (including the pre-transaction existence gate) and
+``get_blob_metadata``'s pure-read counterpart.
 
 Native Upload (pysui PTB + Storage Nodes)
 --------------------------------------------

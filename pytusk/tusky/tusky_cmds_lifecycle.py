@@ -20,7 +20,15 @@ from pysui import GetCoins, GetObject, GetObjectsOwnedByAddress
 from pysui.sui.sui_bcs import bcs
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 
-from pytusk import WalrusClient, blob_deletable_and_end_epoch
+from pytusk import (
+    WalrusClient,
+    add_drop_blob_metadata_all,
+    add_drop_blob_metadata_keys,
+    add_set_blob_metadata,
+    blob_deletable_and_end_epoch,
+    validate_blob_metadata_exists,
+    validate_blob_metadata_keys_exist,
+)
 from pytusk.tusky.tusky_cmds_common import (
     config_from_args,
     resolve_sender,
@@ -242,6 +250,143 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
                 print(
                     f"WAL estimated cost: {spent} Frosts -> {spent / divisor:.4f} WAL"
                 )
+
+
+async def set_blob_metadata(args: argparse.Namespace) -> None:
+    """Insert or update one or more metadata (Walrus "attribute") pairs on a blob.
+
+    Builds the PTB itself via
+    :func:`~pytusk.core.ops.blob_metadata_compose.add_set_blob_metadata` and
+    submits through :func:`~pytusk.tusky.tusky_cmds_common.submit`, matching
+    `split_storage`/`extend_blob_expiration`'s pattern -- `--mode` (simulate
+    vs execute) is a CLI-only concern, so this handler no longer goes
+    through :func:`~pytusk.core.ops.blob_metadata_execute.execute_set_blob_metadata`,
+    which always submits for real. Upsert semantics: each --attr pair is
+    inserted if its key is absent on the blob, or overwrites the existing
+    value if the key is already present (confirmed against
+    `metadata.move`'s `insert_or_update`). No pre-transaction existence
+    gate applies here -- unlike `drop_blob_metadata`, this always either
+    inserts or overwrites, so there is no guaranteed-abort condition for a
+    client-side read to pre-empt.
+
+    Args:
+        args (argparse.Namespace): Parsed `set_blob_metadata` subcommand
+            arguments, carrying one or more --attr KEY VALUE pairs.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        _, walrus_pkg = await walrus_package_id(client=client)
+        pairs = dict(args.attr)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        await add_set_blob_metadata(
+            txn=txn, package_id=walrus_pkg, blob_object=args.object_id, pairs=pairs
+        )
+        txdict = await txn.build_and_sign()
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in set_blob_metadata: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Set {len(pairs)} metadata pair(s) on {args.object_id}.")
+        print(result.result_data.to_json(indent=2))
+
+
+async def drop_blob_metadata(args: argparse.Namespace) -> None:
+    """Drop one or more metadata keys, or all metadata, from a blob.
+
+    Builds the PTB itself via
+    :func:`~pytusk.core.ops.blob_metadata_compose.add_drop_blob_metadata_keys`
+    (`--keys`) or
+    :func:`~pytusk.core.ops.blob_metadata_compose.add_drop_blob_metadata_all`
+    (`--all`) and submits through
+    :func:`~pytusk.tusky.tusky_cmds_common.submit`, matching
+    `split_storage`/`extend_blob_expiration`'s pattern -- `--mode` (simulate
+    vs execute) is a CLI-only concern, so this handler no longer goes
+    through :func:`~pytusk.core.ops.blob_metadata_execute.execute_drop_blob_metadata_keys`/
+    :func:`~pytusk.core.ops.blob_metadata_execute.execute_drop_blob_metadata_all`,
+    which always submit for real. The same pre-transaction existence gate
+    those wrappers use is called here directly --
+    :func:`~pytusk.core.ops.blob_metadata_execute.validate_blob_metadata_keys_exist`
+    (`--keys`) or
+    :func:`~pytusk.core.ops.blob_metadata_execute.validate_blob_metadata_exists`
+    (`--all`) -- before any PTB is composed: it fetches the blob's current
+    metadata and raises `ValueError` if it has none at all, or (for
+    `--keys`) if any requested key is not currently present -- avoiding gas
+    spent on a transaction guaranteed to abort (`EMissingMetadata`/
+    `vec_map::remove`). That `ValueError` is caught here and reported the
+    same way every other library precondition failure in this module is: a
+    message on stderr and a non-zero exit, mirroring `delete_blob`'s error
+    handling.
+
+    Args:
+        args (argparse.Namespace): Parsed `drop_blob_metadata` subcommand
+            arguments. Exactly one of `keys`/`all` is set, enforced by a
+            required mutually exclusive group.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        _, walrus_pkg = await walrus_package_id(client=client)
+
+        try:
+            if args.all:
+                await validate_blob_metadata_exists(
+                    client=client, blob_object=args.object_id
+                )
+            else:
+                await validate_blob_metadata_keys_exist(
+                    client=client, blob_object=args.object_id, keys=args.keys
+                )
+        except ValueError as exc:
+            print(f"Error in drop_blob_metadata: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        if args.all:
+            await add_drop_blob_metadata_all(
+                txn=txn, package_id=walrus_pkg, blob_object=args.object_id
+            )
+            action = "Dropped all metadata from"
+        else:
+            await add_drop_blob_metadata_keys(
+                txn=txn,
+                package_id=walrus_pkg,
+                blob_object=args.object_id,
+                keys=args.keys,
+            )
+            action = f"Dropped {len(args.keys)} metadata key(s) from"
+        txdict = await txn.build_and_sign()
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in drop_blob_metadata: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(f"{action} {args.object_id}.")
+        print(result.result_data.to_json(indent=2))
 
 
 async def delete_blob(args: argparse.Namespace) -> None:

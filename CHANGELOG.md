@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [Feature](https://github.com/Suitters/pytusk/issues/10) - Added mysten relays to testnet and mainnet support
 - Added blob relay write support
 - [Feature](https://github.com/Suitters/pytusk/issues/11) - Added local quilt assembly, relay support and reading
-- Updated tusky CLI to include relay blob and quilt commands
+- tusky CLI added relay blob and quilt commands
+- tusky CLI added blob metadata CRUD commands
 
 ### Fixed
 

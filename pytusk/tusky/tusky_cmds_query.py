@@ -47,7 +47,7 @@ async def blobs(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `blobs` subcommand arguments,
             including `deletable` ("any"/"true"/"false") and `status`
-            ("any"/"active"/"expired") filters.
+            ("any"/"active"/"expired") filters, and a `show_type` flag.
     """
     config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
@@ -56,56 +56,80 @@ async def blobs(args: argparse.Namespace) -> None:
         objects_result = await client.execute_for_all(
             command=GetObjectsOwnedByAddress(owner=owner)
         )
-    if not objects_result.is_ok():
-        print(
-            f"Error listing owned objects: {objects_result.result_string}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        if not objects_result.is_ok():
+            print(
+                f"Error listing owned objects: {objects_result.result_string}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
-    found = False
-    for obj in objects_result.result_data.objects:
-        if not (obj.object_type and "::blob::Blob" in obj.object_type):
-            continue
+        found = False
+        for obj in objects_result.result_data.objects:
+            if not (obj.object_type and "::blob::Blob" in obj.object_type):
+                continue
 
-        # blobs() lists everything a user owns, so one object with an
-        # incomplete/malformed JSON view (e.g. a partial RPC response)
-        # must degrade its own row rather than abort the whole listing --
-        # unlike expiry_report(), which is strict by design. Each field
-        # extraction below is guarded independently and falls back to the
-        # same defaults the pre-refactor hand-walked code used.
-        try:
-            deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
-        except ValueError:
-            deletable, end_epoch = False, 0
-        status = "expired" if end_epoch <= current_epoch else "active"
+            # blobs() lists everything a user owns, so one object with an
+            # incomplete/malformed JSON view (e.g. a partial RPC response)
+            # must degrade its own row rather than abort the whole listing --
+            # unlike expiry_report(), which is strict by design. Each field
+            # extraction below is guarded independently and falls back to the
+            # same defaults the pre-refactor hand-walked code used.
+            try:
+                deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
+            except ValueError:
+                deletable, end_epoch = False, 0
+            status = "expired" if end_epoch <= current_epoch else "active"
 
-        if args.deletable != "any" and str(deletable).lower() != args.deletable:
-            continue
-        if args.status != "any" and status != args.status:
-            continue
+            if args.deletable != "any" and str(deletable).lower() != args.deletable:
+                continue
+            if args.status != "any" and status != args.status:
+                continue
 
-        try:
-            blob_id_b64 = blob_id_to_url_base64(blob_id=blob_id_from_object(obj=obj))
-        except (ValueError, OverflowError):
-            blob_id_b64 = "(unparseable)"
+            try:
+                blob_id_b64 = blob_id_to_url_base64(
+                    blob_id=blob_id_from_object(obj=obj)
+                )
+            except (ValueError, OverflowError):
+                blob_id_b64 = "(unparseable)"
 
-        found = True
-        try:
-            blob_size = storage_from_blob(obj=obj).storage_size
-        except ValueError:
-            # Same missing-JSON-view/missing-'storage'-field cases that
-            # blob_deletable_and_end_epoch() already tolerated above would
-            # otherwise raise here too and still abort the listing.
-            blob_size = 0
-        print(
-            f"{obj.object_id}  blob_id={blob_id_b64}  "
-            f"deletable={deletable}  end_epoch={end_epoch}  status={status}  "
-            f"size={blob_size}"
-        )
+            found = True
+            try:
+                blob_size = storage_from_blob(obj=obj).storage_size
+            except ValueError:
+                # Same missing-JSON-view/missing-'storage'-field cases that
+                # blob_deletable_and_end_epoch() already tolerated above would
+                # otherwise raise here too and still abort the listing.
+                blob_size = 0
 
-    if not found:
-        print("No blobs found matching the given filters.")
+            # --show-type costs one extra RPC round trip per listed blob
+            # (a separate GetDynamicFields call), so it only runs when
+            # explicitly requested -- see the handoff's cost analysis.
+            # Same degrade-the-row-not-the-listing convention as the other
+            # fields above: a read failure here falls back to "unknown"
+            # rather than aborting the whole listing.
+            type_suffix = ""
+            if args.show_type:
+                try:
+                    blob_metadata = await client.get_blob_metadata(
+                        blob_object=obj.object_id
+                    )
+                except (RuntimeError, TypeError):
+                    type_suffix = "  type=unknown"
+                else:
+                    is_quilt = blob_metadata is not None and any(
+                        entry.key == "_walrusBlobType" and entry.value == "quilt"
+                        for entry in blob_metadata.data
+                    )
+                    type_suffix = f"  type={'quilt' if is_quilt else 'blob'}"
+
+            print(
+                f"{obj.object_id}  blob_id={blob_id_b64}  "
+                f"deletable={deletable}  end_epoch={end_epoch}  status={status}  "
+                f"size={blob_size}{type_suffix}"
+            )
+
+        if not found:
+            print("No blobs found matching the given filters.")
 
 
 async def expiry_report(args: argparse.Namespace) -> None:
@@ -358,6 +382,40 @@ async def blob_status(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(_EXIT_UNRESOLVED)
+
+
+async def get_blob_metadata(args: argparse.Namespace) -> None:
+    """Print a blob's on-chain metadata (Walrus "attribute") key/value pairs.
+
+    Pure read via :meth:`~pytusk.client.walrus_client.WalrusClient.get_blob_metadata`
+    -- no transaction is built or submitted.
+
+    Args:
+        args (argparse.Namespace): Parsed `get_blob_metadata` subcommand
+            arguments.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            metadata = await client.get_blob_metadata(blob_object=args.object_id)
+        except (RuntimeError, TypeError) as exc:
+            print(f"Error fetching blob metadata: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    if metadata is None or not metadata.data:
+        print(f"{args.object_id} has no metadata set.")
+        return
+
+    # Two-column Key/Value table, sized to content -- mirrors the header +
+    # left-aligned-column convention expiry_report() uses above, adapted to
+    # dynamic widths since metadata keys/values are arbitrary-length strings
+    # (unlike expiry_report's fixed-width object-id/epoch columns).
+    key_width = max(len("Key"), *(len(entry.key) for entry in metadata.data))
+    value_width = max(len("Value"), *(len(entry.value) for entry in metadata.data))
+    print(f"{'Key':<{key_width}}  {'Value':<{value_width}}")
+    print(f"{'-' * key_width}  {'-' * value_width}")
+    for entry in metadata.data:
+        print(f"{entry.key:<{key_width}}  {entry.value:<{value_width}}")
 
 
 async def epoch(args: argparse.Namespace) -> None:

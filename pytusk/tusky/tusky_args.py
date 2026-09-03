@@ -318,6 +318,21 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         default="any",
         help="Filter by expiry status relative to the current Walrus epoch (default: any).",
     )
+    p_blobs.add_argument(
+        "--show-type",
+        dest="show_type",
+        action="store_true",
+        help=(
+            "Also show each blob's type (blob/quilt), read from the "
+            "_walrusBlobType metadata attribute pytusk itself writes at "
+            "store time -- NOT an authoritative content check: correct "
+            "only for as long as that tag is set and retained. A real "
+            "quilt reports as 'blob' if the tag was never set (e.g. "
+            "stored by other tooling) or was later removed via "
+            "drop_blob_metadata (default: off, since this costs one extra "
+            "RPC call per listed blob)."
+        ),
+    )
     _add_config_args(p_blobs)
 
     p_blob = subparsers.add_parser(
@@ -392,6 +407,18 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         ),
     )
     _add_config_args(p_blob_status)
+
+    p_get_blob_metadata = subparsers.add_parser(
+        "get_blob_metadata",
+        help='Show a blob\'s on-chain metadata (Walrus "attribute") key/value pairs.',
+        description=(
+            "Show a blob's on-chain metadata (Walrus \"attribute\") "
+            "key/value pairs, read directly from its metadata dynamic "
+            "field. Pure read -- no transaction is built or submitted."
+        ),
+    )
+    _add_object_id_arg(p_get_blob_metadata)
+    _add_config_args(p_get_blob_metadata)
 
     p_epoch = subparsers.add_parser(
         "epoch",
@@ -1078,6 +1105,65 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     _add_signing_args(p_extend_blob_expiration)
     _add_config_args(p_extend_blob_expiration)
+
+    p_set_blob_metadata = subparsers.add_parser(
+        "set_blob_metadata",
+        help='Insert or update one or more metadata (Walrus "attribute") pairs on a blob.',
+        description=(
+            "Insert or update one or more metadata (Walrus \"attribute\") "
+            "key/value pairs on a blob via insert_or_update_metadata_pair "
+            "-- one move_call per pair, in one PTB. Upsert semantics: a "
+            "key not yet present is inserted; an existing key's value is "
+            "overwritten."
+        ),
+    )
+    _add_object_id_arg(p_set_blob_metadata)
+    p_set_blob_metadata.add_argument(
+        "--attr",
+        dest="attr",
+        nargs=2,
+        action="append",
+        required=True,
+        metavar=("KEY", "VALUE"),
+        help=(
+            "Metadata key and value to set (repeatable, e.g. --attr k1 v1 "
+            "--attr k2 v2); at least one is required."
+        ),
+    )
+    _add_signing_args(p_set_blob_metadata)
+    _add_config_args(p_set_blob_metadata)
+
+    p_drop_blob_metadata = subparsers.add_parser(
+        "drop_blob_metadata",
+        help='Drop one or more metadata keys, or all metadata, from a blob.',
+        description=(
+            "Drop metadata (Walrus \"attribute\") from a blob: --keys "
+            "removes one or more named keys via remove_metadata_pair (one "
+            "move_call per key, in one PTB); --all drops the whole "
+            "metadata set via a single take_metadata call. Both modes "
+            "check existence against the blob's current metadata before "
+            "composing any transaction, reporting a clean error instead "
+            "of paying gas for a guaranteed on-chain abort."
+        ),
+    )
+    _add_object_id_arg(p_drop_blob_metadata)
+    drop_metadata_group = p_drop_blob_metadata.add_mutually_exclusive_group(
+        required=True
+    )
+    drop_metadata_group.add_argument(
+        "--keys",
+        dest="keys",
+        nargs="+",
+        default=None,
+        help="One or more metadata keys to remove. Mutually exclusive with --all.",
+    )
+    drop_metadata_group.add_argument(
+        "--all",
+        action="store_true",
+        help="Remove all metadata from the blob. Mutually exclusive with --keys.",
+    )
+    _add_signing_args(p_drop_blob_metadata)
+    _add_config_args(p_drop_blob_metadata)
 
     p_delete_blob = subparsers.add_parser(
         "delete_blob",
