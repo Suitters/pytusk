@@ -9,8 +9,6 @@ See :mod:`pytusk.core.native_upload` (the package's ``__init__.py``) for the
 full native upload pipeline description and stage ordering.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import functools
@@ -29,14 +27,12 @@ from pytusk.core.certification import (
     confirmation_message,
     min_weight_for_quorum,
 )
-from pytusk.core.committee import WalrusCommittee, WalrusCommitteeMember
-from pytusk.core.native_upload.common import (
-    _HEARTBEAT_INTERVAL_SECONDS,
-    ConfirmationCollectionError,
-    _ExecuteOnlyClient,
-    object_id_to_raw_bytes,
-)
-from pytusk.core.system_ops import Registration
+from pytusk.core.chain import WalrusCommittee, WalrusCommitteeMember
+from pytusk.core.committee_fanout import fan_out_to_committee
+from pytusk.core.encoding import object_id_to_raw_bytes
+from pytusk.core.native_upload.common import _HEARTBEAT_INTERVAL_SECONDS
+from pytusk.core.types import ConfirmationCollectionError, Registration
+from pytusk.core.types.protocols import ExecuteOnlyClient
 
 _logger = logging.getLogger(__name__)
 
@@ -115,7 +111,7 @@ async def _confirm_heartbeat(*, progress: _ConfirmProgress, interval: float) -> 
 
 async def _confirm_node(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     committee: WalrusCommittee,
     member: WalrusCommitteeMember,
     blob_id: bytes,
@@ -233,7 +229,7 @@ def _confirmation_outcome_from_task(
 
 async def collect_confirmations(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     committee: WalrusCommittee,
     blob_id: bytes,
     registration: Registration,
@@ -380,13 +376,13 @@ async def collect_confirmations(
     )
 
     # QUORUM EARLY-EXIT: a request is dispatched to every candidate up
-    # front, exactly as before, but this loop stops WAITING once confirmed
-    # weight reaches quorum rather than always waiting for literally every
-    # candidate -- mirroring upload_slivers's own quorum early-exit (see
-    # this function's "Concurrency policy" docstring paragraph and
-    # upload_slivers's own collection loop, which this is deliberately kept
-    # structurally identical to).
-    start_time = time.monotonic()
+    # front, then fan_out_to_committee stops WAITING once confirmed weight
+    # reaches quorum rather than waiting for literally every candidate. The
+    # choreography -- wait, grace window, straggler cancellation, leftover
+    # cleanup -- is shared with upload_slivers rather than mirrored by hand;
+    # see pytusk.core.committee_fanout. What stays HERE is what this caller means by a
+    # result: only usable confirmations are retained, and everything else is
+    # logged and dropped.
     task_members: dict[
         asyncio.Task[tuple[NodeConfirmation | None, str | None]], WalrusCommitteeMember
     ] = {}
@@ -409,113 +405,60 @@ async def collect_confirmations(
 
     confirmations: list[NodeConfirmation] = []
     weight_confirmed = 0
-    pending: set[asyncio.Task[tuple[NodeConfirmation | None, str | None]]] = set(
-        task_members
-    )
+
+    def _unusable(*, member: WalrusCommitteeMember, reason: str | None) -> None:
+        _logger.warning(
+            "Storage node %s (%s) returned no usable confirmation "
+            "(reason=%s); tolerated so long as quorum is still met "
+            "from the rest",
+            member.node_id,
+            member.base_url,
+            reason,
+        )
+
+    def _fold(
+        task: asyncio.Task[tuple[NodeConfirmation | None, str | None]],
+        member: WalrusCommitteeMember,
+    ) -> None:
+        nonlocal weight_confirmed
+        confirmation, reason = _confirmation_outcome_from_task(
+            task=task, member=member, confirm_progress=confirm_progress
+        )
+        if confirmation is None:
+            _unusable(member=member, reason=reason)
+        else:
+            confirmations.append(confirmation)
+            weight_confirmed += confirmation.weight
+
+    def _cancelled(
+        _task: asyncio.Task[tuple[NodeConfirmation | None, str | None]],
+        member: WalrusCommitteeMember,
+    ) -> None:
+        _unusable(member=member, reason="cancelled")
+
+    def _quorum_reached(elapsed: float) -> None:
+        _logger.info(
+            "collect_confirmations quorum reached: weight=%d/%d elapsed=%.1fs",
+            weight_confirmed,
+            required_weight,
+            elapsed,
+        )
+
     try:
-        while pending:
-            done, pending = await asyncio.wait(
-                pending, return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in done:
-                member = task_members[task]
-                confirmation, reason = _confirmation_outcome_from_task(
-                    task=task, member=member, confirm_progress=confirm_progress
-                )
-                if confirmation is None:
-                    _logger.warning(
-                        "Storage node %s (%s) returned no usable confirmation "
-                        "(reason=%s); tolerated so long as quorum is still met "
-                        "from the rest",
-                        member.node_id,
-                        member.base_url,
-                        reason,
-                    )
-                else:
-                    confirmations.append(confirmation)
-                    weight_confirmed += confirmation.weight
-            if weight_confirmed >= required_weight:
-                break
-
-        if weight_confirmed >= required_weight:
-            _logger.info(
-                "collect_confirmations quorum reached: weight=%d/%d elapsed=%.1fs",
-                weight_confirmed,
-                required_weight,
-                time.monotonic() - start_time,
-            )
-
-        # Grace window for stragglers still in flight once quorum is
-        # reached -- same dynamic formula as upload_slivers (see its
-        # docstring; grace_base_seconds/grace_factor default to the SAME
-        # upstream values, 500ms/0.5, and are not new timing values). If
-        # quorum was never reached above, `pending` is already empty here
-        # (the while loop only exits early on quorum; otherwise it runs
-        # until every candidate is done), so this block is a no-op on the
-        # failure path and every candidate's result has already been
-        # processed above exactly as it was before this change.
-        if pending:
-            time_to_quorum = time.monotonic() - start_time
-            extra_time = grace_base_seconds + grace_factor * time_to_quorum
-            _logger.info(
-                "collect_confirmations grace window: extra_time=%.1fs "
-                "pending_nodes=%d",
-                extra_time,
-                len(pending),
-            )
-            done, still_pending = await asyncio.wait(pending, timeout=extra_time)
-            for task in done:
-                member = task_members[task]
-                confirmation, reason = _confirmation_outcome_from_task(
-                    task=task, member=member, confirm_progress=confirm_progress
-                )
-                if confirmation is None:
-                    _logger.warning(
-                        "Storage node %s (%s) returned no usable confirmation "
-                        "(reason=%s); tolerated so long as quorum is still met "
-                        "from the rest",
-                        member.node_id,
-                        member.base_url,
-                        reason,
-                    )
-                else:
-                    confirmations.append(confirmation)
-                    weight_confirmed += confirmation.weight
-            for task in still_pending:
-                member = task_members[task]
-                task.cancel()
-                _logger.info(
-                    "collect_confirmations cancelled straggler: node_id=%s",
-                    member.node_id,
-                )
-                _logger.warning(
-                    "Storage node %s (%s) returned no usable confirmation "
-                    "(reason=%s); tolerated so long as quorum is still met "
-                    "from the rest",
-                    member.node_id,
-                    member.base_url,
-                    "cancelled",
-                )
-            if still_pending:
-                await asyncio.gather(*still_pending, return_exceptions=True)
+        await fan_out_to_committee(
+            tasks=task_members,
+            on_completed=_fold,
+            on_cancelled=_cancelled,
+            should_stop=lambda: weight_confirmed >= required_weight,
+            label="collect_confirmations",
+            on_threshold_reached=_quorum_reached,
+            grace_base_seconds=grace_base_seconds,
+            grace_factor=grace_factor,
+        )
     finally:
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
-
-        # Cancel and await to completion any confirmation task not yet
-        # done, on ANY exit from the try block above -- mirrors
-        # upload_slivers's own leftover-task cleanup (see its docstring's
-        # ROBUSTNESS INVARIANT paragraph and its identical finally block).
-        # A leftover task here would otherwise run on, detached, and
-        # eventually raise once a caller further up tears down the
-        # single-use WalrusClient.
-        leftover = [task for task in task_members if not task.done()]
-        if leftover:
-            for task in leftover:
-                task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(*leftover, return_exceptions=True)
 
     _logger.info(
         "collect_confirmations done: usable=%d/%d",

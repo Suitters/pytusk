@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-import pytusk.core.committee as committee_module
+import pytusk.core.chain.committee as committee_module
 from pytusk.core.certification import (
     Certificate,
     ConfirmationMismatchError,
@@ -22,8 +22,10 @@ from pytusk.core.certification import (
     QuorumNotReachedError,
     build_certificate,
     confirmation_message,
+    is_above_validity,
     is_quorum,
     min_weight_for_quorum,
+    min_weight_for_validity,
     pack_signers_bitmap,
     unpack_signers_bitmap,
     verify_certificate,
@@ -238,6 +240,64 @@ class TestQuorum:
         assert min_weight_for_quorum(n_shards=n_shards) == min_n_correct(
             n_shards=n_shards
         )
+
+
+class TestValidity:
+    """Validity (one-correct-node) threshold and minimum-weight arithmetic."""
+
+    @pytest.mark.parametrize(
+        ("n_shards", "min_weight"),
+        [
+            (1, 1),
+            (4, 2),
+            (6, 3),
+            (10, 4),
+            (100, 34),
+            (1000, 334),
+        ],
+    )
+    def test_min_weight_for_validity_table(
+        self, n_shards: int, min_weight: int
+    ) -> None:
+        """min_weight_for_validity matches the hand-computed ceiling table."""
+        assert min_weight_for_validity(n_shards=n_shards) == min_weight
+
+    def test_min_weight_for_validity_1000_is_334(self) -> None:
+        """Explicit call-out: n_shards=1000 requires weight 334."""
+        assert min_weight_for_validity(n_shards=1000) == 334
+
+    @pytest.mark.parametrize("n_shards", [1, 4, 6, 10, 100, 1000])
+    def test_is_above_validity_boundary(self, n_shards: int) -> None:
+        """One below the minimum weight fails; the minimum itself passes."""
+        required = min_weight_for_validity(n_shards=n_shards)
+        assert is_above_validity(weight=required, n_shards=n_shards) is True
+        assert is_above_validity(weight=required - 1, n_shards=n_shards) is False
+
+    @pytest.mark.parametrize("n_shards", list(range(1, 200)))
+    def test_validity_never_exceeds_quorum(self, n_shards: int) -> None:
+        """Validity is the weaker threshold: it never demands more than quorum."""
+        assert min_weight_for_validity(n_shards=n_shards) <= min_weight_for_quorum(
+            n_shards=n_shards
+        )
+
+    @pytest.mark.parametrize("n_shards", list(range(1, 200)))
+    def test_move_form_diverges_from_rust_form_only_at_multiples_of_three(
+        self, n_shards: int
+    ) -> None:
+        """pytusk deliberately encodes Move's ``includes_one_correct_node``
+        (``3 * weight >= n_shards + 1``), NOT the Rust client's
+        ``num > (n_shards - 1) // 3``. The two coincide unless n_shards is a
+        multiple of 3 -- they agree for the canonical n = 3f + 1 sizing Walrus
+        actually uses (n_shards = 1000), and diverge elsewhere, where the Move
+        form is the stricter of the two. Pinned so that a future edit toward
+        the Rust form fails loudly rather than silently loosening the
+        threshold."""
+        rust_form = (n_shards - 1) // 3 + 1
+        move_form = min_weight_for_validity(n_shards=n_shards)
+        if n_shards % 3 == 0:
+            assert move_form == rust_form + 1
+        else:
+            assert move_form == rust_form
 
 
 class TestConfirmationMessage:

@@ -21,11 +21,13 @@ to the test suite, and these tests need more simultaneous distinct
 signers than that) -- faked crypto, faked transport.
 ``certify`` and ``store_blob_native`` are NOT exercised end-to-end against
 real PTBs here: both submit real transactions via
-``pytusk.core.system_ops.execute_certify`` / ``execute_reserve_and_register``,
+``pytusk.core.ops.blob_execute.execute_certify`` / ``execute_reserve_and_register``,
 which need either a live node or an elaborate ``AsyncSuiTransaction`` mock
 that would fake coverage rather than prove behaviour (matching the scope
 note already recorded in ``test_system_ops.py``). Full PTB
-composition/execution for both remains deferred to integration tests.
+composition/execution for both is therefore UNCOVERED. The integration
+suite that once carried it was deleted 2026-08-28; verification is now a
+deliberate manual run against testnet.
 
 ``TestCertifyTx2Failure`` is a narrow exception to that boundary: it
 monkeypatches ``execute_certify``/``fetch_epoch`` (``certify()``'s only
@@ -59,33 +61,42 @@ from pytusk.core.certification import (
     confirmation_message,
     min_weight_for_quorum,
 )
-from pytusk.core.committee import WalrusCommittee, WalrusCommitteeMember
-from pytusk.core.encoding import encode_blob
+from pytusk.core.chain import WalrusCommittee, WalrusCommitteeMember
+from pytusk.core.encoding import encode_blob, object_id_to_raw_bytes
 from pytusk.core.native_upload import (
     CertifyTransactionError,
     ConfirmationCollectionError,
     FanoutReport,
     NativeBlobReceipt,
+    NativeUploadError,
     NodeUploadOutcome,
     SliverUploadError,
     StageTimings,
     certify,
     collect_confirmations,
-    object_id_to_raw_bytes,
-    store_blob_native,
     upload_slivers,
 )
-from pytusk.core.native_upload import common as native_upload_common
 from pytusk.core.native_upload import confirm as native_upload_confirm
 from pytusk.core.native_upload import fanout as native_upload_fanout
-from pytusk.core.native_upload import pipeline as native_upload_pipeline
 from pytusk.core.native_upload.confirm import _ConfirmProgress
 from pytusk.core.native_upload.fanout import (
     _BytesInFlightThrottle,
     _FanoutProgress,
     _upload_node,
 )
-from pytusk.core.system_ops import Registration
+from pytusk.core.ops import ChainContext, prepare_chain_context
+from pytusk.core.ops import blob_execute as ops_blob_execute
+from pytusk.core.pipelines import delivery as pipelines_delivery
+from pytusk.core.pipelines import registration as pipelines_registration
+from pytusk.core.pipelines import store_blob_native
+from pytusk.core.pipelines import write as pipelines_write
+from pytusk.core.types import (
+    CertifyResult,
+    ChainContextError,
+    Registration,
+    RegistrationPendingError,
+)
+from pytusk.core.types.protocols import ExecuteOnlyClient
 
 # importlib.import_module, not `import pytusk.core.native_upload.certify as
 # native_upload_certify`: the package's __init__.py re-exports a function
@@ -776,6 +787,8 @@ class TestDataclassContract:
             "end_epoch",
             "failed_stage",
             "timings",
+            "register_tx_digest",
+            "certify_tx_digest",
         }
 
     def test_stage_timings_is_frozen(self) -> None:
@@ -1786,14 +1799,14 @@ class TestCertifyTx2Failure:
             raise RuntimeError(original_message)
 
         monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(ops_blob_execute, "execute_certify", fake_execute_certify)
         monkeypatch.setattr(
-            native_upload_certify, "verify_certificate", lambda **kwargs: True
+            ops_blob_execute, "verify_certificate", lambda **kwargs: True
         )
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
-                client=cast(native_upload_common._ExecuteOnlyClient, object()),
+                client=cast(ExecuteOnlyClient, object()),
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
@@ -1835,14 +1848,14 @@ class TestCertifyTx2Failure:
             raise ValueError(original_message)
 
         monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(ops_blob_execute, "execute_certify", fake_execute_certify)
         monkeypatch.setattr(
-            native_upload_certify, "verify_certificate", lambda **kwargs: True
+            ops_blob_execute, "verify_certificate", lambda **kwargs: True
         )
 
         with pytest.raises(CertifyTransactionError) as excinfo:
             await certify(
-                client=cast(native_upload_common._ExecuteOnlyClient, object()),
+                client=cast(ExecuteOnlyClient, object()),
                 committee=committee,
                 blob_id=encoded.blob_id,
                 registration=registration,
@@ -1879,8 +1892,10 @@ class TestCertifyTx2Failure:
                 "certify_blob transaction aborted on-chain: EWrongEpoch"
             )
 
-        async def fake_resolve_package_id(**kwargs: object) -> str:
-            return "0xpkg"
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            return ChainContext(
+                committee=committee, system_object="0xsystem", package_id="0xpkg"
+            )
 
         async def fake_execute_reserve_and_register(**kwargs: object) -> Registration:
             return registration
@@ -1894,16 +1909,20 @@ class TestCertifyTx2Failure:
             return SimpleNamespace(signer_positions=())
 
         monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
-        monkeypatch.setattr(native_upload_pipeline, "resolve_package_id", fake_resolve_package_id)
+        monkeypatch.setattr(ops_blob_execute, "execute_certify", fake_execute_certify)
         monkeypatch.setattr(
-            native_upload_pipeline, "execute_reserve_and_register", fake_execute_reserve_and_register
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
         )
-        monkeypatch.setattr(native_upload_pipeline, "upload_slivers", fake_upload_slivers)
-        monkeypatch.setattr(native_upload_pipeline, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(
+            pipelines_registration,
+            "execute_reserve_and_register",
+            fake_execute_reserve_and_register,
+        )
+        monkeypatch.setattr(pipelines_delivery, "upload_slivers", fake_upload_slivers)
+        monkeypatch.setattr(pipelines_delivery, "collect_confirmations", fake_collect_confirmations)
         monkeypatch.setattr(native_upload_certify, "collect_confirmations", fake_collect_confirmations)
         monkeypatch.setattr(
-            native_upload_certify, "verify_certificate", lambda **kwargs: True
+            ops_blob_execute, "verify_certificate", lambda **kwargs: True
         )
 
         client = _FakeCertifyClient(
@@ -1936,7 +1955,9 @@ class TestCertifyTx2Failure:
         failed ``NativeBlobReceipt``. This must now behave identically to
         the ``RuntimeError`` case above: ``certified=False``,
         ``failed_stage="certify"``, and every stage's timing populated --
-        NOT an exception escaping this call."""
+        NOT an exception escaping this call. Also asserts
+        ``register_tx_digest``/``certify_tx_digest`` behave identically to
+        the ``RuntimeError`` case."""
         committee = _one_shard_per_node_committee()
         registration = _registration(blob_id=b"\x00" * 32)
 
@@ -1946,8 +1967,10 @@ class TestCertifyTx2Failure:
         async def fake_execute_certify(**kwargs: object) -> object:
             raise ValueError("Error running SimulateTransactionKind: boom")
 
-        async def fake_resolve_package_id(**kwargs: object) -> str:
-            return "0xpkg"
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            return ChainContext(
+                committee=committee, system_object="0xsystem", package_id="0xpkg"
+            )
 
         async def fake_execute_reserve_and_register(**kwargs: object) -> Registration:
             return registration
@@ -1961,16 +1984,20 @@ class TestCertifyTx2Failure:
             return SimpleNamespace(signer_positions=())
 
         monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
-        monkeypatch.setattr(native_upload_certify, "execute_certify", fake_execute_certify)
-        monkeypatch.setattr(native_upload_pipeline, "resolve_package_id", fake_resolve_package_id)
+        monkeypatch.setattr(ops_blob_execute, "execute_certify", fake_execute_certify)
         monkeypatch.setattr(
-            native_upload_pipeline, "execute_reserve_and_register", fake_execute_reserve_and_register
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
         )
-        monkeypatch.setattr(native_upload_pipeline, "upload_slivers", fake_upload_slivers)
-        monkeypatch.setattr(native_upload_pipeline, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(
+            pipelines_registration,
+            "execute_reserve_and_register",
+            fake_execute_reserve_and_register,
+        )
+        monkeypatch.setattr(pipelines_delivery, "upload_slivers", fake_upload_slivers)
+        monkeypatch.setattr(pipelines_delivery, "collect_confirmations", fake_collect_confirmations)
         monkeypatch.setattr(native_upload_certify, "collect_confirmations", fake_collect_confirmations)
         monkeypatch.setattr(
-            native_upload_certify, "verify_certificate", lambda **kwargs: True
+            ops_blob_execute, "verify_certificate", lambda **kwargs: True
         )
 
         client = _FakeCertifyClient(
@@ -1989,3 +2016,318 @@ class TestCertifyTx2Failure:
         assert receipt.timings.certify_tx2 is not None
         assert receipt.timings.certify_tx2 >= 0
         assert receipt.timings.total is not None
+        assert receipt.register_tx_digest == registration.digest
+        assert receipt.certify_tx_digest is None
+
+    async def test_store_blob_native_tx2_failure_receipt_carries_register_tx_digest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recovery-gap regression guard, and the most important guard in
+        this fix: before it, a Tx2 failure's returned ``NativeBlobReceipt``
+        dropped Tx1's digest entirely, even though ``registration.digest``
+        was available in scope the whole time -- the caller had no way to
+        look up the already-paid-for, already-registered Blob short of
+        re-deriving it from ``object_id`` via a chain query.
+        ``register_tx_digest`` must now be populated on the failure-path
+        receipt from ``registration.digest``, and ``certify_tx_digest`` must
+        stay at its default ``None`` since Tx2 never produced a
+        ``CertifyResult`` on this path."""
+        committee = _one_shard_per_node_committee()
+        registration = _registration(blob_id=b"\x00" * 32)
+
+        async def fake_fetch_epoch(*, reader: object, staking_object: str) -> int:
+            return committee.epoch
+
+        async def fake_execute_certify(**kwargs: object) -> object:
+            raise RuntimeError(
+                "certify_blob transaction aborted on-chain: EWrongEpoch"
+            )
+
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            return ChainContext(
+                committee=committee, system_object="0xsystem", package_id="0xpkg"
+            )
+
+        async def fake_execute_reserve_and_register(**kwargs: object) -> Registration:
+            return registration
+
+        async def fake_upload_slivers(**kwargs: object) -> FanoutReport:
+            return FanoutReport(
+                outcomes=(), weight_succeeded=committee.n_shards, n_shards=committee.n_shards
+            )
+
+        async def fake_collect_confirmations(**kwargs: object) -> object:
+            return SimpleNamespace(signer_positions=())
+
+        monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
+        monkeypatch.setattr(ops_blob_execute, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
+        )
+        monkeypatch.setattr(
+            pipelines_registration,
+            "execute_reserve_and_register",
+            fake_execute_reserve_and_register,
+        )
+        monkeypatch.setattr(pipelines_delivery, "upload_slivers", fake_upload_slivers)
+        monkeypatch.setattr(pipelines_delivery, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(native_upload_certify, "collect_confirmations", fake_collect_confirmations)
+        monkeypatch.setattr(
+            ops_blob_execute, "verify_certificate", lambda **kwargs: True
+        )
+
+        client = _FakeCertifyClient(
+            committee=committee, system_object="0xsystem", staking_object="0xstaking"
+        )
+
+        receipt = await store_blob_native(client=cast(WalrusClient, client), data=_BLOB_DATA, epochs=3)
+
+        assert receipt.certified is False
+        assert receipt.failed_stage == "certify"
+        assert receipt.register_tx_digest == registration.digest
+        assert receipt.certify_tx_digest is None
+
+
+class TestCertifySuccessDigests:
+    """Fix: a successful certification's receipt must carry both Tx1's and
+    Tx2's transaction digests, not just the object id -- see
+    ``TestCertifyTx2Failure.test_store_blob_native_tx2_failure_receipt_carries_register_tx_digest``
+    for the equivalent failure-path guard."""
+
+    async def test_certify_success_populates_register_and_certify_digests(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``certify()``'s returned receipt must set ``register_tx_digest``
+        from ``registration.digest`` (Tx1) and ``certify_tx_digest`` from
+        the ``CertifyResult.digest`` (Tx2) that ``execute_certify``
+        returns."""
+        committee = _one_shard_per_node_committee()
+        encoded = encode_blob(data=_BLOB_DATA, n_shards=committee.n_shards)
+        registration = _registration(blob_id=encoded.blob_id)
+
+        async def fake_fetch_epoch(*, reader: object, staking_object: str) -> int:
+            return committee.epoch
+
+        async def fake_execute_certify(**kwargs: object) -> CertifyResult:
+            return CertifyResult(
+                object_id=registration.object_id,
+                blob_id=registration.blob_id,
+                certified=True,
+                digest="0xcertify-digest",
+            )
+
+        monkeypatch.setattr(native_upload_certify, "fetch_epoch", fake_fetch_epoch)
+        monkeypatch.setattr(ops_blob_execute, "execute_certify", fake_execute_certify)
+        monkeypatch.setattr(
+            ops_blob_execute, "verify_certificate", lambda **kwargs: True
+        )
+
+        receipt = await certify(
+            client=cast(ExecuteOnlyClient, object()),
+            committee=committee,
+            blob_id=encoded.blob_id,
+            registration=registration,
+            certificate=cast(Certificate, SimpleNamespace(signer_positions=())),
+            package_id="0xpkg",
+            system_object="0xsystem",
+            staking_object="0xstaking",
+        )
+
+        assert receipt.certified is True
+        assert receipt.register_tx_digest == registration.digest
+        assert receipt.certify_tx_digest == "0xcertify-digest"
+
+
+class _FakeChainContextClient:
+    """Client fake whose ``committee()`` raises, for prepare_chain_context.
+
+    Only ``.committee()`` and ``.config.network.system_object`` are read on
+    the path under test -- the package read is never reached, because the
+    committee read fails first.
+    """
+
+    def __init__(self, *, error: Exception) -> None:
+        self._error = error
+        self.config = SimpleNamespace(
+            network=SimpleNamespace(
+                system_object="0xsystem", staking_object="0xstaking"
+            )
+        )
+
+    async def committee(self) -> object:
+        """Always raise, standing in for a failed on-chain committee read."""
+        raise self._error
+
+
+class TestPrepareChainContextTypesItsFailures:
+    """``prepare_chain_context`` is the single place every pre-Tx1 chain read
+    now happens, so it is also the only place those reads can be given a
+    stage. Before it existed, a committee failure escaped ``prepare_write`` as
+    a bare exception while the package read three lines below it was already
+    typed -- an asymmetry with no principle behind it.
+
+    ``WalrusClient.committee()`` documents FOUR bare exception types, so all
+    four must be caught; catching only the ``(RuntimeError, ValueError)`` pair
+    the sibling reads use would leave ``KeyError`` and ``TypeError`` escaping
+    untyped, which is the same hole in a smaller form.
+    """
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            KeyError("committee member has no pool entry"),
+            RuntimeError("on-chain read failed"),
+            TypeError("decoded structure not as expected"),
+            ValueError("shard assignment is not a complete cover"),
+        ],
+        ids=["keyerror", "runtimeerror", "typeerror", "valueerror"],
+    )
+    async def test_committee_failure_becomes_chain_context_error(
+        self, error: Exception
+    ) -> None:
+        client = _FakeChainContextClient(error=error)
+
+        with pytest.raises(ChainContextError) as excinfo:
+            await prepare_chain_context(client=cast(WalrusClient, client))
+
+        assert excinfo.value.stage == "committee"
+        assert excinfo.value.__cause__ is error
+
+
+class TestPreSpendFailuresRaiseTypedNativeUploadError:
+    """Fix: a failure before Tx1 succeeds (package-ID resolution or Tx1
+    itself) must raise a typed ``NativeUploadError`` -- matching relay's
+    ``RelayUploadError`` for its own equivalent pre-spend failures --
+    instead of a bare ``RuntimeError``/``ValueError`` escaping
+    ``store_blob_native`` unrecognisably. ``RegistrationPendingError`` is
+    the deliberate exception: Tx1 there already SUCCEEDED on-chain (a
+    post-spend, recoverable condition), so it must NOT be folded into a
+    ``NativeUploadError`` either -- but it must also NOT propagate as a
+    raise. It is converted, at the pipeline boundary, into a
+    ``NativeBlobReceipt`` with ``certified=False`` and ``failed_stage`` set
+    to the error's ``stage``, so ``store_blob_native`` returns instead of
+    raising -- see ``TestRegistrationPendingErrorConvertedToReceipt``
+    below."""
+
+    async def test_package_resolution_failure_raises_typed_native_upload_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        committee = _one_shard_per_node_committee()
+
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            raise ChainContextError(
+                message="Cannot fetch System object 0xsystem: boom",
+                stage="resolve_package_id",
+            )
+
+        monkeypatch.setattr(
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
+        )
+
+        client = _FakeCertifyClient(
+            committee=committee, system_object="0xsystem", staking_object="0xstaking"
+        )
+
+        with pytest.raises(NativeUploadError) as excinfo:
+            await store_blob_native(client=cast(WalrusClient, client), data=_BLOB_DATA, epochs=3)
+
+        assert excinfo.value.stage == "resolve_package_id"
+        assert isinstance(excinfo.value, RuntimeError)
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+    async def test_committee_failure_raises_typed_native_upload_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A committee read fails PRE-SPEND exactly as package resolution
+        does, so it must surface under the pipeline's own error name carrying
+        its own stage, rather than as the bare exception that escaped before
+        ``prepare_chain_context`` gave every pre-Tx1 read one."""
+        committee = _one_shard_per_node_committee()
+
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            raise ChainContextError(
+                message="Cannot fetch committee: boom", stage="committee"
+            )
+
+        monkeypatch.setattr(
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
+        )
+
+        client = _FakeCertifyClient(
+            committee=committee, system_object="0xsystem", staking_object="0xstaking"
+        )
+
+        with pytest.raises(NativeUploadError) as excinfo:
+            await store_blob_native(
+                client=cast(WalrusClient, client), data=_BLOB_DATA, epochs=3
+            )
+
+        assert excinfo.value.stage == "committee"
+        assert isinstance(excinfo.value.__cause__, ChainContextError)
+
+
+class TestRegistrationPendingErrorConvertedToReceipt:
+    """A post-spend ``RegistrationPendingError`` must reach the caller as
+    RETURN DATA, not as a raise -- converted at the pipeline boundary (see
+    ``pytusk/core/pipelines/write.py``). ``store_blob_native`` must
+    return a ``NativeBlobReceipt`` (never raise) for both ``stage`` values,
+    carrying the error's ``digest``/``object_id`` onto
+    ``register_tx_digest``/``object_id``."""
+
+    async def _run_with_pending_error(
+        self, monkeypatch: pytest.MonkeyPatch, stage: str
+    ) -> object:
+        committee = _one_shard_per_node_committee()
+
+        async def fake_prepare_chain_context(**kwargs: object) -> ChainContext:
+            return ChainContext(
+                committee=committee, system_object="0xsystem", package_id="0xpkg"
+            )
+
+        async def fake_execute_reserve_and_register(**kwargs: object) -> Registration:
+            raise RegistrationPendingError(
+                digest="0xtx1",
+                object_id="0xblob",
+                detail="Checkpoint finality was not reached after 5 attempts.",
+                stage=stage,
+            )
+
+        monkeypatch.setattr(
+            pipelines_write, "prepare_chain_context", fake_prepare_chain_context
+        )
+        monkeypatch.setattr(
+            pipelines_registration,
+            "execute_reserve_and_register",
+            fake_execute_reserve_and_register,
+        )
+
+        client = _FakeCertifyClient(
+            committee=committee, system_object="0xsystem", staking_object="0xstaking"
+        )
+
+        return await store_blob_native(client=cast(WalrusClient, client), data=_BLOB_DATA, epochs=3)
+
+    async def test_register_finality_stage_returns_receipt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A finality-wait timeout must return a receipt, not raise."""
+        receipt = await self._run_with_pending_error(monkeypatch, "register_finality")
+
+        assert receipt.certified is False
+        assert receipt.failed_stage == "register_finality"
+        assert receipt.register_tx_digest == "0xtx1"
+        assert receipt.object_id == "0xblob"
+        assert receipt.end_epoch is None
+
+    async def test_register_readback_stage_returns_receipt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A read-back failure (after finality landed) must return a
+        receipt, not raise."""
+        receipt = await self._run_with_pending_error(monkeypatch, "register_readback")
+
+        assert receipt.certified is False
+        assert receipt.failed_stage == "register_readback"
+        assert receipt.register_tx_digest == "0xtx1"
+        assert receipt.object_id == "0xblob"
+        assert receipt.end_epoch is None

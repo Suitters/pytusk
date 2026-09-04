@@ -9,6 +9,10 @@ transaction purposes, then walks through the Walrus-specific PTBs
 ``pytusk`` builds internally for blob lifecycle and WAL/SUI exchange
 operations.
 
+Every example on this page imports from the top-level package —
+``from pytusk import ...``. All public names are re-exported there;
+submodule paths are internal and may move between releases.
+
 PytuskConfiguration and PysuiConfiguration
 --------------------------------------------
 
@@ -222,6 +226,162 @@ transfers back to the sender.
                 print(result.result_data)
 
     asyncio.run(main())
+
+Blob Metadata
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A Blob's on-chain metadata (Walrus's "attribute" concept) is a
+``VecMap<String, String>`` held in a dynamic field, separate from the
+``Blob`` struct's own fields. Three standalone, post-registration
+operations manage it: setting/updating pairs, dropping pairs, and reading
+them back.
+
+**Setting metadata.** ``insert_or_update_metadata_pair`` gives upsert
+semantics -- a key not yet present is inserted, an existing key's value is
+overwritten. One ``move_call`` per pair is composed into a single PTB;
+:func:`~pytusk.add_set_blob_metadata` does the composition:
+
+.. code-block:: python
+
+    import asyncio
+    from pysui import ExecuteTransaction, GetObject
+    from pytusk import PytuskConfiguration, WalrusClient, add_set_blob_metadata
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            system_obj_id = client.config.network.system_object
+            sys_result = await client.execute(
+                command=GetObject(object_id=system_obj_id)
+            )
+            walrus_pkg = sys_result.result_data.json.struct_value.fields[
+                "package_id"
+            ].string_value
+            blob_object_id = "0x..."  # the blob's Sui object ID, not its Walrus blob ID
+
+            txn = await client.transaction(initial_sender=sender)
+            await add_set_blob_metadata(
+                txn=txn,
+                package_id=walrus_pkg,
+                blob_object=blob_object_id,
+                pairs={"content-type": "application/octet-stream"},
+            )
+
+            txdict = await txn.build_and_sign()
+            result = await client.execute(command=ExecuteTransaction(**txdict))
+            if result.is_ok():
+                print(result.result_data)
+
+    asyncio.run(main())
+
+**Dropping metadata.** Two Move entry points cover this, with no batch
+primitive for either: ``remove_metadata_pair`` removes one named key (one
+``move_call`` per requested key, composed into one PTB via
+:func:`~pytusk.add_drop_blob_metadata_keys`); ``take_metadata`` drops the
+whole metadata set in a single call
+(:func:`~pytusk.add_drop_blob_metadata_all`). Both abort on chain
+(``EMissingMetadata``) if the ``Blob`` has no metadata field at all, and
+``remove_metadata_pair`` additionally aborts (``vec_map::remove``) if a
+requested key is not present. Rather than pay gas for a transaction
+guaranteed to abort, :func:`~pytusk.validate_blob_metadata_keys_exist` /
+:func:`~pytusk.validate_blob_metadata_exists` fetch the blob's current
+metadata and raise ``ValueError`` **before any PTB is composed** if the
+target key(s) -- or any metadata at all, for the drop-all case -- don't
+exist:
+
+.. code-block:: python
+
+    import asyncio
+    from pysui import ExecuteTransaction, GetObject
+    from pytusk import (
+        PytuskConfiguration,
+        WalrusClient,
+        add_drop_blob_metadata_keys,
+        validate_blob_metadata_keys_exist,
+    )
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            system_obj_id = client.config.network.system_object
+            sys_result = await client.execute(
+                command=GetObject(object_id=system_obj_id)
+            )
+            walrus_pkg = sys_result.result_data.json.struct_value.fields[
+                "package_id"
+            ].string_value
+            blob_object_id = "0x..."  # the blob's Sui object ID, not its Walrus blob ID
+
+            # Raises ValueError pre-spend if "content-type" isn't currently set,
+            # rather than letting remove_metadata_pair abort after gas is spent.
+            await validate_blob_metadata_keys_exist(
+                client=client, blob_object=blob_object_id, keys=["content-type"]
+            )
+
+            txn = await client.transaction(initial_sender=sender)
+            await add_drop_blob_metadata_keys(
+                txn=txn,
+                package_id=walrus_pkg,
+                blob_object=blob_object_id,
+                keys=["content-type"],
+            )
+
+            txdict = await txn.build_and_sign()
+            result = await client.execute(command=ExecuteTransaction(**txdict))
+            if result.is_ok():
+                print(result.result_data)
+
+    asyncio.run(main())
+
+Dropping everything instead swaps ``add_drop_blob_metadata_keys``/``keys=[...]``
+for ``add_drop_blob_metadata_all`` (no ``keys`` argument), and
+``validate_blob_metadata_keys_exist`` for ``validate_blob_metadata_exists``
+-- the rest of the PTB is identical.
+
+**Reading metadata.** There is no Move getter -- ``metadata()`` /
+``metadata_or_create()`` are private in ``blob.move`` -- so a read is a
+pure client-side operation, no PTB involved:
+:meth:`~pytusk.client.walrus_client.WalrusClient.get_blob_metadata` fetches
+the blob's ``metadata`` dynamic field directly and returns ``None`` if it
+doesn't exist at all:
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import PytuskConfiguration, WalrusClient
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            blob_object_id = "0x..."  # the blob's Sui object ID, not its Walrus blob ID
+            metadata = await client.get_blob_metadata(blob_object=blob_object_id)
+            if metadata is None:
+                print(f"{blob_object_id} has no metadata set.")
+            else:
+                for entry in metadata.data:
+                    print(entry.key, entry.value)
+
+    asyncio.run(main())
+
+See `Quilt Upload Relay`_ below for the other place
+``insert_or_update_metadata_pair`` is used in this project -- there it is
+composed INSIDE Tx1's registration sequence, to write the
+``_walrusBlobType = "quilt"`` marker at store time, rather than as a
+standalone post-registration transaction like the operations above.
 
 Storage Management
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -551,13 +711,13 @@ instead, following this flow:
 
 1. Get a ``WalrusClient`` and open a transaction (your own sender/sponsor).
 2. Add Tx1's move_calls via
-   :py:func:`~pytusk.core.system_ops.add_reserve_and_register`.
+   :py:func:`~pytusk.add_reserve_and_register`.
 3. Transfer (or otherwise consume) the ``Blob`` command result it returns
    — it is an **unconsumed object result**, and the PTB aborts at
    execution if it is not transferred or fed into a further move_call.
 4. Simulate or execute, as you choose.
 5. Observe the outcome and collect what Tx2 needs: the created ``Blob``'s
-   object ID (via :py:func:`~pytusk.core.utils.find_created_object_id`,
+   object ID (via :py:func:`~pytusk.find_created_object_id`,
    reading directly off the ``TransactionEffects`` you already hold — no
    extra round trip) and its ``storage.end_epoch``/``deletable`` (read back
    via ``GetObject``, the same JSON shape ``tusky blob`` prints — see
@@ -565,7 +725,7 @@ instead, following this flow:
 6. Off-chain: fan slivers out to the committee and collect confirmations.
 7. Get a **new** transaction from the client — same or different
    sender/sponsor — and add Tx2's move_call via
-   :py:func:`~pytusk.core.system_ops.add_certify`.
+   :py:func:`~pytusk.add_certify`.
 8. Simulate or execute.
 
 .. code-block:: python
@@ -738,6 +898,436 @@ re-fetching the committee and redoing confirmation collection themselves;
 :py:func:`~pytusk.certify` (used internally by ``store_blob_native``)
 already retries this automatically, which is the main reason to prefer
 the convenience path when you don't need to interleave custom move_calls.
+
+Upload Relay
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+An upload relay stages the same on-chain work as a native upload — Tx1
+(``reserve_space`` + ``register_blob``), then Tx2 (``certify_blob``) — but
+delegates the off-chain half. ``pytusk`` still encodes the blob locally, to
+derive the blob id and root hash the registration needs, but instead of
+fanning slivers out to the committee yourself you POST the raw blob bytes
+and the relay does that, returning a signed confirmation certificate.
+The relay is paid a tip, composed into the SAME transaction as the
+registration. See :doc:`intro` for choosing between the three write paths,
+and :doc:`configuration` for configuring which relays a network knows about.
+
+The highest-level entry point runs the whole pipeline in one call:
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import (
+        PytuskConfiguration,
+        RelayOutcome,
+        WalrusClient,
+        store_blob_relay,
+    )
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            receipt = await store_blob_relay(
+                client=client,
+                data=b"hello walrus",
+                epochs=5,
+                deletable=True,
+                sender=sender,
+                max_tip=1_000_000,
+                # Per-attempt cap on the POST to the relay. Unset uses the
+                # client's configured timeout; raise it for a large blob,
+                # because every retry re-sends the body from the start.
+                timeout=900.0,
+            )
+            if receipt.outcome is RelayOutcome.CERTIFIED:
+                print(receipt.blob_id, receipt.object_id)
+            else:
+                print(receipt.outcome)
+
+    asyncio.run(main())
+
+``store_blob_relay()`` orchestrates, in order: a sponsor pre-flight, a tip
+quote, the ``max_tip`` ceiling check, the ``on_quote`` callback, a payment
+pre-flight, Tx1 (tip +
+``reserve_space`` + ``register_blob``), the POST to the relay, parsing the
+returned certificate, and Tx2 (``certify_blob``). Everything that can refuse
+the write does so BEFORE anything is spent: an unsignable sponsor, an
+unusable tip coin, and a quote above ``max_tip`` all raise — the last as
+:py:class:`~pytusk.TipCeilingExceededError` — before a PTB is built.
+
+``on_quote`` is an optional callback invoked with the
+:py:class:`~pytusk.TipQuote` immediately after the ceiling check and before
+any PTB is composed. It receives the same quote that is composed into Tx1
+rather than a second, separately fetched one, so a figure shown to a user
+cannot disagree with what actually gets signed. Raising from it aborts the
+write cleanly, since nothing has been spent at that point — which makes it
+the place to put a confirmation prompt, or any refusal rule that ``max_tip``
+alone cannot express.
+
+.. code-block:: python
+
+    def show_tip(quote):
+        if quote.requires_payment:
+            print(f"tip: {quote.amount} MIST to {quote.address}")
+
+    receipt = await store_blob_relay(
+        client=client,
+        data=data,
+        epochs=5,
+        on_quote=show_tip,
+    )
+
+After Tx1 succeeds, failures are RETURNED rather than raised. The result is
+a :py:class:`~pytusk.RelayBlobReceipt` whose
+:py:class:`~pytusk.RelayOutcome` is one of ``CERTIFIED``, ``RESUMABLE``,
+``REJECTED`` or ``NOT_STARTED``. Branch on ``outcome`` — never on whether a
+certificate happens to be present. A ``RESUMABLE`` receipt carries the
+digest and nonce needed to retry, and retrying is free: the relay applies no
+replay protection, so re-submitting the same transaction digest and nonce
+costs nothing beyond the tip already paid. ``tusky certify_blob``
+(:doc:`tusky`) recovers the same state from the CLI.
+
+.. warning::
+
+   A relay enforces a maximum request-body size — in practice about 1 GiB —
+   that it does not advertise: no field in the tip configuration reports it
+   and no endpoint exposes it. ``pytusk`` therefore applies no client-side
+   guard, and a simulate run will price a blob the relay will later refuse.
+   Treat roughly 1 GiB as the practical ceiling for a relay write and use
+   native upload for anything larger.
+
+Composing the Relay Write by Hand
+''''''''''''''''''''''''''''''''''''''
+
+:py:func:`~pytusk.store_blob_relay` builds, signs, and submits both
+transactions for you. An SDK developer who needs to own the transactions —
+to choose sender and sponsor per transaction, or interleave their own
+``move_call`` commands — can compose the same stages from the public
+building blocks.
+
+The one hard rule: **the tip must be the first thing added to Tx1.** The
+relay locates the authentication package by a positional read of PTB input
+0, so anything registered ahead of it makes the relay reject the upload.
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import (
+        PytuskConfiguration,
+        WalrusClient,
+        add_tip,
+        assert_tip_within_ceiling,
+        build_auth_package,
+        parse_relay_certificate,
+        quote_tip,
+        upload_to_relay,
+    )
+
+    async def main():
+        config = PytuskConfiguration(active_network="testnet")
+        data = b"hello walrus"
+
+        async with WalrusClient(pytusk_config=config) as client:
+            relay_url = config.relay_url_for(network_name="testnet")
+            committee = await client.committee()
+
+            # Price this exact upload. A tip formula can depend on
+            # encoded size, so the same relay charges differently for
+            # different blobs -- there is no per-relay flat rate to cache.
+            quote = await quote_tip(
+                client=client,
+                relay_url=relay_url,
+                unencoded_length=len(data),
+                n_shards=committee.n_shards,
+            )
+
+            # Refuse an over-budget quote here, while refusing still costs
+            # nothing. Past Tx1 the tip is spent whatever happens next.
+            assert_tip_within_ceiling(quote=quote, max_tip=1_000_000)
+
+            # Bind the tip to THIS blob. Each call mints a fresh 32-byte
+            # nonce, which is what distinguishes one attempt from another.
+            # Resuming an interrupted upload must reuse the package built
+            # here rather than build a second one, or the tip already paid
+            # stops matching the upload the relay is asked to honour.
+            auth = build_auth_package(data=data)
+
+            # Compose Tx1 -- and add the tip BEFORE anything else. The relay
+            # reads the authentication package out of PTB input 0 by
+            # position, so any command registered ahead of it shifts the
+            # package and the relay rejects the upload.
+            txn = await client.transaction()
+            await add_tip(
+                txn=txn,
+                relay_address=quote.address,
+                tip_amount=quote.amount,
+                auth_package=auth,
+            )
+
+            # Add the registration commands, then sign and submit Tx1 however
+            # you like -- owning this step is the point of composing by hand.
+            # Two of its results are needed below: the blob_id that
+            # registration derived, and the digest of the transaction that
+            # paid the tip.
+            blob_id, tx1_digest = await register_and_submit_tx1(txn)
+
+            # Hand the relay the raw bytes. It re-encodes them itself and
+            # fans the slivers out to the committee; the digest is what
+            # proves the tip was actually paid.
+            result = await upload_to_relay(
+                client=client,
+                relay_url=relay_url,
+                blob_id=blob_id,
+                data=data,
+                register_tip_tx_digest=tx1_digest,
+                # Same per-attempt cap the one-call pipeline exposes; the
+                # retry budget is spent here, not by the caller.
+                timeout=900.0,
+            )
+
+            # The certificate arrives as raw JSON whose three parts are each
+            # encoded differently. Parsing is a separate step so a decoding
+            # problem reports as one, instead of resurfacing later as what
+            # looks like a corrupt signature.
+            #
+            # ``blob_id`` and ``object_id`` are not decoration: the parser
+            # rebuilds the confirmation message and rejects a certificate
+            # that confirms some OTHER blob -- one that would verify locally
+            # and then abort inside Move with the tip already spent. Pass
+            # ``object_id=None`` for a permanent blob; for a deletable one
+            # pass the registered ``Blob`` object id as raw bytes, via
+            # ``object_id_to_raw_bytes``.
+            certificate = parse_relay_certificate(
+                payload=result.certificate,
+                committee=committee,
+                blob_id=blob_id,
+                object_id=None,
+            )
+
+            # Certify in Tx2. From here the relay path and the native path
+            # are identical -- see Composing Tx1/Tx2 by Hand above.
+
+    asyncio.run(main())
+
+``register_and_submit_tx1`` above stands in for your own Tx1 handling —
+adding the registration commands, choosing signers, and submitting — since
+that is exactly the part a hand-composed write exists to control. See
+``Composing Tx1/Tx2 by Hand`` for the native equivalent.
+
+``upload_to_relay`` reports rather than raises, exactly as the encapsulated
+pipeline does: branch on ``result.outcome`` (``UPLOADED``, ``UNANSWERED`` or
+``REFUSED``), not on whether ``result.certificate`` is set. Parsing is a
+separate step because the relay encodes the certificate's three parts
+inconsistently — committee positions as a JSON integer array, the message as
+a plain integer array, and only the signature as base64 — and
+``parse_relay_certificate`` is what reconciles that against the committee.
+
+Use the convenience path unless you need to interleave custom ``move_call``
+commands or control signing per transaction.
+
+
+Quilt Upload Relay
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A quilt packs many small blobs into ONE Walrus blob, so a batch pays for one
+registration and one certification instead of one each. Assembly is a purely
+local step: once assembled, the quilt's bytes ARE an ordinary blob, and every
+stage from the tip quote onward is identical to the blob relay write above.
+That is what makes quilt writes practical on Mainnet, where no public
+publisher exists. See :doc:`intro` for choosing between the write paths and
+:doc:`tusky` for the ``store_quilt_relay`` command.
+
+Only two things distinguish a quilt write from the blob write above. Tx1
+carries one extra command -- ``insert_or_update_metadata_pair`` writing
+``_walrusBlobType = "quilt"`` -- and the bytes registered are the assembled
+buffer rather than a caller's blob. Tx2 is the same ``certify_blob``. See
+`Blob Metadata`_ above for the standalone, post-registration form of the
+same move_call, and how it differs from this write-time use inside Tx1.
+
+The highest-level entry point runs the whole pipeline in one call:
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import (
+        PytuskConfiguration,
+        QuiltPatchInput,
+        RelayOutcome,
+        WalrusClient,
+        store_quilt_relay,
+    )
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            receipt = await store_quilt_relay(
+                client=client,
+                patches=[
+                    QuiltPatchInput(identifier="readme.md", contents=b"# hello"),
+                    QuiltPatchInput(
+                        identifier="notes.txt",
+                        contents=b"second patch",
+                        tags={"kind": "note"},
+                    ),
+                ],
+                epochs=5,
+                deletable=True,
+                sender=sender,
+                max_tip=1_000_000,
+                # A quilt is larger than any single file in it, and every
+                # retry re-sends the whole assembled buffer from the start.
+                timeout=900.0,
+            )
+            if receipt.outcome is RelayOutcome.CERTIFIED:
+                print(receipt.blob_id, receipt.object_id)
+                for patch in receipt.patches:
+                    print(patch.identifier, patch.patch_id)
+            else:
+                print(receipt.outcome)
+
+    asyncio.run(main())
+
+:py:class:`~pytusk.QuiltRelayReceipt` is a
+:py:class:`~pytusk.RelayBlobReceipt` with exactly one field added:
+``patches``, a tuple of :py:class:`~pytusk.QuiltPatchReceipt`. Every other
+field -- ``outcome``, ``blob_id``, ``object_id``, the transaction digests,
+the nonce -- means what it does on a blob relay write, so the error boundary
+and the ``RESUMABLE`` recovery described above apply unchanged. ``blob_id``
+IS the quilt id.
+
+**Patches come back sorted by identifier, not in the order you passed them.**
+Packing order fixes each patch's column range and therefore its
+``QuiltPatchId``, so it has to be a function of the batch's content rather
+than of how a caller happened to list it. Match patches by ``identifier``,
+never by position.
+
+Identifier rules -- non-empty, no trailing whitespace, no control
+characters, and a 65535-byte ceiling that is a BYTE count rather than a
+character one -- are enforced during assembly, which is pre-spend, so a bad
+identifier raises before anything is paid for. To check a batch WITHOUT
+assembling it, which is worth doing when identifiers come from user input,
+call :py:func:`~pytusk.validate_quilt_identifier` on each one first.
+
+.. warning::
+
+   The relay's unadvertised request-body limit -- in practice about 1 GiB --
+   applies to the ASSEMBLED quilt, not to any single patch. A batch of
+   individually small files can cross it. Use native upload above that size.
+
+Composing the Quilt Relay Write by Hand
+''''''''''''''''''''''''''''''''''''''''
+
+Assembly and encoding are the only stages that differ from
+``Composing the Relay Write by Hand`` above. From the tip quote onward the
+two paths are the same calls in the same order, so only the quilt-specific
+front half is shown here.
+
+One hard rule beyond the tip-first rule: **assemble and encode against the
+SAME shard count.** The committee is never cached, so two separate fetches
+can straddle an epoch change and disagree -- and a quilt assembled for one
+``n_shards`` then encoded against another is a perfectly valid blob whose
+geometry no reader can decode. Read the committee once, through
+:py:func:`~pytusk.prepare_chain_context`, then take the encode's shard count
+from the :py:class:`~pytusk.AssembledQuilt`'s own ``n_shards`` rather than
+reading the committee a second time. The assembled quilt records what it was
+packed for, so the two cannot drift apart.
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import (
+        QUILT_BLOB_ATTRIBUTES,
+        PytuskConfiguration,
+        QuiltPatchInput,
+        WalrusClient,
+        add_registration_sequence,
+        assemble_quilt,
+        encode_blob,
+        prepare_chain_context,
+        quilt_patch_id,
+    )
+
+    async def main():
+        config = PytuskConfiguration(active_network="testnet")
+        patches = [
+            QuiltPatchInput(identifier="readme.md", contents=b"# hello"),
+            QuiltPatchInput(identifier="notes.txt", contents=b"second patch"),
+        ]
+
+        async with WalrusClient(pytusk_config=config) as client:
+            # One read for the committee, System object and package id.
+            chain = await prepare_chain_context(client=client)
+
+            # Pack the batch. Raises PRE-SPEND on a bad identifier or a
+            # collision, which is the point of doing it before anything
+            # is registered.
+            assembled = assemble_quilt(
+                patches=patches, n_shards=chain.committee.n_shards
+            )
+
+            # From here the buffer is an ordinary blob. The shard count
+            # comes from the assembled quilt, not a second read of the
+            # committee -- the quilt carries what it was packed for.
+            encoded = encode_blob(
+                data=assembled.data, n_shards=assembled.n_shards
+            )
+
+            # Patch ids need the assembled quilt's blob id, so they cannot
+            # be composed before this point -- but they need nothing from
+            # the chain, so they are known BEFORE Tx1 is signed.
+            patch_ids = {
+                layout.identifier: quilt_patch_id(
+                    quilt_id=encoded.blob_id, layout=layout
+                )
+                for layout in assembled.patches
+            }
+
+            # Compose Tx1. add_registration_sequence orders the commands
+            # for you -- tip first, then reserve+register, then the
+            # attribute writes, then the transfer that consumes the Blob.
+            txn = await client.transaction()
+            await add_registration_sequence(
+                txn=txn,
+                encoded=encoded,
+                epochs=5,
+                deletable=True,
+                package_id=chain.package_id,
+                system_object=chain.system_object,
+                recipient=sender,
+                wal_payment_coin=payment_coin,
+                tip=tip_composition,
+                attributes=QUILT_BLOB_ATTRIBUTES,
+            )
+
+            # Sign and submit Tx1, then upload and certify exactly as in
+            # Composing the Relay Write by Hand above -- upload_to_relay,
+            # parse_relay_certificate, then certify_blob in Tx2.
+
+    asyncio.run(main())
+
+``sender``, ``payment_coin`` and ``tip_composition`` above stand in for your
+own resolution of those: the address you are signing as, a ``Coin<WAL>`` you
+own, and the tip built from ``quote_tip`` and ``build_auth_package``.
+``wal_payment_coin`` is required here because
+:py:func:`~pytusk.add_registration_sequence` is pure PTB composition and
+makes no network calls, so it cannot resolve "no coin given" into a concrete
+coin itself.
+
+Passing ``attributes=QUILT_BLOB_ATTRIBUTES`` is not decoration: it is the
+only on-chain record that these bytes are a quilt, and upstream Walrus
+writes it on every quilt store. ``pytusk`` can still read a quilt stored
+without it, because it parses the index out of the buffer itself, but the
+stored blob would not identify itself as a quilt on chain.
 
 Burning a Blob
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

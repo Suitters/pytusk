@@ -20,7 +20,13 @@ from pysui import (
 
 from pytusk.commands.walrus_command import WalrusCommand
 from pytusk.config.tusk_config import PytuskConfiguration
-from pytusk.core.committee import WalrusCommittee, fetch_committee, fetch_epoch
+from pytusk.core.chain import (
+    WalrusCommittee,
+    fetch_blob_metadata,
+    fetch_committee,
+    fetch_epoch,
+)
+from pytusk.core.types.blob_metadata import BlobMetadata
 
 _DEFAULT_TIMEOUT: httpx.Timeout = httpx.Timeout(
     connect=5.0, read=300.0, write=300.0, pool=60.0
@@ -266,6 +272,26 @@ class WalrusClient(AsyncClientBase):
             reader=self, staking_object=self.config.network.staking_object
         )
 
+    async def get_blob_metadata(self, *, blob_object: str) -> BlobMetadata | None:
+        """Fetch a Blob object's on-chain metadata (Walrus "attribute") pairs.
+
+        Supplies this client as the chain reader; the SDK entry point and the
+        ``tusky get_blob_metadata`` CLI command share this one implementation.
+
+        Args:
+            blob_object (str): Object ID of the Walrus Blob.
+
+        Returns:
+            BlobMetadata | None: The blob's metadata key/value pairs, or
+            ``None`` if the blob has no metadata set at all.
+
+        Raises:
+            RuntimeError: If the dynamic fields cannot be fetched.
+            TypeError: If a matching dynamic field's decoded value is not
+                shaped as expected.
+        """
+        return await fetch_blob_metadata(reader=self, blob_object=blob_object)
+
     async def __aenter__(self) -> "WalrusClient":  # noqa: PYI034 -- typing.Self is 3.11+ only (project targets >=3.10.6); typing_extensions.Self would add an undeclared dependency, and a bound TypeVar here immediately trips PYI019 instead
         """Open the underlying httpx client.
 
@@ -307,6 +333,10 @@ class WalrusClient(AsyncClientBase):
                storage-node commands have no configured endpoint, since
                their target host is per-call data resolved from the
                committee rather than fixed configuration.
+            2b. Else, if the role is ``relay``, raise -- a relay is chosen
+               by name from a per-network list, so there is no single
+               configured URL to fall back on. Callers resolve one with
+               ``PytuskConfiguration.relay_url_for()`` and pass it in.
             3. Else, if the role is ``publisher``, resolve the network's
                configured publisher URL.
             4. Else, resolve the network's configured aggregator URL.
@@ -336,6 +366,12 @@ class WalrusClient(AsyncClientBase):
             raise ValueError(
                 f"{type(command).__name__} has endpoint_role='storage_node' "
                 "and requires an explicit base_url; none was supplied."
+            )
+        elif command.endpoint_role == "relay":
+            raise ValueError(
+                f"{type(command).__name__} has endpoint_role='relay' "
+                "and requires an explicit base_url; none was supplied. "
+                "Resolve one with PytuskConfiguration.relay_url_for()."
             )
         elif command.endpoint_role == "publisher":
             resolved_base_url = network.walrus_publisher_url

@@ -20,8 +20,8 @@ from pytusk.commands.node_commands import (
     PutSliver,
     SignedConfirmation,
     SliverAck,
-    error_reason,
 )
+from pytusk.commands.walrus_command import error_reason
 from pytusk.core.encoding import blob_id_to_url_base64
 
 BASE_URL = "https://node-1.example.com:9185"
@@ -326,7 +326,8 @@ class TestBaseUrlResolution:
     is used here instead of a mock hierarchy. What IS mocked: WalrusClient
     _send (the actual httpx transport call) -- these tests only cover
     _dispatch_walrus's URL-resolution branching, not a live HTTP round
-    trip against a storage node, which belongs to integration tests.
+    trip against a storage node, which is uncovered since the integration
+    suite was deleted 2026-08-28.
     """
 
     @pytest.fixture

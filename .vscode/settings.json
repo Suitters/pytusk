@@ -5,6 +5,7 @@
         // This is because of false positive in create_new_address of sui_crypto.py
         "--disable",
         "unpacking-non-sequence,C0301",
+        "--extension-pkg-allow-list=pysui",
         "--extension-pkg-allow-list=pysui_fastcrypto",
         "--max-module-lines",
         "3500"

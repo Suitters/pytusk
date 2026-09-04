@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-04
+
+### Added
+
+- [Feature](https://github.com/Suitters/pytusk/issues/10) - Added mysten relays to testnet and mainnet support
+- Added blob relay write support
+- [Feature](https://github.com/Suitters/pytusk/issues/11) - Added local quilt assembly, relay support and reading
+- tusky CLI added relay blob and quilt commands
+- tusky CLI added blob metadata CRUD commands
+- tusky CLI added makeing blob shared object and extension commands.
+
+### Fixed
+
+### Changed
+
+- Codebase refactored for scalable growth
+- `error_reason` moved to `pytusk.commands.walrus_command`; no longer importable from `pytusk.commands.node_commands`
+- `submit_certification` now requires an `error_type` argument
+- Post-registration failures return a receipt instead of raising, so a paid registration is never surfaced as an exception
+- Relay upload attempts validated before any spend
+- Relay certify failures raise `RelayCertifyTransactionError` rather than the native-named `CertifyTransactionError`
+- Fixed undefined `RelayUploadOutcome` in relay upload
+- Relay pipeline, relay commands, receipt protocols and chain/ops helpers now exported from `pytusk`
+- Updated readthedocs coverage
+- Tusky CLI arguments aligned for consistency and clarity
+
+### Removed
+
 ## [0.4.0] - 2026-08-26
 
 ### Added

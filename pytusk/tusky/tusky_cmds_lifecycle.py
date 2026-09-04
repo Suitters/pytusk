@@ -20,15 +20,28 @@ from pysui import GetCoins, GetObject, GetObjectsOwnedByAddress
 from pysui.sui.sui_bcs import bcs
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 
-from pytusk import WalrusClient
+from pytusk import (
+    WalrusClient,
+    add_drop_blob_metadata_all,
+    add_drop_blob_metadata_keys,
+    add_extend_shared_blob,
+    add_fund_shared_blob,
+    add_set_blob_metadata,
+    add_share_blob,
+    blob_deletable_and_end_epoch,
+    find_created_shared_object_id,
+    prepare_wal_coin_for_amount,
+    require_success,
+    validate_blob_metadata_exists,
+    validate_blob_metadata_keys_exist,
+)
 from pytusk.tusky.tusky_cmds_common import (
-    _blob_deletable_and_end_epoch,
-    _config_from_args,
-    _resolve_sender,
-    _resolve_sponsor,
-    _submit,
-    _wal_balance_and_decimals,
-    _walrus_package_id,
+    config_from_args,
+    resolve_sender,
+    resolve_sponsor,
+    submit,
+    wal_balance_and_decimals,
+    walrus_package_id,
 )
 
 _MAX_BLOB_OPS_PER_PTB = 100
@@ -84,7 +97,7 @@ async def _burn_blob_batches(
                 type_arguments=[],
             )
         txdict = await txn.build_and_sign()
-        result = await _submit(client=client, txdict=txdict, mode=mode)
+        result = await submit(client=client, txdict=txdict, mode=mode)
         if not result.is_ok():
             print(
                 f"Error burning batch {batch_num}/{total_batches} "
@@ -121,20 +134,20 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
         args (argparse.Namespace): Parsed `extend_blob_expiration`
             subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
             print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        blob_result = await client.execute(command=GetObject(object_id=args.blobid))
+        blob_result = await client.execute(command=GetObject(object_id=args.object_id))
         if not blob_result.is_ok():
             print(
                 f"Error fetching blob object: {blob_result.result_string}",
@@ -143,12 +156,12 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
             sys.exit(1)
         obj = blob_result.result_data
         if not (obj.object_type and "::blob::Blob" in obj.object_type):
-            print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
+            print(f"{args.object_id} is not a Walrus Blob object.", file=sys.stderr)
             sys.exit(1)
         try:
-            _, end_epoch = _blob_deletable_and_end_epoch(obj)
+            _, end_epoch = blob_deletable_and_end_epoch(obj=obj)
         except ValueError as exc:
-            print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+            print(f"Error reading blob {args.object_id}: {exc}", file=sys.stderr)
             sys.exit(1)
 
         try:
@@ -158,16 +171,16 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
             sys.exit(1)
         if end_epoch <= current_epoch:
             print(
-                f"{args.blobid} is expired (end_epoch={end_epoch}, "
+                f"{args.object_id} is expired (end_epoch={end_epoch}, "
                 f"current_epoch={current_epoch}); expired blobs cannot be "
                 "extended.",
                 file=sys.stderr,
             )
             sys.exit(1)
 
-        system_obj_id, walrus_pkg = await _walrus_package_id(client=client)
+        system_obj_id, walrus_pkg = await walrus_package_id(client=client)
 
-        wal_entry, decimals = await _wal_balance_and_decimals(
+        wal_entry, decimals = await wal_balance_and_decimals(
             client=client, owner=sender
         )
         coins_result = await client.execute_for_all(
@@ -202,11 +215,11 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
 
         await txn.move_call(
             target=f"{walrus_pkg}::system::extend_blob",
-            arguments=[system_obj_id, args.blobid, args.epochs, payment_coin_id],
+            arguments=[system_obj_id, args.object_id, args.epochs, payment_coin_id],
             type_arguments=[],
         )
         txdict = await txn.build_and_sign()
-        result = await _submit(client=client, txdict=txdict, mode=args.mode)
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
         if not result.is_ok():
             hint = (
                 ""
@@ -219,7 +232,7 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         print(result.result_data.to_json(indent=2))
-        print(f"Extended {args.blobid}'s expiration by {args.epochs} epoch(s).")
+        print(f"Extended {args.object_id}'s expiration by {args.epochs} epoch(s).")
         transaction = getattr(result.result_data, "transaction", None)
         if transaction is None:
             print(
@@ -245,6 +258,143 @@ async def extend_blob_expiration(args: argparse.Namespace) -> None:
                 )
 
 
+async def set_blob_metadata(args: argparse.Namespace) -> None:
+    """Insert or update one or more metadata (Walrus "attribute") pairs on a blob.
+
+    Builds the PTB itself via
+    :func:`~pytusk.core.ops.blob_metadata_compose.add_set_blob_metadata` and
+    submits through :func:`~pytusk.tusky.tusky_cmds_common.submit`, matching
+    `split_storage`/`extend_blob_expiration`'s pattern -- `--mode` (simulate
+    vs execute) is a CLI-only concern, so this handler no longer goes
+    through :func:`~pytusk.core.ops.blob_metadata_execute.execute_set_blob_metadata`,
+    which always submits for real. Upsert semantics: each --attr pair is
+    inserted if its key is absent on the blob, or overwrites the existing
+    value if the key is already present (confirmed against
+    `metadata.move`'s `insert_or_update`). No pre-transaction existence
+    gate applies here -- unlike `drop_blob_metadata`, this always either
+    inserts or overwrites, so there is no guaranteed-abort condition for a
+    client-side read to pre-empt.
+
+    Args:
+        args (argparse.Namespace): Parsed `set_blob_metadata` subcommand
+            arguments, carrying one or more --attr KEY VALUE pairs.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        _, walrus_pkg = await walrus_package_id(client=client)
+        pairs = dict(args.attr)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        await add_set_blob_metadata(
+            txn=txn, package_id=walrus_pkg, blob_object=args.object_id, pairs=pairs
+        )
+        txdict = await txn.build_and_sign()
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in set_blob_metadata: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Set {len(pairs)} metadata pair(s) on {args.object_id}.")
+        print(result.result_data.to_json(indent=2))
+
+
+async def drop_blob_metadata(args: argparse.Namespace) -> None:
+    """Drop one or more metadata keys, or all metadata, from a blob.
+
+    Builds the PTB itself via
+    :func:`~pytusk.core.ops.blob_metadata_compose.add_drop_blob_metadata_keys`
+    (`--keys`) or
+    :func:`~pytusk.core.ops.blob_metadata_compose.add_drop_blob_metadata_all`
+    (`--all`) and submits through
+    :func:`~pytusk.tusky.tusky_cmds_common.submit`, matching
+    `split_storage`/`extend_blob_expiration`'s pattern -- `--mode` (simulate
+    vs execute) is a CLI-only concern, so this handler no longer goes
+    through :func:`~pytusk.core.ops.blob_metadata_execute.execute_drop_blob_metadata_keys`/
+    :func:`~pytusk.core.ops.blob_metadata_execute.execute_drop_blob_metadata_all`,
+    which always submit for real. The same pre-transaction existence gate
+    those wrappers use is called here directly --
+    :func:`~pytusk.core.ops.blob_metadata_execute.validate_blob_metadata_keys_exist`
+    (`--keys`) or
+    :func:`~pytusk.core.ops.blob_metadata_execute.validate_blob_metadata_exists`
+    (`--all`) -- before any PTB is composed: it fetches the blob's current
+    metadata and raises `ValueError` if it has none at all, or (for
+    `--keys`) if any requested key is not currently present -- avoiding gas
+    spent on a transaction guaranteed to abort (`EMissingMetadata`/
+    `vec_map::remove`). That `ValueError` is caught here and reported the
+    same way every other library precondition failure in this module is: a
+    message on stderr and a non-zero exit, mirroring `delete_blob`'s error
+    handling.
+
+    Args:
+        args (argparse.Namespace): Parsed `drop_blob_metadata` subcommand
+            arguments. Exactly one of `keys`/`all` is set, enforced by a
+            required mutually exclusive group.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        _, walrus_pkg = await walrus_package_id(client=client)
+
+        try:
+            if args.all:
+                await validate_blob_metadata_exists(
+                    client=client, blob_object=args.object_id
+                )
+            else:
+                await validate_blob_metadata_keys_exist(
+                    client=client, blob_object=args.object_id, keys=args.keys
+                )
+        except ValueError as exc:
+            print(f"Error in drop_blob_metadata: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        if args.all:
+            await add_drop_blob_metadata_all(
+                txn=txn, package_id=walrus_pkg, blob_object=args.object_id
+            )
+            action = "Dropped all metadata from"
+        else:
+            await add_drop_blob_metadata_keys(
+                txn=txn,
+                package_id=walrus_pkg,
+                blob_object=args.object_id,
+                keys=args.keys,
+            )
+            action = f"Dropped {len(args.keys)} metadata key(s) from"
+        txdict = await txn.build_and_sign()
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in drop_blob_metadata: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(f"{action} {args.object_id}.")
+        print(result.result_data.to_json(indent=2))
+
+
 async def delete_blob(args: argparse.Namespace) -> None:
     """Delete one blob, or all active deletable blobs, owned by the sender.
 
@@ -265,13 +415,13 @@ async def delete_blob(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `delete_blob` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
@@ -284,10 +434,10 @@ async def delete_blob(args: argparse.Namespace) -> None:
             print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        system_obj_id, walrus_pkg = await _walrus_package_id(client=client)
+        system_obj_id, walrus_pkg = await walrus_package_id(client=client)
 
-        if args.blobid:
-            blob_result = await client.execute(command=GetObject(object_id=args.blobid))
+        if args.object_id:
+            blob_result = await client.execute(command=GetObject(object_id=args.object_id))
             if not blob_result.is_ok():
                 print(
                     f"Error fetching blob object: {blob_result.result_string}",
@@ -296,12 +446,12 @@ async def delete_blob(args: argparse.Namespace) -> None:
                 sys.exit(1)
             obj = blob_result.result_data
             if not (obj.object_type and "::blob::Blob" in obj.object_type):
-                print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
+                print(f"{args.object_id} is not a Walrus Blob object.", file=sys.stderr)
                 sys.exit(1)
             try:
-                deletable, end_epoch = _blob_deletable_and_end_epoch(obj)
+                deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
             except ValueError as exc:
-                print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+                print(f"Error reading blob {args.object_id}: {exc}", file=sys.stderr)
                 sys.exit(1)
 
             txn: AsyncSuiTransaction = await client.transaction(
@@ -312,7 +462,7 @@ async def delete_blob(args: argparse.Namespace) -> None:
                     bcs.Argument,
                     await txn.move_call(
                         target=f"{walrus_pkg}::system::delete_blob",
-                        arguments=[system_obj_id, args.blobid],
+                        arguments=[system_obj_id, args.object_id],
                         type_arguments=[],
                     ),
                 )
@@ -321,7 +471,7 @@ async def delete_blob(args: argparse.Namespace) -> None:
             elif args.burn:
                 if end_epoch > current_epoch:
                     print(
-                        f"Warning: {args.blobid} is not expired "
+                        f"Warning: {args.object_id} is not expired "
                         f"(end_epoch={end_epoch}, current_epoch={current_epoch}) "
                         "and not deletable; burning it now destroys an "
                         "active, paid-for blob irreversibly.",
@@ -329,13 +479,13 @@ async def delete_blob(args: argparse.Namespace) -> None:
                     )
                 await txn.move_call(
                     target=f"{walrus_pkg}::blob::burn",
-                    arguments=[args.blobid],
+                    arguments=[args.object_id],
                     type_arguments=[],
                 )
                 action = "Burned"
             else:
                 print(
-                    f"{args.blobid} is not eligible for delete_blob "
+                    f"{args.object_id} is not eligible for delete_blob "
                     f"(deletable={deletable}, end_epoch={end_epoch}, "
                     f"current_epoch={current_epoch}); pass --burn to burn it instead.",
                     file=sys.stderr,
@@ -343,11 +493,11 @@ async def delete_blob(args: argparse.Namespace) -> None:
                 sys.exit(1)
 
             txdict = await txn.build_and_sign()
-            result = await _submit(client=client, txdict=txdict, mode=args.mode)
+            result = await submit(client=client, txdict=txdict, mode=args.mode)
             if not result.is_ok():
                 print(f"Error in delete_blob: {result.result_string}", file=sys.stderr)
                 sys.exit(1)
-            print(f"{action} {args.blobid}.")
+            print(f"{action} {args.object_id}.")
             print(result.result_data.to_json(indent=2))
             return
 
@@ -367,7 +517,7 @@ async def delete_blob(args: argparse.Namespace) -> None:
             if not (obj.object_type and "::blob::Blob" in obj.object_type):
                 continue
             try:
-                deletable, end_epoch = _blob_deletable_and_end_epoch(obj)
+                deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
             except ValueError as exc:
                 print(
                     f"Warning: skipping blob {obj.object_id}: {exc}",
@@ -409,7 +559,7 @@ async def delete_blob(args: argparse.Namespace) -> None:
                     storage_objects.append(storage)
                 await txn.transfer_objects(transfers=storage_objects, recipient=sender)
                 txdict = await txn.build_and_sign()
-                result = await _submit(client=client, txdict=txdict, mode=args.mode)
+                result = await submit(client=client, txdict=txdict, mode=args.mode)
                 if not result.is_ok():
                     print(
                         f"Error deleting batch {batch_num}/{total_batches} "
@@ -449,13 +599,13 @@ async def burn_blob(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `burn_blob` subcommand arguments.
     """
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
@@ -468,8 +618,8 @@ async def burn_blob(args: argparse.Namespace) -> None:
             print(f"Cannot get current Walrus epoch: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        _, walrus_pkg = await _walrus_package_id(client=client)
-        blob_ids = list(dict.fromkeys(args.blobid))
+        _, walrus_pkg = await walrus_package_id(client=client)
+        blob_ids = list(dict.fromkeys(args.object_id))
 
         confirmed_ids: list[str] = []
         for blob_id in blob_ids:
@@ -488,7 +638,7 @@ async def burn_blob(args: argparse.Namespace) -> None:
                 )
                 continue
             try:
-                _, end_epoch = _blob_deletable_and_end_epoch(obj)
+                _, end_epoch = blob_deletable_and_end_epoch(obj=obj)
             except ValueError as exc:
                 print(f"Warning: skipping {blob_id}: {exc}", file=sys.stderr)
                 continue
@@ -513,3 +663,158 @@ async def burn_blob(args: argparse.Namespace) -> None:
             sponsor=sponsor,
             mode=args.mode,
         )
+
+
+async def share_blob(args: argparse.Namespace) -> None:
+    """Wrap a Blob into a new shared SharedBlob via shared_blob::new.
+
+    The wrapped Blob must be permanent (deletable blobs cannot be shared)
+    and is consumed by this call -- it can no longer be used as an owned
+    object afterward. The new SharedBlob's object ID is only known after
+    the transaction actually executes (--mode execute); in --mode simulate
+    (the default) it is only a prediction.
+
+    Args:
+        args (argparse.Namespace): Parsed `share_blob` subcommand
+            arguments.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        _, walrus_pkg = await walrus_package_id(client=client)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        await add_share_blob(txn=txn, package_id=walrus_pkg, blob_object=args.object_id)
+        txdict = await txn.build_and_sign()
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in share_blob: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Shared {args.object_id} as a new SharedBlob.")
+        if args.mode == "execute":
+            effects = require_success(result_data=result.result_data, label="share_blob")
+            try:
+                new_id = find_created_shared_object_id(
+                    effects=effects, object_type_substring="shared_blob::SharedBlob"
+                )
+                print(f"New SharedBlob object ID: {new_id}")
+            except RuntimeError as exc:
+                print(f"Warning: {exc}", file=sys.stderr)
+        print(result.result_data.to_json(indent=2))
+
+
+async def fund_shared_blob(args: argparse.Namespace) -> None:
+    """Fund an existing SharedBlob via shared_blob::fund.
+
+    --amount prepares a coin holding exactly that amount (splitting or
+    merging owned WAL coins as needed via prepare_wal_coin_for_amount);
+    --wal-coin instead donates a specific owned coin's entire balance
+    (fund consumes its Coin<WAL> argument in full either way).
+
+    Args:
+        args (argparse.Namespace): Parsed `fund_shared_blob` subcommand
+            arguments. Exactly one of `amount`/`wal_coin` is set, enforced
+            by a required mutually exclusive group.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        _, walrus_pkg = await walrus_package_id(client=client)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        if args.wal_coin:
+            payment_coin: str | bcs.Argument = args.wal_coin
+        else:
+            try:
+                payment_coin = await prepare_wal_coin_for_amount(
+                    txn=txn, client=client, owner=sender, amount=args.amount
+                )
+            except RuntimeError as exc:
+                print(f"Error preparing WAL payment: {exc}", file=sys.stderr)
+                sys.exit(1)
+        await add_fund_shared_blob(
+            txn=txn,
+            package_id=walrus_pkg,
+            shared_blob_object=args.object_id,
+            payment_coin=payment_coin,
+        )
+        txdict = await txn.build_and_sign()
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in fund_shared_blob: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Funded SharedBlob {args.object_id}.")
+        print(result.result_data.to_json(indent=2))
+
+
+async def extend_shared_blob(args: argparse.Namespace) -> None:
+    """Extend a SharedBlob's wrapped Blob via shared_blob::extend.
+
+    Payment is drawn from the SharedBlob's own pooled WAL funds, not a
+    coin supplied by the caller -- this can abort on-chain if the pooled
+    balance is insufficient, unlike extend_blob_expiration, which cannot
+    be pre-checked client-side.
+
+    Args:
+        args (argparse.Namespace): Parsed `extend_shared_blob` subcommand
+            arguments.
+    """
+    config = config_from_args(args)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            sender = resolve_sender(
+                config=client.pysui_client.config, sender_arg=args.sender
+            )
+            sponsor = resolve_sponsor(
+                config=client.pysui_client.config, sponsor_arg=args.sponsor
+            )
+        except ValueError as exc:
+            print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        system_obj_id, walrus_pkg = await walrus_package_id(client=client)
+
+        txn: AsyncSuiTransaction = await client.transaction(
+            initial_sender=sender, initial_sponsor=sponsor
+        )
+        await add_extend_shared_blob(
+            txn=txn,
+            package_id=walrus_pkg,
+            shared_blob_object=args.object_id,
+            system_object=system_obj_id,
+            extended_epochs=args.epochs,
+        )
+        txdict = await txn.build_and_sign()
+        result = await submit(client=client, txdict=txdict, mode=args.mode)
+        if not result.is_ok():
+            print(f"Error in extend_shared_blob: {result.result_string}", file=sys.stderr)
+            sys.exit(1)
+        print(
+            f"Extended SharedBlob {args.object_id}'s wrapped blob by "
+            f"{args.epochs} epoch(s)."
+        )
+        print(result.result_data.to_json(indent=2))

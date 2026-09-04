@@ -11,11 +11,11 @@ signer-bitmap packing, quorum arithmetic, storage-confirmation verification,
 and BLS aggregation.
 
 CRITICAL ARCHITECTURAL CONSTRAINT: this module must never import from
-``pytusk.core.committee``. ``committee.py`` imports the signer-bitmap
+``pytusk.core.chain.committee``. ``committee.py`` imports the signer-bitmap
 functions FROM here for backward-compatible re-export, and a cycle must not
-be allowed to form. This module may depend on ``pytusk.core.encoding`` (a
-one-way dependency, not a cycle) and on ``pysui_fastcrypto`` and the standard
-library -- nothing else in pytusk.
+be allowed to form. This module may depend on ``pytusk.core.encoding`` and
+``pytusk.core.types.errors`` (one-way dependencies, not cycles) and on
+``pysui_fastcrypto`` and the standard library -- nothing else in pytusk.
 
 BLS FAILURE-MODE NOTE: ``pysui_fastcrypto``'s BLS functions (``bls_verify``,
 ``bls_aggregate``, ``bls_aggregate_verify``) have TWO distinct failure modes,
@@ -30,8 +30,6 @@ into its own error/boolean contract (``InvalidConfirmationError`` in
 do not let a raw ``ValueError`` from the extension leak through either path.
 """
 
-from __future__ import annotations
-
 import dataclasses
 import logging
 from collections.abc import Iterable, Sequence
@@ -41,6 +39,12 @@ from pysui_fastcrypto import (
     bls_aggregate_verify,
     bls_confirmation_bytes,
     bls_verify,
+)
+
+from pytusk.core.types.errors import (
+    ConfirmationMismatchError,
+    InvalidConfirmationError,
+    QuorumNotReachedError,
 )
 
 _logger = logging.getLogger(__name__)
@@ -53,37 +57,15 @@ __all__ = [
     "QuorumNotReachedError",
     "build_certificate",
     "confirmation_message",
+    "is_above_validity",
     "is_quorum",
     "min_weight_for_quorum",
+    "min_weight_for_validity",
     "pack_signers_bitmap",
     "unpack_signers_bitmap",
     "verify_certificate",
     "verify_confirmation",
 ]
-
-
-class ConfirmationMismatchError(ValueError):
-    """Raised when storage nodes returned differing confirmation messages.
-
-    The client passes exactly ONE node's ``serialized_message`` bytes,
-    verbatim, into ``certify_blob`` -- see :class:`NodeConfirmation`. If the
-    nodes being certified together do not agree on that message, there is no
-    single message the resulting certificate can be meaningful against, and
-    building one must fail before any signature work is wasted on it.
-    """
-
-
-class InvalidConfirmationError(ValueError):
-    """Raised when a node's signature fails verification against its key.
-
-    This means the storage node's committee public key, as resolved by the
-    caller, does not authenticate the signature it returned over the expected
-    confirmation message.
-    """
-
-
-class QuorumNotReachedError(RuntimeError):
-    """Raised when accumulated signer weight is below the quorum threshold."""
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -92,7 +74,7 @@ class NodeConfirmation:
 
     ``position`` is the node's COMMITTEE POSITION -- the index within the
     committee ordering that ``signers_bitmap`` indexes (see
-    ``pytusk.core.committee.WalrusCommittee``) -- and is neither the node's
+    ``pytusk.core.chain.committee.WalrusCommittee``) -- and is neither the node's
     ID nor a shard index. ``serialized_message`` is taken verbatim from the
     node's response and is NEVER reconstructed by the client; it is what
     :func:`build_certificate` compares across nodes and what ultimately flows
@@ -256,6 +238,52 @@ def min_weight_for_quorum(*, n_shards: int) -> int:
         int: The minimum weight satisfying quorum.
     """
     return -(-(2 * n_shards + 1) // 3)
+
+
+def is_above_validity(*, weight: int, n_shards: int) -> bool:
+    """Return whether ``weight`` meets the Walrus validity threshold.
+
+    The validity threshold is the weight at which at least one honest node
+    must have contributed -- weaker than quorum, and enough to trust a
+    reported fact without proving agreement on it. ``weight`` is a SHARD
+    COUNT, never a node count, exactly as for :func:`is_quorum`. The
+    threshold, per ``bls_aggregate.move``'s ``includes_one_correct_node``,
+    is ``3 * weight >= n_shards + 1``.
+
+    Walrus does not call this "f + 1" in code: Move names it
+    ``includes_one_correct_node`` and the Rust client names it
+    ``is_above_validity``. This function follows the Rust vocabulary, as
+    :func:`is_quorum` already does.
+
+    Args:
+        weight (int): Accumulated shard weight to test.
+        n_shards (int): Total shard count for the committee.
+
+    Returns:
+        bool: True if ``weight`` reaches the validity threshold.
+    """
+    return 3 * weight >= n_shards + 1
+
+
+def min_weight_for_validity(*, n_shards: int) -> int:
+    """Return the smallest weight that reaches validity for ``n_shards``.
+
+    Computed as ``ceil((n_shards + 1) / 3)``, the smallest ``weight`` for
+    which :func:`is_above_validity` returns True.
+
+    Do NOT reach for ``max_n_faulty`` or ``min_n_correct`` from
+    ``pytusk.core.encoding`` as a substitute: those describe RedStuff
+    erasure-decoding parameters, a different concept that merely shares the
+    same Byzantine arithmetic. The caution :func:`min_weight_for_quorum`
+    documents against ``min_n_correct`` applies here for the same reason.
+
+    Args:
+        n_shards (int): Total shard count for the committee.
+
+    Returns:
+        int: The minimum weight satisfying the validity threshold.
+    """
+    return -(-(n_shards + 1) // 3)
 
 
 def confirmation_message(

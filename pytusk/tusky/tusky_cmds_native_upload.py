@@ -17,15 +17,11 @@ import argparse
 import asyncio
 import dataclasses
 import functools
-import io
 import json
-import logging
 import sys
 import time
-from pathlib import Path
 
-import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
-from pysui import GetCoinMetaData, GetObject
+from pysui import GetObject
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 
 from pytusk import (
@@ -33,298 +29,35 @@ from pytusk import (
     CertifyTransactionError,
     NativeUploadError,
     Registration,
-    RegistrationPendingError,
     StageTimings,
     WalrusClient,
     add_certify,
-    add_reserve_and_register,
+    add_registration_sequence,
+    blob_deletable_and_end_epoch,
+    blob_id_from_object,
     certify,
     collect_confirmations,
     encode_blob,
-    select_wal_payment_coin,
+    encoded_blob_length,
+    preflight_payment,
     upload_slivers,
 )
 from pytusk import store_blob_native as _store_blob_native_pipeline
-
-# Imported directly from the submodule, not the pytusk top-level package:
-# this is an internal reuse of the same computation add_reserve_and_register
-# already performs (see its _encoded_storage_amount), not a new public
-# surface, so it is kept out of pytusk.__all__.
-from pytusk.core.encoding import encoded_blob_length
-
-# Same rationale as above: a private helper reused across modules rather
-# than duplicated. tusky_cmds carried its own copy of this until the
-# duplication was consolidated -- the one-way dependency rule forbids core
-# importing tusky, not tusky importing core.
-from pytusk.core.utils import _matches_wal_coin_type
 from pytusk.tusky.tusky_cmds_common import (
-    _blob_deletable_and_end_epoch,
-    _config_from_args,
-    _read_file_bytes,
-    _resolve_sender,
-    _resolve_sponsor,
-    _submit,
-    _walrus_package_id,
+    config_from_args,
+    configure_upload_logging,
+    read_file_bytes,
+    resolve_sender,
+    resolve_sponsor,
+    simulate_cost_from_balance_changes,
+    submit,
+    walrus_package_id,
 )
 
-
-def _format_token_amount(*, raw: int, decimals: int) -> str:
-    """Render a raw integer token amount as an exact decimal string.
-
-    Uses integer ``divmod`` rather than floating-point division, so the
-    result is exact for any magnitude -- important here since raw amounts
-    (MIST, FROST) can run into the billions and a float division could lose
-    precision at that range.
-
-    Args:
-        raw (int): The raw integer amount (may be negative).
-        decimals (int): Number of decimal places the token uses.
-
-    Returns:
-        str: Exact decimal string rendering, e.g. ``"0.004603480"`` for
-            ``raw=4603480, decimals=9``.
-    """
-    sign = "-" if raw < 0 else ""
-    divisor = 10**decimals
-    whole, frac = divmod(abs(raw), divisor)
-    return f"{sign}{whole}.{frac:0{decimals}d}"
-
-
-async def _simulate_cost_from_balance_changes(
-    *, client: WalrusClient, transaction: sui_prot.ExecutedTransaction | None
-) -> tuple[dict[str, int | str | None], dict[str, int | str | None]]:
-    """Derive SUI and WAL cost summaries from a simulated Tx1's balance changes.
-
-    Cost is reported as the NEGATION of the on-chain net balance change
-    (which is negative for an outgoing spend), so a positive value here
-    means "this many units are spent" -- matching what a user asking "what
-    will this cost?" wants to read, while still surfacing an unexpected
-    positive on-chain delta (a net gain) as a negative cost rather than
-    silently flipping its sign.
-
-    SUI's coin_type is matched by substring (``"::sui::SUI"``) since the
-    simulate response reports it in normalized long-address form (e.g.
-    ``0x000...0002::sui::SUI``), not the short ``0x2::sui::SUI`` form. WAL's
-    coin_type is matched via ``_matches_wal_coin_type``, the same
-    pinned-exact/substring-fallback logic used everywhere else in this
-    module (e.g. :func:`_wal_balance_and_decimals`), rather than a third
-    variant of that logic.
-
-    Neither currency's absence crashes this function or is reported as a
-    silent zero: each missing/unreadable value gets its own
-    ``unavailable_reason`` explaining why, independent of whether the other
-    currency was found.
-
-    Args:
-        client (WalrusClient): Client used to look up WAL's CoinMetadata
-            (for its decimal precision) once its coin_type is known from a
-            matched balance change.
-        transaction (sui_prot.ExecutedTransaction | None): The simulate
-            result's ``transaction`` field (``result.result_data.transaction``),
-            or ``None`` if the response had no such field.
-
-    Returns:
-        tuple[dict[str, int | str | None], dict[str, int | str | None]]:
-            ``(sui_info, wal_info)``. ``sui_info`` has keys ``raw_mist``,
-            ``sui``, ``unavailable_reason``. ``wal_info`` has keys
-            ``coin_type``, ``raw_frost``, ``wal``, ``unavailable_reason``.
-            A found value's ``unavailable_reason`` is ``None``; the
-            corresponding amount fields are ``None`` when unavailable.
-    """
-    sui_info: dict[str, int | str | None] = {
-        "raw_mist": None,
-        "sui": None,
-        "unavailable_reason": None,
-    }
-    wal_info: dict[str, int | str | None] = {
-        "coin_type": None,
-        "raw_frost": None,
-        "wal": None,
-        "unavailable_reason": None,
-    }
-
-    if transaction is None:
-        reason = (
-            "Simulate result had no 'transaction' field; cannot read "
-            "balance_changes to determine cost."
-        )
-        sui_info["unavailable_reason"] = reason
-        wal_info["unavailable_reason"] = reason
-        return sui_info, wal_info
-
-    balance_changes = getattr(transaction, "balance_changes", None) or []
-
-    sui_change = next(
-        (bc for bc in balance_changes if bc.coin_type and "::sui::SUI" in bc.coin_type),
-        None,
-    )
-    if sui_change is None:
-        sui_info["unavailable_reason"] = (
-            "No SUI entry found in the simulate result's balance_changes; "
-            "the response shape may differ from what this command expects."
-        )
-    else:
-        try:
-            cost_mist = -int(sui_change.amount)
-        except (TypeError, ValueError):
-            sui_info["unavailable_reason"] = (
-                f"SUI balance change amount {sui_change.amount!r} could not "
-                "be parsed as an integer; the response shape may differ "
-                "from what this command expects."
-            )
-        else:
-            sui_info["raw_mist"] = cost_mist
-            # SUI's decimal precision (9) is a fixed Sui protocol constant,
-            # not a per-coin-type value read from CoinMetadata -- unlike
-            # WAL below, which is a deployed coin whose decimals must never
-            # be assumed.
-            sui_info["sui"] = _format_token_amount(raw=cost_mist, decimals=9)
-
-    wal_coin_type = client.config.network.wal_coin_type
-    wal_change = next(
-        (
-            bc
-            for bc in balance_changes
-            if bc.coin_type
-            and _matches_wal_coin_type(
-                coin_type=bc.coin_type, wal_coin_type=wal_coin_type
-            )
-        ),
-        None,
-    )
-    if wal_change is None:
-        wal_info["unavailable_reason"] = (
-            "No WAL entry found in the simulate result's balance_changes; "
-            "the response shape may differ from what this command expects."
-        )
-    else:
-        wal_info["coin_type"] = wal_change.coin_type
-        try:
-            cost_frost = -int(wal_change.amount)
-        except (TypeError, ValueError):
-            wal_info["unavailable_reason"] = (
-                f"WAL balance change amount {wal_change.amount!r} could not "
-                "be parsed as an integer; the response shape may differ "
-                "from what this command expects."
-            )
-        else:
-            wal_info["raw_frost"] = cost_frost
-            meta_result = await client.execute(
-                command=GetCoinMetaData(coin_type=wal_change.coin_type)
-            )
-            metadata = (
-                meta_result.result_data.metadata if meta_result.is_ok() else None
-            )
-            if metadata is None or metadata.decimals is None:
-                wal_info["unavailable_reason"] = (
-                    f"WAL coin metadata for {wal_change.coin_type} could not "
-                    "be read or has no decimals field; raw_frost is known "
-                    "but its decimal rendering is not."
-                )
-            else:
-                wal_info["wal"] = _format_token_amount(
-                    raw=cost_frost, decimals=metadata.decimals
-                )
-
-    return sui_info, wal_info
-
-
-def _blob_id_bytes_from_object(obj: sui_prot.Object) -> bytes:
-    """Extract a Blob object's raw 32-byte Walrus blob ID from its on-chain u256 field.
-
-    Ported field-for-field from the ``blob_id`` parsing block in ``blobs()``:
-    the on-chain ``Blob.blob_id`` is a Move ``u256``, surfaced in JSON as a
-    decimal string, and is converted to raw bytes the same way
-    ``pytusk.core.encoding.blob_id_to_u256`` converts the other direction
-    (little-endian).
-
-    Args:
-        obj (sui_prot.Object): A fetched object expected to be a Walrus Blob.
-
-    Returns:
-        bytes: The raw 32-byte blob ID.
-
-    Raises:
-        ValueError: If the object's JSON view is missing its 'blob_id' field.
-    """
-    if not (obj.json and obj.json.struct_value):
-        raise ValueError(
-            f"Object {obj.object_id} has no JSON view; cannot determine blob_id."
-        )
-    fields = obj.json.struct_value.fields
-    blob_id_val = fields.get("blob_id")
-    if not (blob_id_val and blob_id_val.string_value):
-        raise ValueError(f"Object {obj.object_id} is missing its 'blob_id' field.")
-    return int(blob_id_val.string_value).to_bytes(32, byteorder="little")
-
-
-# --- tusky CLI logging configuration ------------------------------------
-# pytusk (the library, everything outside pytusk/tusky/) only ever emits
-# log records -- it never configures handlers, levels, or any other
-# global logging state (see pytusk/__init__.py's NullHandler). tusky, as
-# an APPLICATION built on top of pytusk, is entitled to configure logging,
-# but only when the user explicitly asks for it via --log-file/--verbose
-# on store_blob_native (the only command with progress/heartbeat
-# instrumentation today -- see pytusk.core.native_upload.common's
-# _HEARTBEAT_INTERVAL_SECONDS and its module-level comment), and never by
-# writing to a derived or default path.
-# ------------------------------------------------------------------------
-
-_NATIVE_UPLOAD_LOGGING_CONFIGURED: bool = False
-
-
-def _configure_native_upload_logging(
-    *, log_file: Path | None, verbose: bool
-) -> None:
-    """Configure the ``pytusk`` logger hierarchy per the user's CLI request.
-
-    This is tusky's own opt-in logging setup, not library scaffolding --
-    see the module comment immediately above. Adds an INFO-level stdout
-    stream handler to the ``pytusk`` logger only when ``verbose`` is True,
-    and/or an INFO-level file handler at exactly ``log_file`` only when it
-    is given -- NEVER a derived or default path. Does nothing at all when
-    neither is requested. The ``pytusk`` logger is the parent of every
-    ``pytusk.core.native_upload`` submodule's own
-    ``logging.getLogger(__name__)`` (``fanout``, ``confirm``, etc.), so
-    their progress/heartbeat records propagate up to whichever
-    destination(s) were configured. When ``verbose`` is True, stdout is
-    also reconfigured for line buffering so progress is visible live even
-    when output is redirected to a file. Idempotent: a second call in the
-    same process is a no-op, so handlers are never duplicated.
-
-    Args:
-        log_file (Path | None): Path to write an INFO-level log file to,
-            exactly as given (no default, no derived path); ``None`` to
-            skip file logging.
-        verbose (bool): Whether to emit INFO-level progress to stdout.
-    """
-    # Idempotent one-time setup guard.
-    global _NATIVE_UPLOAD_LOGGING_CONFIGURED  # pylint: disable=global-statement
-
-    if not log_file and not verbose:
-        return
-    if _NATIVE_UPLOAD_LOGGING_CONFIGURED:
-        return
-
-    logger = logging.getLogger("pytusk")
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-
-    if verbose:
-        if isinstance(sys.stdout, io.TextIOWrapper):
-            sys.stdout.reconfigure(line_buffering=True)
-        stream_handler = logging.StreamHandler(sys.stdout)
-        stream_handler.setLevel(logging.INFO)
-        stream_handler.setFormatter(formatter)
-        logger.addHandler(stream_handler)
-
-    if log_file is not None:
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
-    _NATIVE_UPLOAD_LOGGING_CONFIGURED = True
+# tusky's opt-in CLI logging setup now lives in tusky_cmds_common as
+# configure_upload_logging(), because the relay handlers need it too -- both
+# native upload and relay upload emit progress records under the `pytusk`
+# logger. See that module's placement comment.
 
 
 async def store_blob_native(args: argparse.Namespace) -> None:
@@ -333,7 +66,7 @@ async def store_blob_native(args: argparse.Namespace) -> None:
     Content comes from --content (UTF-8 text) or --file (raw bytes), whichever
     was given. In execute mode (the full pipeline: reserve_space+register_blob,
     sliver fan-out, confirmation collection, certify_blob) this delegates to
-    the library's :func:`~pytusk.core.native_upload.store_blob_native`
+    the library's :func:`~pytusk.core.pipelines.write.store_blob_native`
     convenience. In simulate mode ONLY Tx1 (reserve_space+register_blob) is
     simulated -- a real simulation, unlike the rest of the pipeline, which is
     skipped because simulation never registers the blob on-chain, so storage
@@ -349,35 +82,34 @@ async def store_blob_native(args: argparse.Namespace) -> None:
     Pass --log-file PATH to additionally write an INFO-level log of this
     run's progress to PATH, and/or --verbose to emit that same INFO-level
     progress to stdout live; neither is enabled by default (see
-    _configure_native_upload_logging()).
+    configure_upload_logging()).
 
     Args:
         args (argparse.Namespace): Parsed `store_blob_native` subcommand
             arguments.
     """
-    # tusky's opt-in logging setup -- see the module comment near
-    # _configure_native_upload_logging() above. Does nothing unless the
-    # user passed --log-file and/or --verbose.
-    _configure_native_upload_logging(log_file=args.log_file, verbose=args.verbose)
+    # tusky's opt-in logging setup, from tusky_cmds_common. Does nothing
+    # unless the user passed --log-file and/or --verbose.
+    configure_upload_logging(log_file=args.log_file, verbose=args.verbose)
     if args.log_file is not None:
         print(f"Native upload log: {args.log_file}")
 
     if args.file:
         try:
-            data = await asyncio.to_thread(_read_file_bytes, args.file)
+            data = await asyncio.to_thread(read_file_bytes, args.file)
         except OSError as exc:
             print(f"Error reading file {args.file}: {exc}", file=sys.stderr)
             sys.exit(1)
     else:
         data = args.content.encode("utf-8")
 
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
@@ -401,16 +133,12 @@ async def store_blob_native(args: argparse.Namespace) -> None:
             except NativeUploadError as exc:
                 print(f"Error in {exc.stage}: {exc}", file=sys.stderr)
                 sys.exit(1)
-            except RegistrationPendingError as exc:
-                # Tx1 SUCCEEDED on-chain and storage is already paid for --
-                # this is transient (checkpoint finality/read-back lag), not
-                # a lost transaction. exc's own message already carries the
-                # object_id/resume guidance (see RegistrationPendingError's
-                # docstring); deliberately NOT printed with the generic
-                # "Error in register (Tx1)" prefix used below, since that
-                # would mislabel a successful Tx1 as a failure.
-                print(str(exc), file=sys.stderr)
-                sys.exit(1)
+            # RegistrationPendingError is no longer caught here: the
+            # pipeline converts it, at its own boundary, into a
+            # NativeBlobReceipt with certified=False and failed_stage set
+            # ("register_finality" or "register_readback") -- handled by
+            # the receipt.failed_stage branch below like any other
+            # partial/failed receipt.
             except (RuntimeError, KeyError, TypeError, ValueError) as exc:
                 # Everything before registration (committee/epoch reads,
                 # package-ID resolution, WAL coin selection, and Tx1 itself)
@@ -450,9 +178,14 @@ async def store_blob_native(args: argparse.Namespace) -> None:
             sys.exit(1)
         encode_duration = time.monotonic() - encode_start
 
-        system_obj_id, walrus_pkg = await _walrus_package_id(client=client)
+        system_obj_id, walrus_pkg = await walrus_package_id(client=client)
         try:
-            payment_coin = await select_wal_payment_coin(client=client, owner=sender)
+            resolved_wal_coin = await preflight_payment(
+                client=client,
+                sender=sender,
+                sponsor=sponsor,
+                wal_payment_coin=None,
+            )
         except RuntimeError as exc:
             print(f"Error selecting WAL payment coin: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -461,23 +194,32 @@ async def store_blob_native(args: argparse.Namespace) -> None:
         txn: AsyncSuiTransaction = await client.transaction(
             initial_sender=sender, initial_sponsor=sponsor
         )
-        blob = await add_reserve_and_register(  # pylint: disable=redefined-outer-name
+        # No sponsor-signability preflight here -- matches
+        # execute_reserve_and_register, which deliberately skips it: a
+        # sponsor absent from the active PysuiConfiguration may sign this
+        # transaction out-of-band, which is a legitimate pattern here, not
+        # an error (see execute_reserve_and_register's docstring).
+        # add_registration_sequence composes reserve_space+register_blob
+        # and the transfer that consumes the new Blob -- tip=None, since
+        # the native path never bundles a relay tip.
+        await add_registration_sequence(
             txn=txn,
-            package_id=walrus_pkg,
-            system_object=system_obj_id,
             encoded=encoded,
             epochs=args.epochs,
             deletable=not args.permanent,
-            payment_coin=payment_coin,
+            package_id=walrus_pkg,
+            system_object=system_obj_id,
+            recipient=sender,
+            wal_payment_coin=resolved_wal_coin,
+            tip=None,
         )
         # Tx1 always transfers the newly registered Blob to the sender --
-        # matching pytusk.core.system_ops.execute_reserve_and_register.
+        # matching pytusk.core.ops.blob_execute.execute_reserve_and_register.
         # --recipient (when given) is handled by Tx2 (certify_blob), which
         # this simulate mode does NOT model (see the "notice" field below),
         # so it plays no part in this Tx1-only cost estimate.
-        await txn.transfer_objects(transfers=[blob], recipient=sender)
         txdict = await txn.build_and_sign()
-        result = await _submit(client=client, txdict=txdict, mode="simulate")
+        result = await submit(client=client, txdict=txdict, mode="simulate")
         register_tx1_duration = time.monotonic() - register_tx1_start
         if not result.is_ok():
             print(f"Error in register (Tx1): {result.result_string}", file=sys.stderr)
@@ -490,7 +232,7 @@ async def store_blob_native(args: argparse.Namespace) -> None:
             unencoded_length=encoded.unencoded_length, n_shards=encoded.n_shards
         )
         transaction = getattr(result.result_data, "transaction", None)
-        sui_cost, wal_cost = await _simulate_cost_from_balance_changes(
+        sui_cost, wal_cost = await simulate_cost_from_balance_changes(
             client=client, transaction=transaction
         )
         timings = StageTimings(
@@ -526,12 +268,15 @@ async def certify_blob(args: argparse.Namespace) -> None:
     """Recover the confirmation-collection and certify_blob stages for an
     already-registered blob.
 
-    This is the recovery entry point for a native upload that completed Tx1
-    (reserve_space+register_blob) but died before or during Tx2
-    (certify_blob): given only the blob's Sui object ID, it re-derives the
-    real Walrus blob ID from the on-chain Blob object's `blob_id` u256 field
-    (see :func:`_blob_id_bytes_from_object`), re-collects a fresh quorum of
-    storage-node confirmations, and certifies.
+    This is the recovery entry point for any upload -- native or relay --
+    that completed Tx1 (reserve_space+register_blob) but died before or
+    during Tx2 (certify_blob): given only the blob's Sui object ID, it
+    re-derives the real Walrus blob ID from the on-chain Blob object's
+    `blob_id` u256 field (see
+    :func:`~pytusk.core.chain.blob_fields.blob_id_from_object`), re-collects
+    a fresh quorum of storage-node confirmations, and certifies. It reads
+    only on-chain state, so it is provenance-blind: a blob registered by
+    the relay pipeline recovers identically to one registered natively.
 
     By default it does NOT re-upload slivers -- if the original sliver
     fan-out did not reach quorum, confirmation collection here will also
@@ -555,21 +300,21 @@ async def certify_blob(args: argparse.Namespace) -> None:
         print("Error: --content/--file require --recover.", file=sys.stderr)
         sys.exit(1)
 
-    config = _config_from_args(args)
+    config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         pipeline_start = time.monotonic()
         try:
-            sender = _resolve_sender(
+            sender = resolve_sender(
                 config=client.pysui_client.config, sender_arg=args.sender
             )
-            sponsor = _resolve_sponsor(
+            sponsor = resolve_sponsor(
                 config=client.pysui_client.config, sponsor_arg=args.sponsor
             )
         except ValueError as exc:
             print(f"Error resolving --sender/--sponsor: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        blob_result = await client.execute(command=GetObject(object_id=args.blobid))
+        blob_result = await client.execute(command=GetObject(object_id=args.object_id))
         if not blob_result.is_ok():
             print(
                 f"Error fetching blob object: {blob_result.result_string}",
@@ -578,13 +323,13 @@ async def certify_blob(args: argparse.Namespace) -> None:
             sys.exit(1)
         obj = blob_result.result_data
         if not (obj.object_type and "::blob::Blob" in obj.object_type):
-            print(f"{args.blobid} is not a Walrus Blob object.", file=sys.stderr)
+            print(f"{args.object_id} is not a Walrus Blob object.", file=sys.stderr)
             sys.exit(1)
         try:
-            blob_id_bytes = _blob_id_bytes_from_object(obj)
-            deletable, end_epoch = _blob_deletable_and_end_epoch(obj)
+            blob_id_bytes = blob_id_from_object(obj=obj)
+            deletable, end_epoch = blob_deletable_and_end_epoch(obj=obj)
         except ValueError as exc:
-            print(f"Error reading blob {args.blobid}: {exc}", file=sys.stderr)
+            print(f"Error reading blob {args.object_id}: {exc}", file=sys.stderr)
             sys.exit(1)
 
         try:
@@ -598,7 +343,7 @@ async def certify_blob(args: argparse.Namespace) -> None:
         if args.recover:
             if args.file:
                 try:
-                    data = await asyncio.to_thread(_read_file_bytes, args.file)
+                    data = await asyncio.to_thread(read_file_bytes, args.file)
                 except OSError as exc:
                     print(f"Error reading file {args.file}: {exc}", file=sys.stderr)
                     sys.exit(1)
@@ -614,7 +359,7 @@ async def certify_blob(args: argparse.Namespace) -> None:
             if encoded.blob_id != blob_id_bytes:
                 print(
                     "Error: the re-supplied content does not match the "
-                    f"blob_id already registered for {args.blobid}.",
+                    f"blob_id already registered for {args.object_id}.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -633,13 +378,13 @@ async def certify_blob(args: argparse.Namespace) -> None:
                 sliver_upload_duration = time.monotonic() - sliver_upload_start
 
         registration = Registration(
-            object_id=args.blobid,
+            object_id=args.object_id,
             blob_id=blob_id_bytes,
             end_epoch=end_epoch,
             deletable=deletable,
             digest="",  # Tx1's digest is not known in this recovery flow.
         )
-        system_obj_id, walrus_pkg = await _walrus_package_id(client=client)
+        system_obj_id, walrus_pkg = await walrus_package_id(client=client)
         staking_object = client.config.network.staking_object
 
         confirmations_start = time.monotonic()
@@ -717,11 +462,11 @@ async def certify_blob(args: argparse.Namespace) -> None:
             txn=txn,
             package_id=walrus_pkg,
             system_object=system_obj_id,
-            blob_object_id=args.blobid,
+            blob_object_id=args.object_id,
             certificate=certificate,
         )
         txdict = await txn.build_and_sign()
-        result = await _submit(client=client, txdict=txdict, mode="simulate")
+        result = await submit(client=client, txdict=txdict, mode="simulate")
         certify_tx2_duration = time.monotonic() - certify_tx2_start
         if not result.is_ok():
             print(f"Error in certify (Tx2): {result.result_string}", file=sys.stderr)

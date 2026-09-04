@@ -3,7 +3,8 @@
 
 # -*- coding: utf-8 -*-
 
-"""Unit tests for ``pytusk.core.storage_ops``.
+"""Unit tests for ``pytusk.core.ops.storage_compose``,
+``pytusk.core.ops.storage_execute``, and ``pytusk.core.ops.storage_reads``.
 
 Four layers are covered, each for a different reason:
 
@@ -43,50 +44,47 @@ import pytest
 from pysui import SuiRpcResult
 
 from pytusk.config.tusk_config import NetworkType
-from pytusk.core import storage_ops
-from pytusk.core.storage_ops import (
-    SplitResult,
-    StorageObject,
-    StorageOpResult,
+from pytusk.core.ops import storage_execute, storage_reads
+from pytusk.core.ops.storage_compose import (
     add_destroy_storage,
     add_fuse,
     add_split_by_epoch,
     add_split_by_size,
+    fuse_incompatibility,
+    fuse_periods_incompatibility,
+    validate_fuse_pair,
+)
+from pytusk.core.ops.storage_execute import (
     execute_destroy_storage,
     execute_fuse,
     execute_split_by_epoch,
     execute_split_by_size,
-    fuse_incompatibility,
-    fuse_periods_incompatibility,
+)
+from pytusk.core.ops.storage_reads import (
     list_storage_objects,
     storage_from_blob,
     storage_from_object,
-    validate_fuse_pair,
 )
+from pytusk.core.types import SplitResult, StorageObject, StorageOpResult
 
 _PACKAGE = "0xpkg"
 _SENDER = "0xactive"
 
 
 class _FakeValue:
-    """Stand-in for a protobuf ``Value``, with every oneof member defaulted.
+    """Stand-in for a protobuf ``Value`` where only the set field exists.
 
-    Differs deliberately from the equivalent fake in ``test_system_ops.py``
-    / ``test_move_field_parity.py``, which sets ONLY the fields passed and
-    lets the rest be absent. ``_storage_from_field_map`` reaches for
-    ``.string_value`` and ``.number_value`` by DIRECT attribute access
-    rather than ``getattr(..., default)``, so an absent attribute would
-    raise ``AttributeError`` here where real betterproto returns the
-    field's zero value. Defaulting all four members matches the real
-    message and keeps these tests exercising the parser's own branch
-    logic instead of the fake's shape.
+    Mirrors the fake used in ``test_system_ops.py`` / ``test_committee.py``
+    / ``test_move_field_parity.py``: an unset oneof member reads back as
+    absent entirely (``getattr(..., default)``), matching betterproto2's
+    behaviour. In betterproto2, unset members of a proto3 ``oneof`` are
+    always ``None``, never zero-valued -- that is what makes a oneof
+    discriminable. Defaulting them to ``""``/``0.0``/``False`` (the prior
+    shape of this fake) did not model the wire format at all; the parser
+    discriminates variants by ``is not None``, not by truthiness.
     """
 
     def __init__(self, **fields: object) -> None:
-        self.string_value: object = ""
-        self.number_value: object = 0.0
-        self.bool_value: object = False
-        self.struct_value: object = None
         for name, value in fields.items():
             setattr(self, name, value)
 
@@ -175,8 +173,8 @@ class _FakeEffects:
 class _FakeResultData:
     """Stand-in for the ``result_data`` an ``ExecuteTransaction`` carries.
 
-    ``storage_ops`` reads exactly two attributes off it: ``.effects``
-    (via ``require_success``) and ``.digest``.
+    ``pytusk.core.ops.storage_execute`` reads exactly two attributes off it:
+    ``.effects`` (via ``require_success``) and ``.digest``.
     """
 
     def __init__(self, *, effects: _FakeEffects | None, digest: str) -> None:
@@ -359,7 +357,7 @@ class _RecordingCommand:
     """Recorder standing in for ``GetObjectsForType``.
 
     Monkeypatched over the real command so the TYPE FILTER STRING
-    ``storage_ops`` builds can be asserted directly. Asserting on the real
+    ``pytusk.core.ops.storage_reads`` builds can be asserted directly. Asserting on the real
     command would test betterproto's field names rather than the string
     under test.
     """
@@ -518,7 +516,7 @@ def _submission_failure(*, message: str = "node refused") -> SuiRpcResult:
 
 def _stub_execute_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
     """Neutralize ``ExecuteTransaction`` construction from an empty txdict."""
-    monkeypatch.setattr(storage_ops, "ExecuteTransaction", lambda **kwargs: object())
+    monkeypatch.setattr(storage_execute, "ExecuteTransaction", lambda **kwargs: object())
 
 
 def _storage(
@@ -1439,7 +1437,7 @@ class TestListStorageObjectsProduction:
         A wrong type tag would return an empty list rather than an error,
         so this is the only place the string can be caught.
         """
-        monkeypatch.setattr(storage_ops, "GetObjectsForType", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsForType", _RecordingCommand)
         client = _FakeListClient(
             response=SuiRpcResult(True, "", _FakeListResultData(objects=[])),
             network_type=NetworkType.PRODUCTION,
@@ -1460,7 +1458,7 @@ class TestListStorageObjectsProduction:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Results keep the node's ordering."""
-        monkeypatch.setattr(storage_ops, "GetObjectsForType", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsForType", _RecordingCommand)
         client = _FakeListClient(
             response=SuiRpcResult(
                 True,
@@ -1494,7 +1492,7 @@ class TestListStorageObjectsProduction:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Owning no storage is not an error."""
-        monkeypatch.setattr(storage_ops, "GetObjectsForType", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsForType", _RecordingCommand)
         client = _FakeListClient(
             response=SuiRpcResult(True, "", _FakeListResultData(objects=[])),
             network_type=NetworkType.PRODUCTION,
@@ -1520,7 +1518,7 @@ class TestListStorageObjectsProduction:
         object by ID must be told the thing they asked for is unreadable.
         Both halves are asserted here so the pair cannot drift.
         """
-        monkeypatch.setattr(storage_ops, "GetObjectsForType", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsForType", _RecordingCommand)
         unreadable = _FakeObject(object_id="0xbroken", json=None)
         client = _FakeListClient(
             response=SuiRpcResult(
@@ -1548,7 +1546,7 @@ class TestListStorageObjectsProduction:
 
     async def test_failed_listing_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A failed query raises rather than reporting "owns nothing"."""
-        monkeypatch.setattr(storage_ops, "GetObjectsForType", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsForType", _RecordingCommand)
         client = _FakeListClient(
             response=SuiRpcResult(False, "node down"),
             network_type=NetworkType.PRODUCTION,
@@ -1581,7 +1579,7 @@ class TestListStorageObjectsNonProduction:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """No type filter is sent -- every owned object is fetched."""
-        monkeypatch.setattr(storage_ops, "GetObjectsOwnedByAddress", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsOwnedByAddress", _RecordingCommand)
         client = _FakeListClient(
             response=SuiRpcResult(True, "", _FakeListResultData(objects=[]))
         )
@@ -1608,7 +1606,7 @@ class TestListStorageObjectsNonProduction:
         either single address would find at most one of them; the suffix
         filter finds both.
         """
-        monkeypatch.setattr(storage_ops, "GetObjectsOwnedByAddress", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsOwnedByAddress", _RecordingCommand)
         client = _FakeListClient(
             response=SuiRpcResult(
                 True,
@@ -1640,7 +1638,7 @@ class TestListStorageObjectsNonProduction:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A ``Blob`` (or any other type) in the owned-object list is dropped."""
-        monkeypatch.setattr(storage_ops, "GetObjectsOwnedByAddress", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsOwnedByAddress", _RecordingCommand)
         client = _FakeListClient(
             response=SuiRpcResult(
                 True,
@@ -1666,7 +1664,7 @@ class TestListStorageObjectsNonProduction:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An empty ``object_type`` must not match ``.endswith("")``-style bugs."""
-        monkeypatch.setattr(storage_ops, "GetObjectsOwnedByAddress", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsOwnedByAddress", _RecordingCommand)
         untyped = _FakeObject(object_id="0xuntyped", json=None, object_type="")
         client = _FakeListClient(
             response=SuiRpcResult(
@@ -1690,7 +1688,7 @@ class TestListStorageObjectsNonProduction:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Owning no objects at all is not an error."""
-        monkeypatch.setattr(storage_ops, "GetObjectsOwnedByAddress", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsOwnedByAddress", _RecordingCommand)
         client = _FakeListClient(
             response=SuiRpcResult(True, "", _FakeListResultData(objects=[]))
         )
@@ -1712,7 +1710,7 @@ class TestListStorageObjectsNonProduction:
         An entry matching the type suffix but carrying no JSON view is
         dropped, exactly as on the PRODUCTION path.
         """
-        monkeypatch.setattr(storage_ops, "GetObjectsOwnedByAddress", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsOwnedByAddress", _RecordingCommand)
         unreadable = _FakeObject(
             object_id="0xbroken",
             json=None,
@@ -1740,7 +1738,7 @@ class TestListStorageObjectsNonProduction:
 
     async def test_failed_listing_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A failed query raises rather than reporting "owns nothing"."""
-        monkeypatch.setattr(storage_ops, "GetObjectsOwnedByAddress", _RecordingCommand)
+        monkeypatch.setattr(storage_reads, "GetObjectsOwnedByAddress", _RecordingCommand)
         client = _FakeListClient(response=SuiRpcResult(False, "node down"))
 
         with pytest.raises(

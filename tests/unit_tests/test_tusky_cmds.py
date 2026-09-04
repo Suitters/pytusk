@@ -5,20 +5,50 @@
 
 """Unit tests for tusky command handlers.
 
-Currently covers only ``certify_blob``'s ``--recover`` mode (re-uploading
-slivers before collecting confirmations, for a blob whose sliver fan-out
-never ran).
+Handlers are exercised directly with locally-defined fakes, every
+collaborator monkeypatched, so only the handler's own orchestration is
+under test. Covers:
+
+- ``certify_blob``'s ``--recover`` mode (re-uploading slivers before
+  collecting confirmations, for a blob whose sliver fan-out never ran)
+- ``store_blob_native``'s simulate mode with an unsignable sponsor
+- ``tusky_cmds_storage``'s split predicates and ``_destroy_storage_batches``
+- ``relay_configs``: per-relay quoting and failure isolation
+- ``read_quilt``: the exactly-one-of-two-addressing-modes validation that
+  argparse itself can't express (pair-vs-single), and dispatch to the
+  right command class per mode
+
+Argument parsing and ``tusky_format`` rendering are deliberately not
+covered here.
 """
 
 import argparse
 import types
+from typing import Any
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 import pytest
 from pysui import SuiRpcResult
 
-from pytusk import NativeBlobReceipt, StageTimings, StorageObject
-from pytusk.tusky import tusky_cmds_common, tusky_cmds_native_upload, tusky_cmds_storage
+from pytusk import (
+    NativeBlobReceipt,
+    QuiltPatch,
+    ReadQuiltPatch,
+    ReadQuiltPatchById,
+    StageTimings,
+    StorageObject,
+)
+from pytusk.core.encoding import EncodedBlob
+from pytusk.core.ops import blob_execute as blob_execute_module
+from pytusk.core.relay_upload.common import TipQuote
+from pytusk.core.types import ConstTip
+from pytusk.tusky import (
+    tusky_cmds_common,
+    tusky_cmds_native_upload,
+    tusky_cmds_read,
+    tusky_cmds_relay,
+    tusky_cmds_storage,
+)
 
 
 class _FakeValue:
@@ -99,7 +129,7 @@ class _FakeWalrusClient:
 
     Implements only what certify_blob's --recover path touches: object
     fetch, committee, and the config/pysui_client attributes
-    ``_resolve_sender`` and ``_walrus_package_id`` read.
+    ``resolve_sender`` and ``walrus_package_id`` read.
     """
 
     def __init__(self, *, blob_object: _FakeObject, n_shards: int = 7) -> None:
@@ -132,7 +162,7 @@ def _base_args(**overrides: object) -> argparse.Namespace:
     for every attribute the handler and its helpers read, overridable per
     test."""
     defaults: dict[str, object] = {
-        "blobid": "0xblob",
+        "object_id": "0xblob",
         "recover": False,
         "content": None,
         "file": None,
@@ -299,6 +329,193 @@ class TestCertifyBlobRecover:
         assert len(upload_calls) == 1
         captured = capsys.readouterr()
         assert '"certified": true' in captured.out
+
+
+class _FakeNativeSimulateTxn:
+    """Recording fake for ``AsyncSuiTransaction`` covering ``store_blob_native``'s
+    simulate-mode Tx1 composition. No tip is ever composed on the native
+    path, so unlike the relay-side fakes this needs no real
+    ``ProgrammableTransactionBuilder`` -- only ``move_call``/
+    ``transfer_objects``/``build_and_sign``, exactly what
+    ``add_registration_sequence(tip=None)`` calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def move_call(
+        self, *, target: str, arguments: list[object], type_arguments: list[object]
+    ) -> str:
+        self.calls.append(("move_call", {"target": target, "arguments": arguments}))
+        return "result"
+
+    async def transfer_objects(self, *, transfers: list[object], recipient: str) -> None:
+        self.calls.append(("transfer_objects", {"transfers": transfers, "recipient": recipient}))
+
+    async def build_and_sign(self) -> dict[str, bytes]:
+        return {"tx_bytestr": b"fake"}
+
+
+class _FakePysuiConfigNoSponsorCheck:
+    """``PysuiConfiguration`` stub whose ``keypair_for_address`` raises if
+    it is EVER called -- used to prove store_blob_native's simulate branch
+    never performs a sponsor-signability preflight, matching
+    ``execute_reserve_and_register``'s own deliberate omission (see
+    ``TestExecuteReserveAndRegisterSponsorPreflightSkipped`` in
+    ``test_system_ops.py``)."""
+
+    def __init__(self, *, active_address: str) -> None:
+        self.active_address = active_address
+
+    def keypair_for_address(self, *, address: str) -> object:
+        raise AssertionError(
+            "keypair_for_address must not be called on the native "
+            "store_blob_native simulate path -- a sponsor absent from "
+            "local config may legitimately sign out-of-band."
+        )
+
+    def alias_for_address(self, *, address: str) -> str:
+        """No-op address validation -- every 0x-address is accepted."""
+        return address
+
+
+class _FakeNativeSimulateClient:
+    """``WalrusClient``-shaped async context manager for
+    ``store_blob_native``'s simulate mode."""
+
+    def __init__(self, *, active_address: str) -> None:
+        self.config = types.SimpleNamespace(
+            active_network="testnet",
+            network=types.SimpleNamespace(
+                system_object="0xsystem", wal_coin_type="0x2::wal::WAL"
+            ),
+        )
+        self.pysui_client = types.SimpleNamespace(
+            config=_FakePysuiConfigNoSponsorCheck(active_address=active_address)
+        )
+        self.txns: list[_FakeNativeSimulateTxn] = []
+
+    async def __aenter__(self) -> "_FakeNativeSimulateClient":  # noqa: PYI034 -- typing.Self is 3.11+ only (project targets >=3.10.6)
+        """Enter the fake client's async context, returning itself."""
+        return self
+
+    async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        """Exit the fake client's async context; nothing to clean up."""
+        return
+
+    async def committee(self) -> types.SimpleNamespace:
+        """Return a minimal object exposing only ``n_shards``."""
+        return types.SimpleNamespace(n_shards=1000)
+
+    async def transaction(self, **kwargs: Any) -> _FakeNativeSimulateTxn:
+        """Open (and record) a fake composable transaction."""
+        txn = _FakeNativeSimulateTxn()
+        self.txns.append(txn)
+        return txn
+
+
+def _base_native_args(**overrides: object) -> argparse.Namespace:
+    """Build a complete argparse.Namespace for store_blob_native, with
+    defaults for every attribute the handler and its helpers read."""
+    defaults: dict[str, object] = {
+        "content": "hello world",
+        "file": None,
+        "epochs": 3,
+        "permanent": False,
+        "recipient": None,
+        "full_json": False,
+        "log_file": None,
+        "verbose": False,
+        "sender": None,
+        "sponsor": None,
+        "mode": "simulate",
+        "from_cfg_path": None,
+        "active_network": None,
+        "pysui_config_path": None,
+        "pysui_group_name": None,
+        "pysui_profile_name": None,
+        "pysui_address": None,
+        "pysui_alias": None,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+class TestStoreBlobNativeSimulateSkipsSponsorPreflight:
+    """``store_blob_native``'s simulate branch composes Tx1 via
+    ``add_registration_sequence(tip=None)`` and ``preflight_payment``, but
+    deliberately does NOT call ``preflight_sponsor`` -- matching
+    ``execute_reserve_and_register``, which never validates sponsor
+    signability because a sponsor may legitimately sign out-of-band with
+    no local keypair. This mirrors ``TestExecuteReserveAndRegisterSponsorPreflightSkipped``
+    (``test_system_ops.py``) at the CLI layer."""
+
+    async def test_unsignable_sponsor_still_completes_simulate(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A --sponsor absent from local config (keypair_for_address would
+        raise AssertionError if ever consulted -- see
+        ``_FakePysuiConfigNoSponsorCheck``) must NOT be rejected: simulate
+        completes normally and prints its cost summary, proof no
+        sponsor-signability check ran anywhere in this path."""
+        encoded = EncodedBlob(
+            blob_id=b"\x01" * 32,
+            root_hash=b"\x02" * 32,
+            unencoded_length=11,
+            n_shards=1000,
+            slivers=(),
+            metadata_bcs=b"",
+        )
+        client = _FakeNativeSimulateClient(active_address="0xsender")
+
+        monkeypatch.setattr(
+            tusky_cmds_native_upload, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_native_upload, "WalrusClient", lambda *, pytusk_config: client
+        )
+        monkeypatch.setattr(
+            tusky_cmds_native_upload,
+            "encode_blob",
+            lambda *, data, n_shards: encoded,
+        )
+
+        async def _fake_walrus_package_id(*, client: object) -> tuple[str, str]:
+            return "0xsystem", "0xpkg"
+
+        monkeypatch.setattr(
+            tusky_cmds_native_upload, "walrus_package_id", _fake_walrus_package_id
+        )
+
+        async def _fake_select_wal_payment_coin(*, client: object, owner: str) -> str:
+            return "0xwal"
+
+        monkeypatch.setattr(
+            blob_execute_module, "select_wal_payment_coin", _fake_select_wal_payment_coin
+        )
+
+        async def _fake_submit(*, client: object, txdict: dict, mode: str) -> SuiRpcResult:
+            return SuiRpcResult(True, "", types.SimpleNamespace())
+
+        monkeypatch.setattr(tusky_cmds_native_upload, "submit", _fake_submit)
+
+        async def _fake_cost(
+            *, client: object, transaction: object
+        ) -> tuple[dict, dict]:
+            return {}, {}
+
+        monkeypatch.setattr(
+            tusky_cmds_native_upload, "simulate_cost_from_balance_changes", _fake_cost
+        )
+
+        args = _base_native_args(sponsor="0xstranger")
+
+        await tusky_cmds_native_upload.store_blob_native(args)
+
+        captured = capsys.readouterr()
+        assert '"mode": "simulate"' in captured.out
+        assert len(client.txns) == 1
+        kinds = [kind for kind, _ in client.txns[0].calls]
+        assert kinds == ["move_call", "move_call", "transfer_objects"]
 
 
 class TestSplitByEpochApplicable:
@@ -513,3 +730,343 @@ class TestDestroyStorageBatches:
                 sponsor=None,
                 mode="execute",
             )
+
+
+class _FakeRelayEntry:
+    """Stand-in for a RelayConfig entry."""
+
+    def __init__(self, *, relay_name: str, relay_url: str) -> None:
+        self.relay_name = relay_name
+        self.relay_url = relay_url
+
+
+class _FakeRelayListConfig:
+    """PytuskConfiguration stub exposing only what relay_configs reads."""
+
+    def __init__(
+        self, *, relays: list[_FakeRelayEntry], active: str | None
+    ) -> None:
+        self.active_network = "testnet"
+        self._relays = relays
+        self._active = active
+
+    def relays_for(self, *, network_name: str) -> list[_FakeRelayEntry]:
+        """Return the network's configured relays."""
+        return list(self._relays)
+
+    def active_relay_for(self, *, network_name: str) -> str | None:
+        """Return the active relay's name, or None when none is set."""
+        return self._active
+
+
+class _FakeRelayListClient:
+    """WalrusClient stub: async context manager plus a committee read."""
+
+    def __init__(self) -> None:
+        self.committee_calls = 0
+
+    async def __aenter__(self) -> "_FakeRelayListClient":  # noqa: PYI034 -- typing.Self is 3.11+ only (project targets >=3.10.6)
+        """Enter the fake client's async context, returning itself."""
+        return self
+
+    async def __aexit__(
+        self, exc_type: object, exc_val: object, exc_tb: object
+    ) -> None:
+        """Exit the fake client's async context; nothing to clean up."""
+        return
+
+    async def committee(self) -> types.SimpleNamespace:
+        """Return a committee exposing only n_shards."""
+        self.committee_calls += 1
+        return types.SimpleNamespace(n_shards=1000)
+
+
+def _relay_configs_args(**overrides: object) -> argparse.Namespace:
+    """Build a Namespace with every attribute relay_configs reads."""
+    defaults: dict[str, object] = {"size": None, "file": None, "content": None}
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+def _patch_relay_configs(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    config: _FakeRelayListConfig,
+    quotes: dict[str, object],
+) -> list[dict]:
+    """Patch config resolution, client construction, and quote_tip.
+
+    ``quotes`` maps a relay URL to either a TipQuote to return or an
+    Exception to raise, so a test can make one relay fail while others
+    succeed. Returns the list that records every quote_tip call.
+    """
+    calls: list[dict] = []
+
+    async def _quote(**kwargs: Any) -> TipQuote:
+        calls.append(kwargs)
+        outcome = quotes[kwargs["relay_url"]]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(tusky_cmds_relay, "config_from_args", lambda args: config)
+    monkeypatch.setattr(
+        tusky_cmds_relay,
+        "WalrusClient",
+        lambda *, pytusk_config: _FakeRelayListClient(),
+    )
+    monkeypatch.setattr(tusky_cmds_relay, "quote_tip", _quote)
+    return calls
+
+
+class TestRelayConfigs:
+    """relay_configs lists every configured relay and prices each one."""
+
+    async def test_lists_each_relay_with_its_quote(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="mysten", relay_url="https://a.example"),
+                _FakeRelayEntry(relay_name="mine", relay_url="https://b.example"),
+            ],
+            active="mysten",
+        )
+        _patch_relay_configs(
+            monkeypatch=monkeypatch,
+            config=config,
+            quotes={
+                "https://a.example": TipQuote(
+                    address="0xa", amount=105, kind=ConstTip(amount=105)
+                ),
+                "https://b.example": TipQuote(
+                    address="0xb", amount=999, kind=ConstTip(amount=999)
+                ),
+            },
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(size=1024))
+        out = capsys.readouterr().out
+        assert "relays 2" in out
+        assert "active mysten" in out
+        assert "105 MIST to 0xa" in out
+        assert "999 MIST to 0xb" in out
+        # The active relay is marked and the other is not.
+        assert "* mysten" in out
+        assert "* mine" not in out
+
+    async def test_unreachable_relay_does_not_abort_the_listing(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        # The whole point of per-relay isolation: a dead relay is exactly
+        # when this command is most useful, so it must not take the rest
+        # of the listing down with it.
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="dead", relay_url="https://a.example"),
+                _FakeRelayEntry(relay_name="live", relay_url="https://b.example"),
+            ],
+            active="live",
+        )
+        _patch_relay_configs(
+            monkeypatch=monkeypatch,
+            config=config,
+            quotes={
+                "https://a.example": RuntimeError("connection refused"),
+                "https://b.example": TipQuote(
+                    address="0xb", amount=42, kind=ConstTip(amount=42)
+                ),
+            },
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(size=1024))
+        out = capsys.readouterr().out
+        assert "UNREACHABLE: connection refused" in out
+        assert "dead" in out
+        assert "42 MIST to 0xb" in out
+
+    async def test_no_tip_relay_is_rendered_as_such(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="free", relay_url="https://a.example")
+            ],
+            active="free",
+        )
+        _patch_relay_configs(
+            monkeypatch=monkeypatch,
+            config=config,
+            quotes={
+                "https://a.example": TipQuote(address=None, amount=None, kind=None)
+            },
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(size=1024))
+        assert "no tip required" in capsys.readouterr().out
+
+    async def test_no_active_relay_renders_none(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        # active_relay is legitimately None once the active relay is
+        # removed, so the summary must render that rather than assume one.
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="only", relay_url="https://a.example")
+            ],
+            active=None,
+        )
+        _patch_relay_configs(
+            monkeypatch=monkeypatch,
+            config=config,
+            quotes={
+                "https://a.example": TipQuote(
+                    address="0xa", amount=7, kind=ConstTip(amount=7)
+                )
+            },
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(size=1024))
+        out = capsys.readouterr().out
+        assert "active (none)" in out
+        assert "* only" not in out
+
+    async def test_no_relays_short_circuits_before_any_network_call(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config = _FakeRelayListConfig(relays=[], active=None)
+        calls = _patch_relay_configs(
+            monkeypatch=monkeypatch, config=config, quotes={}
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(size=1024))
+        assert "relays 0" in capsys.readouterr().out
+        assert calls == []
+
+    async def test_content_is_priced_by_encoded_byte_length(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        # The relay charges on bytes, so a non-ASCII string must be
+        # measured encoded -- len() on the str would under-price it.
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="only", relay_url="https://a.example")
+            ],
+            active="only",
+        )
+        calls = _patch_relay_configs(
+            monkeypatch=monkeypatch,
+            config=config,
+            quotes={
+                "https://a.example": TipQuote(
+                    address="0xa", amount=1, kind=ConstTip(amount=1)
+                )
+            },
+        )
+        await tusky_cmds_relay.relay_configs(_relay_configs_args(content="héllo"))
+        assert calls[0]["unencoded_length"] == 6
+        assert "pricing 6 bytes" in capsys.readouterr().out
+
+    async def test_negative_size_exits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _FakeRelayListConfig(
+            relays=[
+                _FakeRelayEntry(relay_name="only", relay_url="https://a.example")
+            ],
+            active="only",
+        )
+        _patch_relay_configs(monkeypatch=monkeypatch, config=config, quotes={})
+        with pytest.raises(SystemExit):
+            await tusky_cmds_relay.relay_configs(_relay_configs_args(size=-1))
+
+
+def _read_quilt_args(**overrides: object) -> argparse.Namespace:
+    """Build a Namespace with every attribute read_quilt reads."""
+    defaults: dict[str, object] = {
+        "quilt_id": None,
+        "patch_key": None,
+        "patch_id": None,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+class _FakeReadQuiltClient:
+    """Fake WalrusClient recording whichever command read_quilt built."""
+
+    def __init__(self, *, result: SuiRpcResult) -> None:
+        self._result = result
+        self.received_command: object = None
+
+    async def __aenter__(self) -> "_FakeReadQuiltClient":
+        """Enter the fake client's async context, returning itself."""
+        return self
+
+    async def __aexit__(
+        self, exc_type: object, exc_val: object, exc_tb: object
+    ) -> None:
+        """Exit the fake client's async context; nothing to clean up."""
+        return
+
+    async def execute(self, *, command: object) -> SuiRpcResult:
+        """Record the command it was given and return the canned result."""
+        self.received_command = command
+        return self._result
+
+
+class TestReadQuilt:
+    """read_quilt requires exactly one of --patch-id or --quilt-id+--patch-key,
+    a pair-vs-single shape argparse can't express as one mutually exclusive
+    group, so it's validated in the handler instead -- and dispatches to the
+    matching command class per mode."""
+
+    async def test_missing_all_flags_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(_read_quilt_args())
+
+    async def test_patch_id_with_quilt_id_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(
+                _read_quilt_args(patch_id="patch1", quilt_id="q1")
+            )
+
+    async def test_patch_id_with_patch_key_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(
+                _read_quilt_args(patch_id="patch1", patch_key="file_a")
+            )
+
+    async def test_partial_pair_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(_read_quilt_args(quilt_id="q1"))
+
+    async def test_patch_id_mode_dispatches_read_quilt_patch_by_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _FakeReadQuiltClient(
+            result=SuiRpcResult(True, "", QuiltPatch(content=b"hello"))
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        await tusky_cmds_read.read_quilt(_read_quilt_args(patch_id="patch1"))
+        assert isinstance(client.received_command, ReadQuiltPatchById)
+        assert client.received_command.patch_id == "patch1"
+
+    async def test_quilt_id_patch_key_mode_dispatches_read_quilt_patch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _FakeReadQuiltClient(
+            result=SuiRpcResult(True, "", QuiltPatch(content=b"hello"))
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        await tusky_cmds_read.read_quilt(
+            _read_quilt_args(quilt_id="q1", patch_key="file_a")
+        )
+        assert isinstance(client.received_command, ReadQuiltPatch)
+        assert client.received_command.quilt_id == "q1"
+        assert client.received_command.patch_key == "file_a"

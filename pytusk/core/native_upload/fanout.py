@@ -9,8 +9,6 @@ See :mod:`pytusk.core.native_upload` (the package's ``__init__.py``) for the
 full native upload pipeline description and stage ordering.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import dataclasses
@@ -20,14 +18,15 @@ import time
 
 from pytusk.commands.node_commands import PutMetadata, PutSliver
 from pytusk.core.certification import min_weight_for_quorum
-from pytusk.core.committee import WalrusCommittee, WalrusCommitteeMember
+from pytusk.core.chain import WalrusCommittee, WalrusCommitteeMember
+from pytusk.core.committee_fanout import fan_out_to_committee
 from pytusk.core.encoding import EncodedBlob, blob_id_to_url_base64
 from pytusk.core.native_upload.common import (
     _HEARTBEAT_INTERVAL_SECONDS,
     _HEARTBEAT_SLOWEST_NODES,
-    SliverUploadError,
-    _ExecuteOnlyClient,
 )
+from pytusk.core.types import SliverUploadError
+from pytusk.core.types.protocols import ExecuteOnlyClient
 
 _logger = logging.getLogger(__name__)
 
@@ -88,7 +87,7 @@ class NodeUploadOutcome:
         node_id (str): On-chain object ID of the node's staking pool.
         position (int): The node's committee position (the
             ``signers_bitmap`` index -- see
-            :class:`~pytusk.core.committee.WalrusCommittee`).
+            :class:`~pytusk.core.chain.committee.WalrusCommittee`).
         weight (int): This node's shard count, reported once regardless of
             how many shards it holds.
         succeeded (bool): True only if every sliver this node holds --
@@ -390,7 +389,7 @@ def _next_retry_backoff(
 
 async def _put_metadata(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     member: WalrusCommitteeMember,
     blob_id: bytes,
     metadata_bcs: bytes,
@@ -479,7 +478,7 @@ async def _put_metadata(
 
 async def _put_sliver(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     member: WalrusCommitteeMember,
     blob_id: bytes,
     sliver_pair_index: int,
@@ -625,7 +624,7 @@ async def _put_sliver(
 
 async def _upload_node(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     committee: WalrusCommittee,
     encoded: EncodedBlob,
     member: WalrusCommitteeMember,
@@ -906,7 +905,7 @@ def _outcome_from_task(
 
 async def upload_slivers(
     *,
-    client: _ExecuteOnlyClient,
+    client: ExecuteOnlyClient,
     committee: WalrusCommittee,
     encoded: EncodedBlob,
     grace_base_seconds: float = 0.5,
@@ -1103,8 +1102,13 @@ async def upload_slivers(
         limited_by,
     )
 
-    start_time = time.monotonic()
-    task_node_ids: dict[asyncio.Task[NodeUploadOutcome], str] = {}
+    # The dispatch/wait/grace/cancel choreography is shared with
+    # collect_confirmations rather than duplicated here; see
+    # pytusk.core.committee_fanout. What stays HERE is what THIS caller means by a
+    # result: every node is recorded, successes and failures alike, and a
+    # cancelled straggler gets its own synthetic outcome so the failure
+    # summary below can name it.
+    task_members: dict[asyncio.Task[NodeUploadOutcome], WalrusCommitteeMember] = {}
     for node_id in shards_by_node:
         member = members_by_node_id[node_id]
         task = asyncio.create_task(
@@ -1122,11 +1126,46 @@ async def upload_slivers(
                 global_write_semaphore=global_write_semaphore,
             )
         )
-        task_node_ids[task] = node_id
+        task_members[task] = member
 
     outcomes: list[NodeUploadOutcome] = []
     weight_succeeded = 0
-    pending: set[asyncio.Task[NodeUploadOutcome]] = set(task_node_ids)
+
+    def _fold(
+        task: asyncio.Task[NodeUploadOutcome], member: WalrusCommitteeMember
+    ) -> None:
+        nonlocal weight_succeeded
+        outcome = _outcome_from_task(
+            task=task,
+            node_id=member.node_id,
+            member=member,
+            committee=committee,
+            progress=progress,
+        )
+        outcomes.append(outcome)
+        if outcome.succeeded:
+            weight_succeeded += outcome.weight
+
+    def _cancelled(
+        _task: asyncio.Task[NodeUploadOutcome], member: WalrusCommitteeMember
+    ) -> None:
+        outcomes.append(
+            NodeUploadOutcome(
+                node_id=member.node_id,
+                position=committee.position_of(node_id=member.node_id),
+                weight=len(member.shard_indices),
+                succeeded=False,
+                reason="cancelled",
+            )
+        )
+
+    def _quorum_reached(elapsed: float) -> None:
+        _logger.info(
+            "upload_slivers quorum reached: weight=%d/%d elapsed=%.1fs",
+            weight_succeeded,
+            required_weight,
+            elapsed,
+        )
 
     # Progress heartbeat monitor -- see module-level comment near
     # _HEARTBEAT_INTERVAL_SECONDS. Must not outlive this function; the
@@ -1139,99 +1178,20 @@ async def upload_slivers(
         )
     )
     try:
-        while pending:
-            done, pending = await asyncio.wait(
-                pending, return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in done:
-                node_id = task_node_ids[task]
-                outcome = _outcome_from_task(
-                    task=task,
-                    node_id=node_id,
-                    member=members_by_node_id[node_id],
-                    committee=committee,
-                    progress=progress,
-                )
-                outcomes.append(outcome)
-                if outcome.succeeded:
-                    weight_succeeded += outcome.weight
-            if weight_succeeded >= required_weight:
-                break
-
-        if weight_succeeded >= required_weight:
-            _logger.info(
-                "upload_slivers quorum reached: weight=%d/%d elapsed=%.1fs",
-                weight_succeeded,
-                required_weight,
-                time.monotonic() - start_time,
-            )
-
-        if pending:
-            time_to_quorum = time.monotonic() - start_time
-            extra_time = grace_base_seconds + grace_factor * time_to_quorum
-            _logger.info(
-                "upload_slivers grace window: extra_time=%.1fs pending_nodes=%d",
-                extra_time,
-                len(pending),
-            )
-            done, still_pending = await asyncio.wait(pending, timeout=extra_time)
-            for task in done:
-                node_id = task_node_ids[task]
-                outcome = _outcome_from_task(
-                    task=task,
-                    node_id=node_id,
-                    member=members_by_node_id[node_id],
-                    committee=committee,
-                    progress=progress,
-                )
-                outcomes.append(outcome)
-                if outcome.succeeded:
-                    weight_succeeded += outcome.weight
-            for task in still_pending:
-                node_id = task_node_ids[task]
-                member = members_by_node_id[node_id]
-                task.cancel()
-                _logger.info(
-                    "upload_slivers cancelled straggler: node_id=%s", node_id
-                )
-                outcomes.append(
-                    NodeUploadOutcome(
-                        node_id=node_id,
-                        position=committee.position_of(node_id=node_id),
-                        weight=len(member.shard_indices),
-                        succeeded=False,
-                        reason="cancelled",
-                    )
-                )
-            if still_pending:
-                await asyncio.gather(*still_pending, return_exceptions=True)
+        await fan_out_to_committee(
+            tasks=task_members,
+            on_completed=_fold,
+            on_cancelled=_cancelled,
+            should_stop=lambda: weight_succeeded >= required_weight,
+            label="upload_slivers",
+            on_threshold_reached=_quorum_reached,
+            grace_base_seconds=grace_base_seconds,
+            grace_factor=grace_factor,
+        )
     finally:
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
-
-        # Cancel and await to completion any node-upload task not yet
-        # done, on ANY exit from the try block above -- normal completion
-        # (where this is a no-op, since every task was already resolved or
-        # explicitly cancelled+awaited via the still_pending handling),
-        # quorum failure, or an exception (including this function's OWN
-        # task being cancelled from outside) propagating before that
-        # handling was reached. Checked directly against task_node_ids
-        # (every task this call created) rather than the loop-local
-        # `pending`/`still_pending` names, since those may not even be
-        # bound yet if the exception happened early. A leftover task here
-        # would otherwise run on, detached, still holding its share of
-        # bytes_throttle and (via its own _upload_node's node_semaphore
-        # and pending sliver tasks) the node-level reservations described
-        # in _upload_node's docstring, and would raise "Cannot send a
-        # request, as the client has been closed." once a caller further
-        # up tears down the single-use WalrusClient.
-        leftover = [task for task in task_node_ids if not task.done()]
-        if leftover:
-            for task in leftover:
-                task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(*leftover, return_exceptions=True)
 
     if weight_succeeded < required_weight:
         failures_by_reason: dict[str, int] = {}

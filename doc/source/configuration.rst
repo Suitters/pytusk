@@ -50,6 +50,16 @@ The primary data model for PytuskConfiguration is a pair of related
         * ``system_object`` / ``staking_object`` — Walrus on-chain object
           IDs
         * ``exchange_objects`` — SUI->WAL exchange object IDs (testnet only)
+        * ``relays`` — named upload relay endpoints available on this
+          network. Empty on user-defined networks, which ship no built-in
+          relay — see Relays below
+        * ``active_relay`` — name of the relay used when a caller does not
+          name one explicitly, or ``None`` when the network has no default
+        * ``wal_coin_type`` — canonical ``<package>::wal::WAL`` coin type
+          for this network, used for exact WAL-coin identification rather
+          than a substring match. Empty on networks whose WAL package
+          address is not stable enough to pin (testnet, for example), where
+          callers fall back to a substring match
         * ``network_type`` — ``NetworkType.TEST`` or
           ``NetworkType.PRODUCTION``
 
@@ -207,18 +217,29 @@ of the same name.
 .. code-block:: python
     :linenos:
 
-    from pytusk import PytuskConfiguration
-    from pytusk.config.tusk_config import WalrusNetworkConfig
+    from pytusk import NetworkType, PytuskConfiguration, WalrusNetworkConfig
 
     cfg = PytuskConfiguration()
     custom = WalrusNetworkConfig(
         network_name="my-devnet",
+        pysui_group_name="sui_grpc_config",
+        pysui_profile_name="devnet",
         walrus_aggregator_url="https://aggregator.example.com",
         walrus_publisher_url="https://publisher.example.com",
         system_object="0xabc",
         staking_object="0xdef",
+        exchange_objects=["0x123"],
+        wal_coin_type="0xabc::wal::WAL",
+        network_type=NetworkType.TEST,
     )
     cfg.add_network(custom, persist=True)
+
+Every field carries a default, so only ``network_name`` is strictly
+required — but a network missing its pysui group/profile or its
+``system_object``/``staking_object`` cannot be used for chain operations.
+``relays`` and ``active_relay`` are deliberately absent above: a
+user-defined network ships with no built-in relay. Add one afterwards with
+``add_relay`` — see Relays below.
 
 Removing a Network
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -318,6 +339,103 @@ independent of any setter's ``persist`` keyword:
 Most setters above accept a ``persist`` keyword that calls ``save()``
 internally. Call ``save()`` or ``save_to()`` directly to persist changes
 made without it, or to write the configuration to a different location.
+
+Relays
+------------------------------------
+An upload relay is a Walrus service that performs the erasure-encoding and
+sliver fan-out for a write on the client's behalf, in exchange for a tip.
+Relays are configured per network: a ``RelayConfig`` carries only
+``relay_name`` and ``relay_url``, and belongs to a network structurally, by
+living in that network's ``relays`` list.
+
+``testnet`` and ``mainnet`` are seeded with Mysten's public relay —
+``https://upload-relay.testnet.walrus.space`` and
+``https://upload-relay.mainnet.walrus.space`` respectively. Seeding never
+modifies a relay you have already defined and never overwrites an active
+relay you have already chosen. User-defined networks ship with no relay and
+an empty list. A configuration file written before 0.5.0 is migrated on load
+(schema ``1.0.0`` to ``1.1.0``) to add the relay fields, leaving everything
+else untouched.
+
+**WARNING** As with the network methods above, each method here accepts an
+optional ``persist`` flag. Setting it writes out *any* earlier changes made
+with ``persist=False`` as well.
+
+Listing relays
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``relays_for`` returns a new list, so adding to or removing from the result
+does not alter the configuration. ``active_relay_for`` returns ``None`` when
+a network has no active relay — a legitimate state rather than an error,
+since removing a relay clears the pointer that named it.
+
+.. code-block:: python
+
+    from pytusk import PytuskConfiguration, RelayConfig
+
+    cfg = PytuskConfiguration()
+
+    relays: list[RelayConfig] = cfg.relays_for(network_name="testnet")
+    for relay in relays:
+        print(relay.relay_name, relay.relay_url)
+
+    print(cfg.active_relay_for(network_name="testnet"))
+
+Adding a relay
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Register a new named relay on a network. Raises ``ValueError`` when
+``relay_name`` is already used on that network. Pass ``make_active=True`` to
+make it that network's active relay in the same call.
+
+.. code-block:: python
+
+    cfg.add_relay(
+        network_name="mainnet",
+        relay_name="my-relay",
+        relay_url="https://relay.example.com",
+        make_active=True,
+        persist=True,
+    )
+
+Updating a relay
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Change an existing relay's URL, optionally making it active at the same
+time. Raises when no relay of that name exists on the network.
+
+.. code-block:: python
+
+    cfg.update_relay(
+        network_name="mainnet",
+        relay_name="my-relay",
+        relay_url="https://relay-2.example.com",
+        persist=True,
+    )
+
+Removing a relay
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Remove a named relay. When it is the network's active relay, ``active_relay``
+is cleared in the same call, so no dangling pointer is left behind.
+
+.. code-block:: python
+
+    cfg.remove_relay(
+        network_name="mainnet",
+        relay_name="my-relay",
+        persist=True,
+    )
+
+Resolving a relay URL
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Resolve the URL a relay write will POST to. Resolution order is the
+``relay_name`` argument, then the network's active relay; when neither
+resolves it raises, naming the relays available on that network. This is the
+same resolution :py:func:`~pytusk.store_blob_relay` performs internally, so
+calling it is a way to confirm which relay a write would use.
+
+.. code-block:: python
+
+    url = cfg.relay_url_for(network_name="testnet")
+    named = cfg.relay_url_for(network_name="testnet", relay_name="mysten")
+
 
 FAQ
 ========================================

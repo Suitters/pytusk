@@ -18,13 +18,16 @@ PUTs for a blob whose metadata they have not yet received -- see
 ``PutMetadata`` before any of that node's sliver PUTs and abandons the node
 entirely (no sliver PUT attempted) if the metadata PUT fails. This package
 owns everything AFTER encoding (:mod:`pytusk.core.encoding`) and Tx1
-(:mod:`pytusk.core.system_ops`): the per-node metadata+sliver fan-out (see
+(:mod:`pytusk.core.ops.blob_execute`): the per-node metadata+sliver fan-out (see
 :mod:`pytusk.core.native_upload.fanout`), the confirmation quorum collection
-(see :mod:`pytusk.core.native_upload.confirm`), the Tx2 submission (see
-:mod:`pytusk.core.native_upload.certify`), and a thin end-to-end compose
-function (see :mod:`pytusk.core.native_upload.pipeline`) that runs all of it
-in order. Shared types, errors, and constants used by two or more stages
-live in :mod:`pytusk.core.native_upload.common`.
+(see :mod:`pytusk.core.native_upload.confirm`), and the Tx2 submission (see
+:mod:`pytusk.core.native_upload.certify`). The thin end-to-end compose
+function that runs all of it in order lives ABOVE this package, in
+:mod:`pytusk.core.pipelines.write` -- this package owns the stages, not
+their orchestration, and a function that reaches across two peer packages
+cannot sit inside one of them without inverting the dependency between them.
+Shared types, errors, and constants used by two or more stages live in
+:mod:`pytusk.core.native_upload.common`.
 
 Weight is always a SHARD COUNT, never a node count -- see
 :func:`~pytusk.core.certification.is_quorum` and
@@ -47,10 +50,14 @@ corruption or a malformed request, not a type error:
   used inside the signed confirmation message, never in a URL)
 """
 
-from __future__ import annotations
-
 from pytusk.core.native_upload.certify import assert_certificate_epoch_current, certify
-from pytusk.core.native_upload.common import (
+from pytusk.core.native_upload.confirm import collect_confirmations
+from pytusk.core.native_upload.fanout import (
+    FanoutReport,
+    NodeUploadOutcome,
+    upload_slivers,
+)
+from pytusk.core.types import (
     CertifyTransactionError,
     ConfirmationCollectionError,
     EpochMismatchError,
@@ -58,15 +65,7 @@ from pytusk.core.native_upload.common import (
     NativeUploadError,
     SliverUploadError,
     StageTimings,
-    object_id_to_raw_bytes,
 )
-from pytusk.core.native_upload.confirm import collect_confirmations
-from pytusk.core.native_upload.fanout import (
-    FanoutReport,
-    NodeUploadOutcome,
-    upload_slivers,
-)
-from pytusk.core.native_upload.pipeline import store_blob_native
 
 __all__ = [
     "CertifyTransactionError",
@@ -81,7 +80,5 @@ __all__ = [
     "assert_certificate_epoch_current",
     "certify",
     "collect_confirmations",
-    "object_id_to_raw_bytes",
-    "store_blob_native",
     "upload_slivers",
 ]

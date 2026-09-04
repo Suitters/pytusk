@@ -1,9 +1,9 @@
 Native Upload Logging
 ======================
 
-The native upload pipeline (:func:`~pytusk.core.native_upload.store_blob_native`,
+The native upload pipeline (:func:`~pytusk.store_blob_native`,
 :func:`~pytusk.core.native_upload.certify`, committee resolution in
-:mod:`pytusk.core.committee`) reports progress through the standard
+:mod:`pytusk.core.chain.committee`) reports progress through the standard
 library ``logging`` module rather than by printing directly. This page
 documents the logger names, what they emit, and how to attach a handler
 — both from ``tusky`` and from library code calling pytusk directly.
@@ -29,7 +29,7 @@ so the three loggers relevant to native upload progress are:
    (quorum reached, grace window, per-node confirmation outcomes) and its
    own periodic heartbeat progress lines.
 
-``pytusk.core.committee``
+``pytusk.core.chain.committee``
    Emits ``INFO``-level records for committee/storage-pool resolution:
    ``GetDynamicFields`` page counts when reading the staking object and
    pools table.
@@ -68,7 +68,7 @@ Attaching Your Own Handler
 -----------------------------
 
 Library code calling :mod:`pytusk.core.native_upload` or
-:mod:`pytusk.core.committee` directly (not through ``tusky``) attaches a
+:mod:`pytusk.core.chain.committee` directly (not through ``tusky``) attaches a
 handler the same way as any other Python logger:
 
 .. code-block:: python
