@@ -58,7 +58,8 @@ The commands that build and submit a Programmable Transaction Block (PTB)
 -- ``store_blob_native``, ``store_blob_relay``, ``store_quilt_relay``,
 ``certify_blob``, ``exchange_for_wal``, ``exchange_for_sui``,
 ``extend_blob_expiration``, ``set_blob_metadata``, ``drop_blob_metadata``,
-``delete_blob``, ``burn_blob``, ``split_storage``, ``fuse_storage``,
+``delete_blob``, ``burn_blob``, ``share_blob``, ``fund_shared_blob``,
+``extend_shared_blob``, ``split_storage``, ``fuse_storage``,
 ``reclaim_storage`` and ``extend_blob_with_storage`` -- additionally
 accept:
 
@@ -830,6 +831,82 @@ guaranteed on-chain abort (``EMissingMetadata`` / ``vec_map::remove``).
 See :doc:`transactions`'s Blob Metadata section for the underlying PTB
 composition (including the pre-transaction existence gate) and
 ``get_blob_metadata``'s pure-read counterpart.
+
+share_blob
+~~~~~~~~~~
+
+Wrap an existing ``Blob`` into a new ``SharedBlob`` via
+``shared_blob::new``, so anyone can fund and extend it.
+
+.. code-block:: console
+
+   tusky share_blob -o OBJECT_ID
+                     [--sender ADDRESS] [--sponsor ADDRESS] [--mode simulate|execute]
+
+``-o`` / ``--object-id``
+   Sui object ID of the blob to share (not the Walrus blob ID).
+
+Only a permanent blob can be shared; the wrapped ``Blob`` is consumed
+and can no longer be used as an owned object. The new ``SharedBlob``'s
+object ID is only known after the transaction actually executes: in
+``--mode simulate`` (the default) it is not reported, since it is only
+a prediction; in ``--mode execute`` it is read back from the
+transaction's effects and printed as ``New SharedBlob object ID: ...``.
+
+See :doc:`transactions`'s Sharing a Blob section for the underlying
+PTB composition.
+
+fund_shared_blob
+~~~~~~~~~~~~~~~~~
+
+Deposit WAL into a ``SharedBlob``'s pooled funds via
+``shared_blob::fund``.
+
+.. code-block:: console
+
+   tusky fund_shared_blob -o OBJECT_ID (--amount FROST | --wal-coin COIN_ID)
+                           [--sender ADDRESS] [--sponsor ADDRESS] [--mode simulate|execute]
+
+``-o`` / ``--object-id``
+   Sui object ID of the ``SharedBlob`` to fund.
+
+``--amount`` / ``--wal-coin``
+   Mutually exclusive, one required. ``--amount`` gives an exact amount
+   of WAL to deposit, in FROST; a coin holding exactly that amount is
+   prepared automatically (splitting or merging owned WAL coins as
+   needed). ``--wal-coin`` instead names an owned WAL coin object to
+   donate in full -- ``fund`` consumes its ``Coin<WAL>`` argument's
+   entire balance either way.
+
+See :doc:`transactions`'s Funding a SharedBlob section for the
+underlying PTB composition.
+
+extend_shared_blob
+~~~~~~~~~~~~~~~~~~~
+
+Extend a ``SharedBlob``'s wrapped ``Blob`` via ``shared_blob::extend``,
+paid from the ``SharedBlob``'s own pooled WAL funds rather than a coin
+supplied by the caller.
+
+.. code-block:: console
+
+   tusky extend_shared_blob -o OBJECT_ID --epochs N
+                             [--sender ADDRESS] [--sponsor ADDRESS] [--mode simulate|execute]
+
+``-o`` / ``--object-id``
+   Sui object ID of the ``SharedBlob`` to extend.
+
+``--epochs``
+   Number of epochs to extend the wrapped blob's storage by, counted
+   from its current ``end_epoch``.
+
+Anyone may extend a shared blob, not only its original sharer. This
+can abort on-chain if the pool's balance does not cover the extension
+cost -- unlike ``extend_blob_expiration``, this cannot be pre-checked
+client-side.
+
+See :doc:`transactions`'s Extending a SharedBlob section for the
+underlying PTB composition.
 
 Native Upload (pysui PTB + Storage Nodes)
 --------------------------------------------
