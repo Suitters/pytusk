@@ -12,13 +12,14 @@ from pytusk.client.walrus_client import WalrusClient, get_walrus_epoch
 
 # Storage-node commands
 from pytusk.commands.node_commands import (
-    GetMetadata,
-    GetSliver,
-    GetStorageConfirmation,
     MetadataAck,
     MetadataData,
     PutMetadata,
     PutSliver,
+    ReadBlobStatus,
+    ReadMetadata,
+    ReadSliver,
+    ReadStorageConfirmation,
     SignedConfirmation,
     SliverAck,
     SliverData,
@@ -37,7 +38,7 @@ from pytusk.commands.read_commands import (
 
 # Relay commands (upload-relay tip config and blob upload)
 from pytusk.commands.relay_commands import (
-    GetTipConfig,
+    ReadTipConfig,
     RelayUploadAck,
     UploadRelayBlob,
 )
@@ -379,20 +380,21 @@ __all__ = [  # noqa: RUF022
     "ListQuiltPatches",
     "ConcatBlobs",
     # Relay commands
-    "GetTipConfig",
+    "ReadTipConfig",
     "RelayUploadAck",
     "UploadRelayBlob",
     # Write commands
     "StoreBlob",
     "StoreQuilt",
     # Storage-node commands
-    "GetMetadata",
-    "GetSliver",
-    "GetStorageConfirmation",
     "MetadataAck",
     "MetadataData",
     "PutMetadata",
     "PutSliver",
+    "ReadBlobStatus",
+    "ReadMetadata",
+    "ReadSliver",
+    "ReadStorageConfirmation",
     "SignedConfirmation",
     "SliverAck",
     "SliverData",

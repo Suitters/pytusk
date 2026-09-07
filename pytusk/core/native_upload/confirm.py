@@ -16,7 +16,7 @@ import logging
 import time
 from collections.abc import Sequence
 
-from pytusk.commands.node_commands import GetStorageConfirmation
+from pytusk.commands.node_commands import ReadStorageConfirmation
 from pytusk.core.certification import (
     Certificate,
     ConfirmationMismatchError,
@@ -148,11 +148,11 @@ async def _confirm_node(
     # No timeout= passed: inherits the client's configured default (300s
     # flat read timeout, upstream parity -- see module-level comment near
     # _HEARTBEAT_INTERVAL_SECONDS), which comfortably covers this request's
-    # server-side long poll (wait_millis; GetStorageConfirmation is sent
+    # server-side long poll (wait_millis; ReadStorageConfirmation is sent
     # with wait_for_registration=True).
     async with semaphore:
         result = await client.execute(
-            command=GetStorageConfirmation(
+            command=ReadStorageConfirmation(
                 blob_id=blob_id,
                 object_id=object_id,
                 wait_for_registration=True,
@@ -241,7 +241,7 @@ async def collect_confirmations(
 ) -> Certificate:
     """Collect a quorum of storage-node confirmations and build a certificate.
 
-    Queries ``GetStorageConfirmation`` against every committee member by
+    Queries ``ReadStorageConfirmation`` against every committee member by
     DEFAULT, regardless of that node's sliver-upload outcome. This is the
     RECOMMENDED behaviour and matches upstream policy: a failed sliver
     upload does not prove a node lacks the slivers -- it may have obtained

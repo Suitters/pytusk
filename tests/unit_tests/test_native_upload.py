@@ -51,9 +51,9 @@ from pysui import SuiRpcResult
 
 from pytusk.client.walrus_client import WalrusClient
 from pytusk.commands.node_commands import (
-    GetStorageConfirmation,
     PutMetadata,
     PutSliver,
+    ReadStorageConfirmation,
     SignedConfirmation,
 )
 from pytusk.core.certification import (
@@ -224,7 +224,7 @@ class _FakeStorageClient:
             if reason is not None:
                 return SuiRpcResult(False, reason)
             return SuiRpcResult(True, "")
-        if isinstance(command, GetStorageConfirmation):
+        if isinstance(command, ReadStorageConfirmation):
             confirmation = self.confirmations.get(base_url)
             if confirmation is None:
                 return SuiRpcResult(False, f"no confirmation configured for {base_url}")
@@ -373,7 +373,7 @@ class _HangingSliverPutClient:
 
 
 class _HangingConfirmationClient:
-    """Fake client whose ``GetStorageConfirmation`` dispatch for a configured
+    """Fake client whose ``ReadStorageConfirmation`` dispatch for a configured
     subset of nodes hangs forever -- awaits an ``asyncio.Event`` that is
     never set -- while every other configured node responds immediately
     with a canned ``SignedConfirmation``. Models slow/dead storage nodes so
@@ -419,7 +419,7 @@ class _HangingConfirmationClient:
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
         assert base_url is not None
-        if not isinstance(command, GetStorageConfirmation):
+        if not isinstance(command, ReadStorageConfirmation):
             raise NotImplementedError(f"Unhandled command type: {type(command)}")
         if base_url in self.hang_for:
             await self._hang_event.wait()  # never set; cancelled by the caller
@@ -475,7 +475,7 @@ class _GatedStragglerConfirmationClient:
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
         assert base_url is not None
-        if not isinstance(command, GetStorageConfirmation):
+        if not isinstance(command, ReadStorageConfirmation):
             raise NotImplementedError(f"Unhandled command type: {type(command)}")
         if base_url == self.straggler_base_url:
             await self._release_event.wait()
@@ -1389,7 +1389,7 @@ class TestCollectConfirmationsQueriesAll:
         confirmation_calls = [
             base_url
             for base_url, command in client.calls
-            if isinstance(command, GetStorageConfirmation) and base_url is not None
+            if isinstance(command, ReadStorageConfirmation) and base_url is not None
         ]
         assert failed_upload_node.base_url in confirmation_calls
         assert len(confirmation_calls) == len(committee.members)
@@ -1709,7 +1709,7 @@ class TestCollectConfirmationsFailurePathUnchanged:
         confirmation_calls = [
             base_url
             for base_url, command in client.calls
-            if isinstance(command, GetStorageConfirmation) and base_url is not None
+            if isinstance(command, ReadStorageConfirmation) and base_url is not None
         ]
         assert sorted(confirmation_calls) == sorted(
             member.base_url for member in signed_committee.members

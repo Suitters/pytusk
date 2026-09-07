@@ -207,7 +207,7 @@ def _parse_tip_config(*, payload: object) -> TipConfig:
 
 
 @dataclasses.dataclass(kw_only=True)
-class GetTipConfig(WalrusCommand):
+class ReadTipConfig(WalrusCommand):
     """Fetch a relay's tipping policy.
 
     GET {relay}/v1/tip-config

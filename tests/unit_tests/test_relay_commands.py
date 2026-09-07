@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from pytusk.commands.relay_commands import (
-    GetTipConfig,
+    ReadTipConfig,
     RelayUploadAck,
     UploadRelayBlob,
     _parse_tip_kind,
@@ -33,11 +33,11 @@ can reach the tip-kind assertion it was written for.
 """
 
 
-class TestGetTipConfig:
+class TestReadTipConfig:
     """Tip config request shape and payload parsing."""
 
     def test_request_shape(self) -> None:
-        cmd = GetTipConfig()
+        cmd = ReadTipConfig()
         assert cmd.endpoint_role == "relay"
         assert cmd.http_method() == "GET"
         assert cmd.url_path("https://r.example.com") == (
@@ -46,7 +46,7 @@ class TestGetTipConfig:
 
     def test_parses_no_tip_bare_string(self) -> None:
         response = httpx.Response(200, json="no_tip")
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_ok()
         assert result.result_data.address is None
         assert result.result_data.kind is None
@@ -56,7 +56,7 @@ class TestGetTipConfig:
         response = httpx.Response(
             200, json={"send_tip": {"address": _RELAY_ADDRESS, "kind": {"const": 31415}}}
         )
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_ok()
         assert result.result_data.address == _RELAY_ADDRESS
         assert result.result_data.kind == ConstTip(amount=31415)
@@ -72,7 +72,7 @@ class TestGetTipConfig:
                 }
             },
         )
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_ok()
         assert result.result_data.kind == LinearTip(
             base=101, encoded_size_mul_per_kib=42
@@ -82,7 +82,7 @@ class TestGetTipConfig:
         response = httpx.Response(
             200, json={"send_tip": {"address": _RELAY_ADDRESS, "kind": {"quadratic": 3}}}
         )
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_err()
         assert "Unknown tip kind" in result.result_string
 
@@ -90,19 +90,19 @@ class TestGetTipConfig:
         response = httpx.Response(
             200, json={"send_tip": {"address": _RELAY_ADDRESS, "kind": {"linear": {"base": 1}}}}
         )
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_err()
         assert "missing field" in result.result_string
 
     def test_unrecognised_payload_is_error(self) -> None:
         response = httpx.Response(200, json={"nope": {}})
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_err()
         assert "Unrecognised tip config payload" in result.result_string
 
     def test_http_error_is_error(self) -> None:
         response = httpx.Response(503, text="down")
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_err()
         assert "503" in result.result_string
 
@@ -207,7 +207,7 @@ class TestRelayRoleDispatch:
     async def test_relay_role_requires_explicit_base_url(self, client: Any) -> None:
         with pytest.raises(ValueError, match="requires an explicit base_url"):
             await client._dispatch_walrus(
-                GetTipConfig(), timeout=None, headers=None, base_url=None
+                ReadTipConfig(), timeout=None, headers=None, base_url=None
             )
 
     async def test_upload_relay_role_requires_explicit_base_url(

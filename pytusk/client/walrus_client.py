@@ -193,7 +193,7 @@ class WalrusClient(AsyncClientBase):
                 WalrusCommand against, bypassing the command's configured
                 aggregator/publisher role resolution. Pass this for
                 ``storage_node``-role commands (e.g. PutSliver,
-                GetStorageConfirmation), whose target host is per-call data
+                ReadStorageConfirmation), whose target host is per-call data
                 resolved from the committee rather than a fixed configured
                 endpoint -- dispatch raises ValueError if a storage-node
                 command is executed without one. Meaningless for a
@@ -374,7 +374,8 @@ class WalrusClient(AsyncClientBase):
         elif command.endpoint_role == "storage_node":
             raise ValueError(
                 f"{type(command).__name__} has endpoint_role='storage_node' "
-                "and requires an explicit base_url; none was supplied."
+                "and requires an explicit base_url; none was supplied. "
+                "Resolve one with committee member's base_url."
             )
         elif command.endpoint_role == "relay":
             raise ValueError(

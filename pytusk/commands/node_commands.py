@@ -83,7 +83,7 @@ class MetadataAck:
 class SignedConfirmation:
     """A storage node's signed confirmation that it holds a blob's slivers.
 
-    Used by: GetStorageConfirmation.
+    Used by: ReadStorageConfirmation.
 
     ``serialized_message`` is passed VERBATIM into ``certify_blob``; the
     client never reconstructs it.
@@ -254,7 +254,7 @@ class PutMetadata(WalrusCommand):
 
 
 @dataclasses.dataclass(kw_only=True)
-class GetSliver(WalrusCommand):
+class ReadSliver(WalrusCommand):
     """Fetch a primary or secondary sliver from a storage node.
 
     ``GET {base_url}/v1/blobs/{blob_id}/slivers/{sliver_pair_index}/{sliver_type}``
@@ -349,13 +349,13 @@ class GetSliver(WalrusCommand):
 
 
 @dataclasses.dataclass(kw_only=True)
-class GetMetadata(WalrusCommand):
+class ReadMetadata(WalrusCommand):
     """Fetch a blob's metadata from a storage node.
 
     ``GET {base_url}/v1/blobs/{blob_id}/metadata``
 
     Returns the OUTER ``BlobMetadataWithId`` as raw BCS bytes, with no JSON
-    envelope -- see :class:`GetSliver` for why
+    envelope -- see :class:`ReadSliver` for why
     ``unwrap_storage_node_envelope`` must not be used on this response.
 
     Attributes:
@@ -413,7 +413,7 @@ class GetMetadata(WalrusCommand):
 
 
 @dataclasses.dataclass(kw_only=True)
-class GetStorageConfirmation(WalrusCommand):
+class ReadStorageConfirmation(WalrusCommand):
     """Fetch a storage node's signed confirmation for a blob's slivers.
 
     GET {base_url}/v1/blobs/{blob_id}/confirmation/permanent
@@ -624,7 +624,7 @@ def _parse_optional_epoch(*, raw: object, field: str, context: str) -> int | Non
 
 
 @dataclasses.dataclass(kw_only=True)
-class GetBlobStatus(WalrusCommand):
+class ReadBlobStatus(WalrusCommand):
     """Ask ONE storage node for its view of a blob's status.
 
     ``GET /v1/blobs/{blob_id}/status``. This is a per-node opinion, never a
@@ -637,7 +637,7 @@ class GetBlobStatus(WalrusCommand):
     committee -- see :attr:`endpoint_role`.
 
     Parse failures come back as a failed ``SuiRpcResult`` rather than
-    raising, matching :class:`GetStorageConfirmation`: one bad node
+    raising, matching :class:`ReadStorageConfirmation`: one bad node
     response must never abort the whole fan-out.
 
     Attributes:

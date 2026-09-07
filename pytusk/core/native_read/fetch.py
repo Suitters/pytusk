@@ -12,7 +12,7 @@ this fan-out does not retry a failing node.
 import asyncio
 import logging
 
-from pytusk.commands.node_commands import GetSliver, SliverData
+from pytusk.commands.node_commands import ReadSliver, SliverData
 from pytusk.core.chain import WalrusCommittee, WalrusCommitteeMember
 from pytusk.core.committee_fanout import fan_out_to_committee
 from pytusk.core.encoding import blob_id_to_url_base64, shard_index_to_pair_index
@@ -52,7 +52,7 @@ async def _fetch_node_slivers(
             which makes the ceiling a transport side effect rather than
             this library's decision.
         max_sliver_bytes (int | None): Per-response cap handed to each
-            ``GetSliver``, or None to leave responses uncapped.
+            ``ReadSliver``, or None to leave responses uncapped.
 
     Returns:
         list[bytes]: Raw bytes of every sliver this node supplied.
@@ -66,7 +66,7 @@ async def _fetch_node_slivers(
         )
         async with fanout_semaphore, semaphore:
             result = await client.execute(
-                command=GetSliver(
+                command=ReadSliver(
                     blob_id=blob_id,
                     sliver_pair_index=pair_index,
                     sliver_type=axis,

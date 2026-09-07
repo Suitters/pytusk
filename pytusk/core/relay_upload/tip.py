@@ -18,7 +18,7 @@ from pysui import ExecuteTransaction
 from pysui.sui.sui_common.async_txn import AsyncSuiTransaction
 
 from pytusk.client.walrus_client import WalrusClient
-from pytusk.commands.relay_commands import GetTipConfig
+from pytusk.commands.relay_commands import ReadTipConfig
 from pytusk.core.chain import require_success
 from pytusk.core.encoding import encoded_blob_length
 from pytusk.core.ops.tip_compose import add_tip
@@ -187,7 +187,7 @@ async def fetch_tip_config(*, client: WalrusClient, relay_url: str) -> TipConfig
         TipConfigError: If the request fails or the payload does not match
             Walrus's TipConfig shape.
     """
-    result = await client.execute(command=GetTipConfig(), base_url=relay_url)
+    result = await client.execute(command=ReadTipConfig(), base_url=relay_url)
     if not result.is_ok():
         raise TipConfigError(
             message=f"Cannot fetch tip config from {relay_url}: {result.result_string}",

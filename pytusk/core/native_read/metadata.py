@@ -11,7 +11,7 @@ See :mod:`pytusk.core.native_read` for the fixed stage order.
 import logging
 import random
 
-from pytusk.commands.node_commands import GetMetadata, MetadataData
+from pytusk.commands.node_commands import MetadataData, ReadMetadata
 from pytusk.core.chain import WalrusCommittee
 from pytusk.core.encoding import (
     MetadataVerificationError,
@@ -84,7 +84,7 @@ async def fetch_verified_metadata(
         member = members[(start + offset) % len(members)]
         attempts += 1
         result = await client.execute(
-            command=GetMetadata(blob_id=blob_id, max_bytes=metadata_cap),
+            command=ReadMetadata(blob_id=blob_id, max_bytes=metadata_cap),
             base_url=member.base_url,
         )
         if not result.is_ok():

@@ -45,7 +45,7 @@ corruption or a malformed request, not a type error:
   argument; see :func:`~pytusk.core.encoding.blob_id_to_u256`)
 - object ID, 32 bytes -> ``"0x"`` + 64 hex characters (the deletable
   confirmation URL path, passed through as-is by
-  :class:`~pytusk.commands.node_commands.GetStorageConfirmation`)
+  :class:`~pytusk.commands.node_commands.ReadStorageConfirmation`)
 - object ID, 32 bytes -> 32 RAW bytes (see :func:`object_id_to_raw_bytes`;
   used inside the signed confirmation message, never in a URL)
 """

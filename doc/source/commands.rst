@@ -106,18 +106,18 @@ Command Reference
    * - :py:class:`~pytusk.PutSliver`
      - Store a primary or secondary sliver at a storage node.
      - Result data: :py:class:`~pytusk.SliverAck`.
-   * - :py:class:`~pytusk.GetStorageConfirmation`
+   * - :py:class:`~pytusk.ReadStorageConfirmation`
      - Fetch a storage node's signed confirmation for a blob's slivers.
      - Result data: :py:class:`~pytusk.SignedConfirmation`.
-   * - :py:class:`~pytusk.GetBlobStatus`
+   * - :py:class:`~pytusk.ReadBlobStatus`
      - Ask ONE storage node for its view of a blob's status.
      - Result data: one of the :py:class:`~pytusk.BlobStatus` variants. A
        per-node opinion, never a verdict.
-   * - :py:class:`~pytusk.GetMetadata`
+   * - :py:class:`~pytusk.ReadMetadata`
      - Fetch a blob's Red Stuff metadata from a storage node.
      - Result data: :py:class:`~pytusk.MetadataData`. The outer
        ``BlobMetadataWithId``, as raw BCS.
-   * - :py:class:`~pytusk.GetSliver`
+   * - :py:class:`~pytusk.ReadSliver`
      - Fetch one primary or secondary sliver from a storage node.
      - Result data: :py:class:`~pytusk.SliverData`. Addressed by sliver-PAIR
        index, not shard index.
@@ -443,7 +443,7 @@ Store a primary or secondary sliver at a storage node.
 
 Result data: :py:class:`~pytusk.SliverAck`.
 
-GetMetadata
+ReadMetadata
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Fetch a blob's Red Stuff metadata from a storage node. The response is the
@@ -459,7 +459,7 @@ The two differ by a leading 32-byte blob ID.
 
 Result data: :py:class:`~pytusk.MetadataData`.
 
-GetSliver
+ReadSliver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Fetch one primary or secondary sliver from a storage node.
@@ -474,7 +474,7 @@ Fetch one primary or secondary sliver from a storage node.
 
 Result data: :py:class:`~pytusk.SliverData`.
 
-GetStorageConfirmation
+ReadStorageConfirmation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Fetch a storage node's signed confirmation that it holds a blob's
@@ -497,7 +497,7 @@ The result's ``serialized_message`` is passed VERBATIM into
 
 Result data: :py:class:`~pytusk.SignedConfirmation`.
 
-GetBlobStatus
+ReadBlobStatus
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Ask one storage node what it knows about a blob:
@@ -513,7 +513,7 @@ specifically want one node's answer.
 * ``blob_id: bytes`` — raw 32-byte blob ID.
 
 Parse failures come back as a failed ``SuiRpcResult`` rather than raising,
-matching ``GetStorageConfirmation``: one bad node response must never
+matching ``ReadStorageConfirmation``: one bad node response must never
 abort a committee-wide fan-out.
 
 Result data: one of the :py:class:`~pytusk.BlobStatus` variants.
@@ -522,7 +522,7 @@ Composing a Native Read
 ------------------------
 
 :py:func:`~pytusk.read_blob_native` is the orchestration layer above
-:py:class:`~pytusk.GetMetadata` and :py:class:`~pytusk.GetSliver`: it
+:py:class:`~pytusk.ReadMetadata` and :py:class:`~pytusk.ReadSliver`: it
 resolves the committee, fetches and verifies metadata, fans out for slivers
 until enough are held to decode, and reconstructs the blob locally. No
 aggregator takes part.

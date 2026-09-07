@@ -12,9 +12,9 @@ from pysui import SuiRpcResult
 
 import pytusk
 from pytusk.commands.node_commands import (
-    GetMetadata,
-    GetSliver,
     MetadataData,
+    ReadMetadata,
+    ReadSliver,
     SliverData,
 )
 from pytusk.core.chain import WalrusCommittee, WalrusCommitteeMember
@@ -75,7 +75,7 @@ class _FakeMetadataClient:
         """Return the canned metadata for this node."""
         assert base_url is not None
         self.calls.append(base_url)
-        if isinstance(command, GetMetadata):
+        if isinstance(command, ReadMetadata):
             payload = self.payloads.get(base_url)
             if payload is None:
                 return SuiRpcResult(False, "metadata unavailable")
@@ -107,7 +107,7 @@ class _FakeSliverClient:
     ) -> SuiRpcResult:
         """Return the canned sliver for the requested pair index."""
         assert base_url is not None
-        if isinstance(command, GetSliver):
+        if isinstance(command, ReadSliver):
             self.requests.append(
                 (base_url, command.sliver_pair_index, command.sliver_type)
             )
@@ -470,9 +470,9 @@ class _FakeReadClient:
     ) -> SuiRpcResult:
         """Serve metadata and sliver requests from the canned data."""
         self.executes += 1
-        if isinstance(command, GetMetadata):
+        if isinstance(command, ReadMetadata):
             return SuiRpcResult(True, "", MetadataData(content=self.metadata))
-        if isinstance(command, GetSliver):
+        if isinstance(command, ReadSliver):
             data = self.slivers_by_pair.get(command.sliver_pair_index)
             if data is None:
                 return SuiRpcResult(False, "sliver missing")
@@ -788,7 +788,7 @@ class TestResponseCaps:
 
     def test_a_command_reports_the_cap_it_was_given(self) -> None:
         """The cap a caller sets is what the client reads back off it."""
-        capped = GetSliver(
+        capped = ReadSliver(
             blob_id=_ROTATION_BLOB_ID,
             sliver_pair_index=0,
             sliver_type="primary",
@@ -803,7 +803,7 @@ class TestResponseCaps:
         The default has to be None rather than some number: an aggregator
         read returns a whole blob, and no fixed ceiling is correct for it.
         """
-        assert GetMetadata(blob_id=_ROTATION_BLOB_ID).max_response_bytes() is None
+        assert ReadMetadata(blob_id=_ROTATION_BLOB_ID).max_response_bytes() is None
 
     def test_the_sliver_cap_exceeds_a_real_sliver(self) -> None:
         """REGRESSION: a cap under a genuine sliver would reject honest nodes.

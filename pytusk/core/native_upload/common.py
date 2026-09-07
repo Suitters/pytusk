@@ -26,7 +26,7 @@ encodings in play across native upload.
 # Every client.execute(...) call site in this module passes no timeout=,
 # inheriting WalrusClient's configured default (see
 # pytusk.client.walrus_client._DEFAULT_TIMEOUT: a flat 300s read timeout,
-# upstream parity), which comfortably covers GetStorageConfirmation's
+# upstream parity), which comfortably covers ReadStorageConfirmation's
 # wait_millis long-polls without a per-call computed override.
 # ---------------------------------------------------------------------------
 

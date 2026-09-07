@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `WalrusCommand` naming settled on `Read<Command>`/`Write<Command>`. Renamed `GetSliver`→`ReadSliver`, `GetMetadata`→`ReadMetadata`, `GetBlobStatus`→`ReadBlobStatus`, `GetStorageConfirmation`→`ReadStorageConfirmation`, `GetTipConfig`→`ReadTipConfig`. No deprecation alias — `GetBlobStatus`/`GetStorageConfirmation`/`GetTipConfig` callers (published since v0.3.0/v0.5.0) must update. `ReadBlobStatus` is now also exported from top-level `pytusk`.
+
 ### Removed
 
 ## [0.5.0] - 2026-09-04

@@ -14,13 +14,13 @@ import httpx
 import pytest
 
 from pytusk.commands.node_commands import (
-    GetMetadata,
-    GetSliver,
-    GetStorageConfirmation,
     MetadataAck,
     MetadataData,
     PutMetadata,
     PutSliver,
+    ReadMetadata,
+    ReadSliver,
+    ReadStorageConfirmation,
     SignedConfirmation,
     SliverAck,
     SliverData,
@@ -230,13 +230,13 @@ class TestPutMetadata:
         assert "METADATA_NOT_FOUND" in result.result_string
 
 
-class TestGetStorageConfirmation:
+class TestReadStorageConfirmation:
     def test_endpoint_role_is_storage_node(self) -> None:
-        assert GetStorageConfirmation.endpoint_role == "storage_node"
+        assert ReadStorageConfirmation.endpoint_role == "storage_node"
 
     def test_url_path_permanent(self) -> None:
         blob_id = bytes(range(32))
-        cmd = GetStorageConfirmation(blob_id=blob_id)
+        cmd = ReadStorageConfirmation(blob_id=blob_id)
         expected_b64 = blob_id_to_url_base64(blob_id=blob_id)
         assert (
             cmd.url_path(BASE_URL)
@@ -245,7 +245,7 @@ class TestGetStorageConfirmation:
 
     def test_url_path_deletable_includes_object_id_in_path(self) -> None:
         blob_id = bytes(range(32))
-        cmd = GetStorageConfirmation(blob_id=blob_id, object_id="0xabc123")
+        cmd = ReadStorageConfirmation(blob_id=blob_id, object_id="0xabc123")
         expected_b64 = blob_id_to_url_base64(blob_id=blob_id)
         assert (
             cmd.url_path(BASE_URL)
@@ -253,21 +253,21 @@ class TestGetStorageConfirmation:
         )
 
     def test_http_method(self) -> None:
-        assert GetStorageConfirmation(blob_id=b"x" * 32).http_method() == "GET"
+        assert ReadStorageConfirmation(blob_id=b"x" * 32).http_method() == "GET"
 
     def test_query_params_omits_wait_millis_when_unset(self) -> None:
-        cmd = GetStorageConfirmation(blob_id=b"x" * 32)
+        cmd = ReadStorageConfirmation(blob_id=b"x" * 32)
         params = cmd.query_params()
         assert "wait_millis" not in params
         assert params["wait_for_registration"] == "true"
 
     def test_query_params_includes_wait_millis_when_set(self) -> None:
-        cmd = GetStorageConfirmation(blob_id=b"x" * 32, wait_millis=500)
+        cmd = ReadStorageConfirmation(blob_id=b"x" * 32, wait_millis=500)
         params = cmd.query_params()
         assert params["wait_millis"] == 500
 
     def test_query_params_wait_for_registration_false(self) -> None:
-        cmd = GetStorageConfirmation(blob_id=b"x" * 32, wait_for_registration=False)
+        cmd = ReadStorageConfirmation(blob_id=b"x" * 32, wait_for_registration=False)
         assert cmd.query_params()["wait_for_registration"] == "false"
 
     def test_parse_response_success_round_trips_standard_base64(self) -> None:
@@ -291,7 +291,7 @@ class TestGetStorageConfirmation:
             content=json.dumps(envelope).encode("utf-8"),
             headers={"content-type": "application/json"},
         )
-        cmd = GetStorageConfirmation(blob_id=b"x" * 32)
+        cmd = ReadStorageConfirmation(blob_id=b"x" * 32)
         result = cmd.parse_response(response)
         assert result.is_ok()
         assert isinstance(result.result_data, SignedConfirmation)
@@ -300,13 +300,13 @@ class TestGetStorageConfirmation:
         assert confirmation.signature == signature
 
     def test_parse_response_error_not_registered(self) -> None:
-        cmd = GetStorageConfirmation(blob_id=b"x" * 32)
+        cmd = ReadStorageConfirmation(blob_id=b"x" * 32)
         result = cmd.parse_response(_error_response(reason="NOT_REGISTERED"))
         assert result.is_err()
         assert "NOT_REGISTERED" in result.result_string
 
     def test_parse_response_error_missing_slivers(self) -> None:
-        cmd = GetStorageConfirmation(blob_id=b"x" * 32)
+        cmd = ReadStorageConfirmation(blob_id=b"x" * 32)
         result = cmd.parse_response(_error_response(reason="MISSING_SLIVERS"))
         assert result.is_err()
         assert "MISSING_SLIVERS" in result.result_string
@@ -317,7 +317,7 @@ class TestGetStorageConfirmation:
             content=json.dumps({"success": {"code": 200, "data": {}}}).encode(),
             headers={"content-type": "application/json"},
         )
-        cmd = GetStorageConfirmation(blob_id=b"x" * 32)
+        cmd = ReadStorageConfirmation(blob_id=b"x" * 32)
         result = cmd.parse_response(response)
         assert result.is_err()
 
@@ -401,13 +401,13 @@ class TestBaseUrlResolution:
         assert captured["base_url"] == "https://override.example.com"
 
 
-class TestGetSliver:
+class TestReadSliver:
     """Sliver GET against a storage node."""
 
     @staticmethod
-    def _command() -> GetSliver:
+    def _command() -> ReadSliver:
         """Build a representative sliver GET."""
-        return GetSliver(
+        return ReadSliver(
             blob_id=b"x" * 32, sliver_pair_index=3, sliver_type="primary"
         )
 
@@ -422,7 +422,7 @@ class TestGetSliver:
     def test_url_path_mirrors_the_put_form(self) -> None:
         """The read URL is byte-identical in shape to the sliver PUT URL."""
         blob_id = b"x" * 32
-        cmd = GetSliver(
+        cmd = ReadSliver(
             blob_id=blob_id, sliver_pair_index=7, sliver_type="secondary"
         )
         expected = (
@@ -434,7 +434,7 @@ class TestGetSliver:
     def test_rejects_unknown_sliver_type(self) -> None:
         """An unknown axis is rejected at construction."""
         with pytest.raises(ValueError, match="sliver_type must be one of"):
-            GetSliver(
+            ReadSliver(
                 blob_id=b"x" * 32, sliver_pair_index=0, sliver_type="diagonal"
             )
 
@@ -483,13 +483,13 @@ class TestGetSliver:
         assert not result.is_ok()
 
 
-class TestGetMetadata:
+class TestReadMetadata:
     """Blob-metadata GET against a storage node."""
 
     @staticmethod
-    def _command() -> GetMetadata:
+    def _command() -> ReadMetadata:
         """Build a representative metadata GET."""
-        return GetMetadata(blob_id=b"x" * 32)
+        return ReadMetadata(blob_id=b"x" * 32)
 
     def test_endpoint_role_is_storage_node(self) -> None:
         """Metadata reads target a storage node, not the aggregator."""
@@ -502,7 +502,7 @@ class TestGetMetadata:
     def test_url_path(self) -> None:
         """The metadata URL uses the URL-safe base64 blob ID."""
         blob_id = b"x" * 32
-        cmd = GetMetadata(blob_id=blob_id)
+        cmd = ReadMetadata(blob_id=blob_id)
         expected = (
             f"http://node/v1/blobs/"
             f"{blob_id_to_url_base64(blob_id=blob_id)}/metadata"
