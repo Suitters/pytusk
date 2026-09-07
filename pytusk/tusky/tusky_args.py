@@ -476,6 +476,40 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
     )
     _add_config_args(p_read_blob)
 
+    p_read_blob_native = subparsers.add_parser(
+        "read_blob_native",
+        help="Read blob content directly from storage nodes (no aggregator).",
+        description=(
+            "Read blob content by fetching slivers from the storage nodes "
+            "and reconstructing the blob locally, bypassing the Walrus HTTP "
+            "aggregator."
+        ),
+    )
+    _add_blob_id_arg(
+        p_read_blob_native,
+        help_text="Walrus blob ID (URL-safe base64, content hash) to read.",
+    )
+    p_read_blob_native.add_argument(
+        "--file",
+        dest="file",
+        type=Path,
+        default=None,
+        help="Write blob content to this path instead of stdout.",
+    )
+    p_read_blob_native.add_argument(
+        "--no-verify",
+        dest="verify",
+        action="store_false",
+        default=True,
+        help=(
+            "Skip content authentication: the reconstructed blob's slivers "
+            "are not checked against the metadata's hashes and the blob ID "
+            "is not re-derived. Metadata itself is still verified, but that "
+            "only authenticates the metadata, not the sliver content."
+        ),
+    )
+    _add_config_args(p_read_blob_native)
+
     p_read_quilt = subparsers.add_parser(
         "read_quilt",
         help="Read a single patch from a quilt via the Walrus HTTP aggregator.",

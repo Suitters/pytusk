@@ -113,6 +113,14 @@ Command Reference
      - Ask ONE storage node for its view of a blob's status.
      - Result data: one of the :py:class:`~pytusk.BlobStatus` variants. A
        per-node opinion, never a verdict.
+   * - :py:class:`~pytusk.GetMetadata`
+     - Fetch a blob's Red Stuff metadata from a storage node.
+     - Result data: :py:class:`~pytusk.MetadataData`. The outer
+       ``BlobMetadataWithId``, as raw BCS.
+   * - :py:class:`~pytusk.GetSliver`
+     - Fetch one primary or secondary sliver from a storage node.
+     - Result data: :py:class:`~pytusk.SliverData`. Addressed by sliver-PAIR
+       index, not shard index.
 
 Read Commands
 ----------------
@@ -435,6 +443,37 @@ Store a primary or secondary sliver at a storage node.
 
 Result data: :py:class:`~pytusk.SliverAck`.
 
+GetMetadata
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Fetch a blob's Red Stuff metadata from a storage node. The response is the
+OUTER ``BlobMetadataWithId`` payload as raw BCS bytes with no JSON envelope
+— not the inner ``BlobMetadata`` that :py:class:`~pytusk.PutMetadata` sends.
+The two differ by a leading 32-byte blob ID.
+
+* ``blob_id: bytes`` — raw 32-byte blob ID.
+* ``max_bytes: int | None`` — optional ceiling on the response body. The
+  native read path sets this from the committee's shard count, so a node
+  cannot answer a metadata request of a few tens of kilobytes with a
+  gigabyte. Callers rarely set it themselves.
+
+Result data: :py:class:`~pytusk.MetadataData`.
+
+GetSliver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Fetch one primary or secondary sliver from a storage node.
+
+* ``blob_id: bytes`` — raw 32-byte blob ID.
+* ``sliver_pair_index: int`` — the SLIVER-PAIR index to fetch. This is not a
+  shard index: the two differ by a per-blob rotation, and passing a shard
+  index fetches the wrong sliver with no error to say so.
+* ``sliver_type: str`` — ``"primary"`` or ``"secondary"``, lowercase.
+* ``max_bytes: int | None`` — optional ceiling on the response body, set by
+  the native read path from the blob's own verified metadata.
+
+Result data: :py:class:`~pytusk.SliverData`.
+
 GetStorageConfirmation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -478,3 +517,98 @@ matching ``GetStorageConfirmation``: one bad node response must never
 abort a committee-wide fan-out.
 
 Result data: one of the :py:class:`~pytusk.BlobStatus` variants.
+
+Composing a Native Read
+------------------------
+
+:py:func:`~pytusk.read_blob_native` is the orchestration layer above
+:py:class:`~pytusk.GetMetadata` and :py:class:`~pytusk.GetSliver`: it
+resolves the committee, fetches and verifies metadata, fans out for slivers
+until enough are held to decode, and reconstructs the blob locally. No
+aggregator takes part.
+
+Reach for it when you would rather not trust an aggregator to have served the
+right bytes, or when none is reachable. It issues many more requests than
+:py:class:`~pytusk.ReadBlob` and does considerably more work on the client.
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import (
+        PytuskConfiguration,
+        WalrusClient,
+        blob_id_from_url_base64,
+        read_blob_native,
+    )
+
+    async def main():
+        cfg = PytuskConfiguration(
+            active_network="testnet", pysui_profile_name="testnet"
+        )
+        async with WalrusClient(pytusk_config=cfg) as client:
+            result = await read_blob_native(
+                client=client,
+                blob_id=blob_id_from_url_base64(
+                    blob_id="OgrPHsCfZIQm_m3U3fzddQff5ubQOFuSE0RHkMY7sa8"
+                ),
+            )
+            print(len(result.content), result.epoch, result.axis)
+
+    asyncio.run(main())
+
+:py:class:`~pytusk.NativeReadResult` carries the reconstructed ``content``
+alongside the ``epoch`` its committee came from, the ``axis`` it decoded, and
+``slivers_used`` — the count of DISTINCT slivers the successful decode was
+given, not the number of node responses received.
+
+:py:func:`~pytusk.reconstruct_blob` is the stage beneath it, for a caller that
+has already resolved a committee and verified the metadata and wants only the
+fetch-and-decode step. :py:func:`~pytusk.read_blob_native` is the entry point
+for everything else.
+
+What Verification Buys You
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default the decoder re-derives the blob ID from the reconstructed content
+and rejects a mismatch, which is the only thing that detects a forged or
+corrupted sliver. Passing ``verify=False`` skips it, and that loses ALL
+content authentication of the slivers: verifying the metadata proves the
+metadata is authentic for the blob you asked for, and says nothing whatever
+about the sliver bytes the content was rebuilt from. Reserve it for slivers
+whose provenance is already established.
+
+Tolerating a Bad Node
+~~~~~~~~~~~~~~~~~~~~~
+
+The decoder is all-or-nothing over a batch of slivers, so one unparseable
+sliver would otherwise discard every good sliver fetched alongside it — and a
+plain retry fails identically, because the node that served it answers just as
+promptly the second time. One faulty node out of a thousand could deny a read
+outright, against a design meant to tolerate roughly a third of them.
+
+A native read handles this with no action from the caller. When a decode
+fails, each sliver is verified individually, whoever served an unusable one is
+barred, and the fan-out runs once more without them. This costs nothing on the
+ordinary path: the per-sliver check runs only after a decode has already
+failed.
+
+:py:class:`~pytusk.BlobDecodeError` therefore means the read failed even after
+that recovery round, or that no individual sliver could be blamed for the
+failure. :py:class:`~pytusk.SliverFetchError` means too few nodes answered to
+reach the decoding threshold at all.
+
+Verifying a Single Sliver
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:py:func:`~pytusk.verify_sliver` checks one sliver against verified metadata,
+raising :py:class:`~pytusk.SliverVerificationError` if it does not hold up. It
+is the expensive way to establish authenticity — each call re-encodes the
+sliver and rebuilds a Merkle tree over it, where one verified decode proves
+the same property for an entire blob — so reach for it to identify WHICH node
+served a bad sliver, not as a routine precaution.
+
+Note carefully what it does and does not establish. A sliver is bound to the
+index it declares for ITSELF, never to whichever index some node was asked
+for. A node answering with a genuine sliver for a different index passes this
+check, and that is correct: the decoder reads each sliver's own index and
+deduplicates on it.

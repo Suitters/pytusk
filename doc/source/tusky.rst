@@ -132,6 +132,47 @@ Example:
      "deletable": true
    }
 
+read_blob_native
+~~~~~~~~~~~~~~~~
+
+Read blob content by reconstructing it from the storage-node committee,
+bypassing the Walrus HTTP aggregator entirely.
+
+.. code-block:: console
+
+   tusky read_blob_native -b BLOB_ID [--file PATH] [--no-verify]
+
+``-b`` / ``--blob-id``
+   Walrus blob ID (URL-safe base64, content hash) to read.
+
+``--file``
+   Write the reconstructed content to this path instead of stdout. Prefer
+   this over a shell redirect for binary content.
+
+``--no-verify``
+   Skip content authentication. The reconstructed blob's slivers are not
+   checked against the metadata's hashes and the blob ID is not re-derived.
+   Blob metadata is still verified, but that only authenticates the
+   METADATA — it says nothing about the sliver bytes the content was
+   rebuilt from, which is the whole attack surface. Leave this off unless
+   the slivers' provenance is already established.
+
+Where ``read_blob`` trusts one aggregator to hand back finished bytes, this
+fetches the blob's metadata, fans out to the storage nodes for erasure-coded
+slivers, and rebuilds the content locally. It does not depend on an
+aggregator being reachable or honest, at the cost of many more requests.
+
+A node that serves an unusable sliver does not fail the read: it is
+identified, barred, and the fan-out runs once more without it. No flag
+controls that.
+
+Example:
+
+.. code-block:: console
+
+   $ tusky read_blob_native -b OgrPHsCfZIQm_m3U3fzddQff5ubQOFuSE0RHkMY7sa8
+   gap1-test
+
 read_blob
 ~~~~~~~~~
 

@@ -292,6 +292,27 @@ class WalrusCommand(ABC):
         """
         return None
 
+    def max_response_bytes(self) -> int | None:
+        """Ceiling on the response body this command will accept.
+
+        ``None`` -- the default -- means uncapped, which is the only honest
+        answer for a command whose response size is not knowable in advance:
+        an aggregator read returns a whole blob and no fixed number bounds
+        it. Commands whose expected size IS knowable let a caller supply it,
+        so a storage node cannot answer a 64 KB metadata request with a
+        gigabyte and exhaust the client before a single byte is validated.
+
+        The cap is a DEFENCE, not a validator. It is deliberately set with
+        slack rather than to an exact expected length, because a bound that
+        doubles as an equality check turns every future framing change into
+        an outage.
+
+        Returns:
+            int | None: Maximum response body size in bytes, or None for no
+            limit.
+        """
+        return None
+
     @abstractmethod
     def parse_response(self, response: httpx.Response) -> SuiRpcResult:
         """Parse an httpx response into a SuiRpcResult.

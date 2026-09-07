@@ -118,6 +118,34 @@ class NativeBlobReceipt:
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
+class NativeReadResult:
+    """The result of reading a blob directly from storage nodes.
+
+    Produced by the native read pipeline, which fetches slivers from the
+    committee and reconstructs the blob locally rather than trusting an
+    aggregator. Unlike the write-side receipts there is no transaction
+    digest: a read spends nothing and submits no transaction.
+
+    Attributes:
+        content (bytes): The reconstructed, unencoded blob content.
+        blob_id (bytes): Raw 32-byte blob ID the read was bound to. The
+            metadata's own blob ID was checked against this value, so content
+            reaching a caller is content for the blob that was asked for.
+        epoch (int): Walrus epoch of the committee the slivers were read
+            from.
+        axis (str): Sliver axis the reconstruction used, ``"primary"`` or
+            ``"secondary"``.
+        slivers_used (int): Number of slivers fed to the decoder.
+    """
+
+    content: bytes
+    blob_id: bytes
+    epoch: int
+    axis: str
+    slivers_used: int
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
 class RelayStageTimings:
     """Wall-clock duration, in seconds, of each relay upload stage.
 

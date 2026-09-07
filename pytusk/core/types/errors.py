@@ -223,6 +223,52 @@ _RESUME_HINT_PENDING_READBACK: str = (
 )
 
 
+class NativeReadError(RuntimeError):
+    """Base error for a failed stage of the native read pipeline.
+
+    Deliberately a separate hierarchy from :class:`NativeUploadError` rather
+    than a shared base: the two pipelines' stage names have nothing in
+    common, and an ``except NativeUploadError`` must not catch a read
+    failure. It also carries no ``duration`` -- the read path does not track
+    per-stage timings, and a field that is always ``None`` is surface a
+    caller cannot use.
+
+    Attributes:
+        stage (str): Name of the pipeline stage that failed (e.g.
+            ``"fetch_metadata"``, ``"fetch_slivers"``, ``"decode"``).
+    """
+
+    stage: str
+
+    def __init__(self, *, message: str, stage: str) -> None:
+        """Initialise with a human-readable message and the failing stage.
+
+        Args:
+            message (str): Human-readable description of the failure.
+            stage (str): Name of the pipeline stage that failed.
+        """
+        super().__init__(message)
+        self.stage = stage
+
+
+class MetadataFetchError(NativeReadError):
+    """Raised when no storage node supplied usable blob metadata.
+
+    Distinct from
+    :class:`~pytusk.core.encoding.redstuff.MetadataVerificationError`, which
+    means a node DID return metadata and it failed verification. This one
+    means the metadata could not be obtained at all.
+    """
+
+
+class SliverFetchError(NativeReadError):
+    """Raised when the sliver fan-out could not reach the decoding threshold.
+
+    The blob may still exist and be readable later: this reports that too few
+    nodes answered, not that the blob is absent.
+    """
+
+
 class ChainContextError(RuntimeError):
     """Raised when a pre-action chain read fails, naming which read failed.
 

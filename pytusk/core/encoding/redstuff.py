@@ -17,27 +17,48 @@ padded (confirmation response bodies). See :func:`blob_id_to_url_base64`,
 :func:`blob_id_from_url_base64` and :func:`decode_standard_base64` for the
 split. Mixing them produces failures that look like signature corruption.
 
-This module does not implement shard rotation. The Rust encoder already
-returns shard-aligned slivers (``RedstuffEncodeResult.slivers`` is indexed by
-shard, not by sliver-pair position), so pytusk has no need to re-derive the
-rotation and none of these helpers attempt it.
+Shard rotation IS implemented here, for the read path only. The Rust encoder
+already returns shard-aligned slivers on the WRITE path
+(``RedstuffEncodeResult.slivers`` is indexed by shard, not by sliver-pair
+position), so encoding never needs the rotation. Reading does: storage-node
+sliver URLs address slivers by sliver-pair index, so a shard index must be
+rotated into a pair index per blob. See :func:`rotation_offset`,
+:func:`shard_index_to_pair_index` and :func:`pair_index_to_shard_index`, which
+interpret the blob ID as BIG-endian -- the deliberate opposite of the
+little-endian convention in :func:`blob_id_to_u256` and
+:func:`root_hash_to_u256`.
 """
 
 import base64
 import dataclasses
 import math
+from collections.abc import Sequence
+from typing import Literal
 
-from pysui_fastcrypto import RedstuffSliverPair, redstuff_encode
+from pysui_fastcrypto import (
+    RedstuffSliverPair,
+    RedstuffVerifiedMetadata,
+    redstuff_decode,
+    redstuff_decode_and_verify,
+    redstuff_encode,
+    redstuff_verify_metadata,
+    redstuff_verify_sliver,
+)
 
 __all__ = [
     "RS2_ENCODING_TYPE",
     "RS2_MAX_SYMBOL_SIZE",
     "RS2_REQUIRED_ALIGNMENT",
+    "BlobDecodeError",
     "BlobTooLargeError",
     "EncodedBlob",
+    "MetadataVerificationError",
+    "SliverVerificationError",
+    "VerifiedBlobMetadata",
     "blob_id_from_url_base64",
     "blob_id_to_u256",
     "blob_id_to_url_base64",
+    "decode_blob",
     "decode_standard_base64",
     "encode_blob",
     "encoded_blob_length",
@@ -45,9 +66,14 @@ __all__ = [
     "max_n_faulty",
     "metadata_length",
     "min_n_correct",
+    "pair_index_to_shard_index",
     "root_hash_to_u256",
+    "rotation_offset",
+    "shard_index_to_pair_index",
     "source_symbol_counts",
     "symbol_size",
+    "verify_blob_metadata",
+    "verify_sliver",
 ]
 
 RS2_ENCODING_TYPE: int = 1
@@ -74,6 +100,51 @@ the private ``BLOB_ID_LEN`` constant in ``redstuff.move`` (line 10)."""
 class BlobTooLargeError(ValueError):
     """Raised when a blob exceeds the maximum encodable size for the
     committee's shard count."""
+
+
+class MetadataVerificationError(ValueError):
+    """Raised when blob metadata fetched from a storage node fails
+    verification, or is unparseable."""
+
+
+class BlobDecodeError(ValueError):
+    """Raised when RedStuff decoding fails to reconstruct the blob from the
+    supplied slivers."""
+
+
+class SliverVerificationError(ValueError):
+    """Raised when a single sliver fetched from a storage node fails its
+    check against the blob's verified metadata."""
+
+
+_METADATA_FAILURE_CODES: tuple[str, ...] = (
+    "invalid_metadata_bcs",
+    "blob_id_mismatch",
+    "invalid_hash_count",
+    "unencoded_length_too_large",
+)
+"""pysui_fastcrypto error codes from metadata verification that describe a
+bad or hostile NODE RESPONSE, as opposed to a caller bug."""
+
+_DECODE_FAILURE_CODES: tuple[str, ...] = (
+    "decoding_unsuccessful",
+    "blob_id_mismatch",
+    "invalid_sliver_bcs",
+)
+"""pysui_fastcrypto error codes from decoding that describe insufficient or
+bad SLIVERS, as opposed to a caller bug."""
+
+_SLIVER_FAILURE_CODES: tuple[str, ...] = (
+    "invalid_sliver_bcs",
+    "index_too_large",
+    "sliver_size_mismatch",
+    "symbol_size_mismatch",
+    "merkle_root_mismatch",
+)
+"""pysui_fastcrypto error codes from sliver verification that indict the NODE
+that served the sliver. ``invalid_axis`` is deliberately absent: the axis is
+this SDK's own choice and never a node's, so it stays an unwrapped
+``ValueError``."""
 
 
 def max_n_faulty(*, n_shards: int) -> int:
@@ -297,11 +368,11 @@ def blob_id_to_u256(*, blob_id: bytes) -> int:
     asserts ``derive_blob_id(root_hash, encoding_type, size) == blob_id``,
     which pins this convention -- it is not a convention pytusk chose.
 
-    A DIFFERENT, deliberately opposite convention applies elsewhere: the
-    shard-rotation offset upstream uses BIG-endian on these same bytes.
-    pytusk does not implement rotation -- the Rust ``redstuff_encode``
-    already returns shard-aligned slivers -- so no big-endian helper belongs
-    in this module. Do not add one for symmetry.
+    A DIFFERENT, deliberately opposite convention applies to these same bytes
+    for shard rotation, which interprets them as BIG-endian -- see
+    :func:`rotation_offset`. Do not use this function where a rotation offset
+    is wanted, or the reverse: both return a plausible integer, and confusing
+    them yields a wrong shard mapping with no error.
 
     Args:
         blob_id (bytes): Raw blob ID, must be exactly 32 bytes.
@@ -324,11 +395,10 @@ def root_hash_to_u256(*, root_hash: bytes) -> int:
     asserts ``derive_blob_id(root_hash, encoding_type, size) == blob_id``,
     which pins this convention -- it is not a convention pytusk chose.
 
-    A DIFFERENT, deliberately opposite convention applies elsewhere: the
-    shard-rotation offset upstream uses BIG-endian on these same bytes.
-    pytusk does not implement rotation -- the Rust ``redstuff_encode``
-    already returns shard-aligned slivers -- so no big-endian helper belongs
-    in this module. Do not add one for symmetry.
+    A DIFFERENT, deliberately opposite convention applies elsewhere: shard
+    rotation interprets bytes as BIG-endian, and rotates by the blob ID
+    rather than by a root hash -- see :func:`rotation_offset`. Nothing
+    rotates by root hash; do not reach for this conversion there.
 
     Args:
         root_hash (bytes): Raw root hash, must be exactly 32 bytes.
@@ -342,6 +412,93 @@ def root_hash_to_u256(*, root_hash: bytes) -> int:
     if len(root_hash) != 32:
         raise ValueError(f"root_hash must be 32 bytes, got {len(root_hash)}")
     return int.from_bytes(root_hash, "little")
+
+
+def rotation_offset(*, blob_id: bytes, n_shards: int) -> int:
+    """Return the per-blob shard-rotation offset.
+
+    Upstream rule (``walrus-core``'s ``rotation_offset`` via ``bytes_mod``):
+    the blob ID's raw bytes are interpreted as a BIG-endian unsigned integer
+    and reduced modulo ``n_shards``.
+
+    This is the deliberate opposite of :func:`blob_id_to_u256`'s little-endian
+    convention, which is pinned by Move's ``u256`` BCS wire format. Both apply
+    to the same 32 bytes for different purposes, and both return a plausible
+    integer -- mixing them yields a wrong shard mapping with no error.
+
+    Args:
+        blob_id (bytes): Raw blob ID, must be exactly 32 bytes.
+        n_shards (int): Total shard count for the committee, must be positive.
+
+    Returns:
+        int: The rotation offset, in ``[0, n_shards)``.
+
+    Raises:
+        ValueError: If ``blob_id`` is not exactly 32 bytes, or ``n_shards`` is
+            not positive.
+    """
+    if len(blob_id) != 32:
+        raise ValueError(f"blob_id must be 32 bytes, got {len(blob_id)}")
+    if n_shards <= 0:
+        raise ValueError(f"n_shards must be positive, got {n_shards}")
+    return int.from_bytes(blob_id, "big") % n_shards
+
+
+def shard_index_to_pair_index(
+    *, shard_index: int, blob_id: bytes, n_shards: int
+) -> int:
+    """Convert a shard index into the sliver-pair index for a blob.
+
+    A committee addresses nodes by SHARD index, while storage-node sliver URLs
+    address slivers by SLIVER-PAIR index; the two differ by a per-blob
+    rotation. Reverse of :func:`pair_index_to_shard_index`.
+
+    Args:
+        shard_index (int): Shard index, must be in ``[0, n_shards)``.
+        blob_id (bytes): Raw blob ID, must be exactly 32 bytes.
+        n_shards (int): Total shard count for the committee, must be positive.
+
+    Returns:
+        int: The sliver-pair index, in ``[0, n_shards)``.
+
+    Raises:
+        ValueError: If ``blob_id`` is not exactly 32 bytes, ``n_shards`` is not
+            positive, or ``shard_index`` is outside ``[0, n_shards)``.
+    """
+    offset = rotation_offset(blob_id=blob_id, n_shards=n_shards)
+    if not 0 <= shard_index < n_shards:
+        raise ValueError(
+            f"shard_index must be in [0, {n_shards}), got {shard_index}"
+        )
+    return (n_shards + shard_index - offset) % n_shards
+
+
+def pair_index_to_shard_index(
+    *, pair_index: int, blob_id: bytes, n_shards: int
+) -> int:
+    """Convert a sliver-pair index into the shard index that holds it.
+
+    Reverse of :func:`shard_index_to_pair_index`; see that function for the
+    distinction between the two index spaces.
+
+    Args:
+        pair_index (int): Sliver-pair index, must be in ``[0, n_shards)``.
+        blob_id (bytes): Raw blob ID, must be exactly 32 bytes.
+        n_shards (int): Total shard count for the committee, must be positive.
+
+    Returns:
+        int: The shard index, in ``[0, n_shards)``.
+
+    Raises:
+        ValueError: If ``blob_id`` is not exactly 32 bytes, ``n_shards`` is not
+            positive, or ``pair_index`` is outside ``[0, n_shards)``.
+    """
+    offset = rotation_offset(blob_id=blob_id, n_shards=n_shards)
+    if not 0 <= pair_index < n_shards:
+        raise ValueError(
+            f"pair_index must be in [0, {n_shards}), got {pair_index}"
+        )
+    return (pair_index + offset) % n_shards
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -449,3 +606,198 @@ def encode_blob(*, data: bytes, n_shards: int) -> EncodedBlob:
         # metadata-stage work for why this field is required.
         metadata_bcs=result.metadata_bcs,
     )
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class VerifiedBlobMetadata:
+    """Verified Walrus blob metadata, ready to drive a decode.
+
+    Produced by :func:`verify_blob_metadata` from the BCS bytes a storage
+    node returns for a metadata GET. Verification proves only that the
+    metadata is INTERNALLY consistent -- that its blob ID derives correctly
+    from its own sliver hashes. It does NOT prove the metadata describes the
+    blob that was actually asked for: a hostile node can return perfectly
+    valid metadata for a different blob. Comparing :attr:`blob_id` against a
+    caller-supplied, independently-sourced blob ID is what binds a read to
+    the requested blob, and is the caller's responsibility.
+
+    Attributes:
+        blob_id (bytes): Raw 32-byte blob ID, as derived from the metadata's
+            own sliver hashes.
+        unencoded_length (int): Length in bytes of the original, unencoded
+            blob. This is the authoritative source for a decode's blob size
+            -- it is NOT derivable from the slivers themselves.
+        n_shards (int): Shard count the metadata was verified against.
+        handle (RedstuffVerifiedMetadata): The native verified-metadata
+            handle, carried so :func:`decode_blob` can hand it back to the
+            Rust extension. Callers do not need to touch it.
+    """
+
+    blob_id: bytes
+    unencoded_length: int
+    n_shards: int
+    handle: RedstuffVerifiedMetadata
+
+
+def verify_blob_metadata(
+    *, metadata_bcs: bytes, n_shards: int
+) -> VerifiedBlobMetadata:
+    """Verify BCS blob metadata returned by a storage node.
+
+    ``metadata_bcs`` must be the OUTER ``BlobMetadataWithId`` payload that a
+    metadata GET returns, NOT the inner ``BlobMetadata`` that
+    :attr:`EncodedBlob.metadata_bcs` holds for a metadata PUT. The two differ
+    by a leading 32-byte blob ID; feeding the inner form here fails with
+    ``invalid_metadata_bcs``.
+
+    ``n_shards`` is a trust boundary: it must come from an on-chain-sourced
+    Walrus committee, never from a node response or from user input.
+
+    Args:
+        metadata_bcs (bytes): Raw BCS bytes of the outer
+            ``BlobMetadataWithId``, exactly as the node returned them.
+        n_shards (int): Total shard count of the committee, from chain.
+
+    Returns:
+        VerifiedBlobMetadata: The verified metadata handle.
+
+    Raises:
+        ValueError: If ``n_shards`` is less than 1, or for a caller-bug error
+            code raised by the extension (currently only ``invalid_n_shards``),
+            which is deliberately left unwrapped so it stays loud.
+        MetadataVerificationError: If the metadata is unparseable or fails
+            its internal consistency check.
+    """
+    if n_shards < 1:
+        raise ValueError(f"n_shards must be at least 1, got {n_shards}")
+    try:
+        handle = redstuff_verify_metadata(metadata_bcs, n_shards)
+    except ValueError as exc:
+        code = exc.args[0] if exc.args else None
+        if code in _METADATA_FAILURE_CODES:
+            raise MetadataVerificationError(
+                f"Blob metadata failed verification ({code})"
+            ) from exc
+        raise
+    return VerifiedBlobMetadata(
+        blob_id=handle.blob_id,
+        unencoded_length=handle.unencoded_length,
+        n_shards=handle.n_shards,
+        handle=handle,
+    )
+
+
+def verify_sliver(
+    *,
+    sliver: bytes,
+    metadata: VerifiedBlobMetadata,
+    axis: Literal["primary", "secondary"],
+) -> None:
+    """Verify one sliver against verified blob metadata.
+
+    Success is the ABSENCE of an exception, so a caller partitioning a batch
+    wraps each call in its own ``try``. The extension offers no bool form:
+    the failure modes must be told apart, since only some of them indict the
+    node that served the sliver.
+
+    This is the EXPENSIVE way to establish sliver authenticity. Each call
+    re-encodes the sliver out to ``n_shards`` symbols and rebuilds a Merkle
+    tree over them, where :func:`decode_blob` with ``verify=True`` proves the
+    same property for an entire blob at the cost of one re-encode total.
+    Reach for this only to identify WHICH node served a bad sliver once a
+    decode has already failed.
+
+    Verification binds a sliver to the index the sliver ITSELF declares, not
+    to whichever index a caller asked some node for. A node answering a
+    request for one index with a genuine sliver for another therefore passes
+    here -- correctly, since the decoder reads each sliver's own index and
+    dedupes on it. What this detects is forged or corrupted content, not
+    misfiling.
+
+    Args:
+        sliver (bytes): Raw BCS bytes of one sliver, exactly as the node
+            returned them.
+        metadata (VerifiedBlobMetadata): Verified metadata for this blob.
+        axis (Literal["primary", "secondary"]): The axis ``sliver`` belongs
+            to.
+
+    Returns:
+        None: Success is signalled by returning without raising.
+
+    Raises:
+        ValueError: For a caller-bug error code raised by the extension
+            (currently only ``invalid_axis``), deliberately left unwrapped so
+            it stays loud.
+        SliverVerificationError: If the sliver is unparseable, the wrong
+            shape for this blob, or fails its Merkle check -- each of which
+            indicts the node that served it.
+    """
+    try:
+        redstuff_verify_sliver(sliver, metadata.handle, axis)
+    except ValueError as exc:
+        code = exc.args[0] if exc.args else None
+        if code in _SLIVER_FAILURE_CODES:
+            raise SliverVerificationError(
+                f"Sliver failed verification ({code})"
+            ) from exc
+        raise
+
+
+def decode_blob(
+    *,
+    slivers: Sequence[bytes],
+    metadata: VerifiedBlobMetadata,
+    axis: Literal["primary", "secondary"],
+    verify: bool = True,
+) -> bytes:
+    """Reconstruct a blob from slivers of a single axis.
+
+    With ``verify`` true (the default) this re-verifies the reconstruction
+    against ``metadata``, which is the only way to detect a corrupted or
+    forged sliver: unverified decoding of bad slivers produces DIFFERENT
+    BYTES AND NO ERROR. Reserve ``verify=False`` for slivers whose
+    provenance is already trusted.
+
+    Sliver order does not matter and gaps are fine -- each sliver carries its
+    own index in its bytes, and extras past the decoding threshold are
+    ignored. A completion-ordered list from a concurrent fan-out can be
+    passed straight in.
+
+    Both paths take the blob size and shard count from ``metadata``, so a
+    wrong blob size cannot silently truncate the result.
+
+    ``axis`` is not validated here: the extension rejects anything other than
+    ``"primary"`` or ``"secondary"`` with ``invalid_axis``, which is a caller
+    bug and is left to propagate. Note that slivers of the WRONG axis are not
+    rejected -- they deserialize, fail an internal length check, and are
+    silently discarded, surfacing as ``decoding_unsuccessful``. On that error
+    with a full sliver set, suspect the axis before the network.
+
+    Args:
+        slivers (Sequence[bytes]): Raw sliver bytes, all of one axis.
+        metadata (VerifiedBlobMetadata): Verified metadata for this blob.
+        axis (Literal["primary", "secondary"]): The sliver axis to decode.
+        verify (bool): Whether to re-verify the reconstruction. Defaults to
+            ``True``.
+
+    Returns:
+        bytes: The reconstructed, unencoded blob content.
+
+    Raises:
+        ValueError: For a caller-bug error code raised by the extension (e.g.
+            ``invalid_axis``, ``sliver_size_mismatch``), deliberately left
+            unwrapped so it stays loud.
+        BlobDecodeError: If the slivers are insufficient or bad.
+    """
+    sliver_list = list(slivers)
+    try:
+        if verify:
+            return redstuff_decode_and_verify(sliver_list, metadata.handle, axis)
+        return redstuff_decode(
+            sliver_list, metadata.unencoded_length, metadata.n_shards, axis
+        )
+    except ValueError as exc:
+        code = exc.args[0] if exc.args else None
+        if code in _DECODE_FAILURE_CODES:
+            raise BlobDecodeError(f"RedStuff decode failed ({code})") from exc
+        raise

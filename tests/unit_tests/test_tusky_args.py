@@ -463,3 +463,63 @@ class TestStoreQuiltRelayArgs:
 
         assert "store_quilt_relay" in _DISPATCH
 
+
+
+class TestReadBlobNativeArgs:
+    """Argument shape for the read_blob_native subcommand."""
+
+    def test_blob_id_short_flag(self) -> None:
+        """read_blob_native accepts -b as a Walrus blob ID."""
+        args = build_parser(in_args=["read_blob_native", "-b", BLOB_ID])
+        assert args.blob_id == BLOB_ID
+
+    def test_blob_id_long_flag(self) -> None:
+        """read_blob_native accepts --blob-id."""
+        args = build_parser(in_args=["read_blob_native", "--blob-id", BLOB_ID])
+        assert args.blob_id == BLOB_ID
+
+    def test_file_defaults_to_none(self) -> None:
+        """Without --file the handler writes to stdout."""
+        args = build_parser(in_args=["read_blob_native", "-b", BLOB_ID])
+        assert args.file is None
+
+    def test_file_is_not_existence_checked(self, tmp_path) -> None:
+        """REGRESSION: --file here is an OUTPUT path, not an input.
+
+        Every other --file in tusky is an input guarded by ValidateFile,
+        which calls parser.error() when the path does not exist. Reusing
+        that action here would reject every destination that has not been
+        created yet -- which is nearly all of them.
+        """
+        target = tmp_path / "not-created-yet.bin"
+        assert not target.exists()
+
+        args = build_parser(
+            in_args=["read_blob_native", "-b", BLOB_ID, "--file", str(target)]
+        )
+
+        assert str(args.file) == str(target)
+
+    def test_verify_defaults_to_true(self) -> None:
+        """Verification is on unless explicitly disabled."""
+        args = build_parser(in_args=["read_blob_native", "-b", BLOB_ID])
+        assert args.verify is True
+
+    def test_no_verify_clears_verify(self) -> None:
+        """--no-verify sets verify False rather than a separate field.
+
+        The library parameter is `verify`; a `no_verify` field would have to
+        be inverted at the call site, which is the kind of double negative
+        that eventually gets inverted twice.
+        """
+        args = build_parser(
+            in_args=["read_blob_native", "-b", BLOB_ID, "--no-verify"]
+        )
+        assert args.verify is False
+        assert not hasattr(args, "no_verify")
+
+    def test_takes_no_signing_arguments(self) -> None:
+        """A native read submits no transaction, so it has no signer."""
+        args = build_parser(in_args=["read_blob_native", "-b", BLOB_ID])
+        assert not hasattr(args, "sender")
+        assert not hasattr(args, "sponsor")

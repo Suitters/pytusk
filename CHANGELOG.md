@@ -9,9 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- [feature](https://github.com/Suitters/pytusk/issues/14) Sliver reconstruction from native storage nodes.
+
 ### Fixed
 
 - [bug](https://github.com/Suitters/pytusk/issues/13) Missing SharedBlob docs.
+- Native blob reads now recover from a storage node serving unusable slivers, instead of one bad sliver failing the whole read.
+- The native read sliver threshold now counts distinct slivers, so a node repeating a single sliver can no longer stall a read.
 
 ### Changed
 

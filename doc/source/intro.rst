@@ -73,6 +73,12 @@ Walrus Terms
        bytes to the relay, then certifies on Sui using the confirmation
        certificate the relay returns — delivery is delegated, certification
        is not.
+   * - Native Read
+     - Reading a blob directly from the storage-node committee: fetch and
+       verify the blob's metadata, fan out for erasure-coded slivers until
+       enough are held to decode, then reconstruct the content locally. No
+       aggregator takes part, and a node that serves unusable slivers is
+       identified and excluded rather than being allowed to fail the read.
 
 Client Design
 --------------

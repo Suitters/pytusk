@@ -14,12 +14,16 @@ import httpx
 import pytest
 
 from pytusk.commands.node_commands import (
+    GetMetadata,
+    GetSliver,
     GetStorageConfirmation,
     MetadataAck,
+    MetadataData,
     PutMetadata,
     PutSliver,
     SignedConfirmation,
     SliverAck,
+    SliverData,
 )
 from pytusk.commands.walrus_command import error_reason
 from pytusk.core.encoding import blob_id_to_url_base64
@@ -395,3 +399,150 @@ class TestBaseUrlResolution:
             cmd, timeout=None, headers=None, base_url="https://override.example.com"
         )
         assert captured["base_url"] == "https://override.example.com"
+
+
+class TestGetSliver:
+    """Sliver GET against a storage node."""
+
+    @staticmethod
+    def _command() -> GetSliver:
+        """Build a representative sliver GET."""
+        return GetSliver(
+            blob_id=b"x" * 32, sliver_pair_index=3, sliver_type="primary"
+        )
+
+    def test_endpoint_role_is_storage_node(self) -> None:
+        """Sliver reads target a storage node, not the aggregator."""
+        assert self._command().endpoint_role == "storage_node"
+
+    def test_http_method(self) -> None:
+        """A sliver read is a GET."""
+        assert self._command().http_method() == "GET"
+
+    def test_url_path_mirrors_the_put_form(self) -> None:
+        """The read URL is byte-identical in shape to the sliver PUT URL."""
+        blob_id = b"x" * 32
+        cmd = GetSliver(
+            blob_id=blob_id, sliver_pair_index=7, sliver_type="secondary"
+        )
+        expected = (
+            f"http://node/v1/blobs/{blob_id_to_url_base64(blob_id=blob_id)}"
+            f"/slivers/7/secondary"
+        )
+        assert cmd.url_path("http://node") == expected
+
+    def test_rejects_unknown_sliver_type(self) -> None:
+        """An unknown axis is rejected at construction."""
+        with pytest.raises(ValueError, match="sliver_type must be one of"):
+            GetSliver(
+                blob_id=b"x" * 32, sliver_pair_index=0, sliver_type="diagonal"
+            )
+
+    def test_parse_response_returns_raw_bytes(self) -> None:
+        """A successful read yields the node's bytes unmodified."""
+        payload = b"\x00\x01\x02raw sliver bytes\xff"
+        response = httpx.Response(
+            status_code=200,
+            content=payload,
+            headers={"content-type": "application/octet-stream"},
+        )
+        result = self._command().parse_response(response)
+        assert result.is_ok()
+        assert isinstance(result.result_data, SliverData)
+        assert result.result_data.content == payload
+
+    def test_json_shaped_body_is_not_unwrapped(self) -> None:
+        """REGRESSION: a sliver body never goes through the JSON envelope.
+
+        ``unwrap_storage_node_envelope`` belongs to the status and
+        confirmation endpoints. Sliver bytes that happen to parse as an
+        envelope must still come back byte-for-byte -- otherwise a sliver
+        would be silently replaced by its own "data" field.
+        """
+        payload = json.dumps(
+            {"success": {"code": 200, "data": "not-a-sliver"}}
+        ).encode()
+        response = httpx.Response(
+            status_code=200,
+            content=payload,
+            headers={"content-type": "application/json"},
+        )
+        result = self._command().parse_response(response)
+        assert result.is_ok()
+        assert isinstance(result.result_data, SliverData)
+        assert result.result_data.content == payload
+
+    def test_parse_response_error(self) -> None:
+        """An HTTP error yields a failed result rather than raising."""
+        response = httpx.Response(
+            status_code=404,
+            content=b"not found",
+            headers={"content-type": "text/plain"},
+        )
+        result = self._command().parse_response(response)
+        assert not result.is_ok()
+
+
+class TestGetMetadata:
+    """Blob-metadata GET against a storage node."""
+
+    @staticmethod
+    def _command() -> GetMetadata:
+        """Build a representative metadata GET."""
+        return GetMetadata(blob_id=b"x" * 32)
+
+    def test_endpoint_role_is_storage_node(self) -> None:
+        """Metadata reads target a storage node, not the aggregator."""
+        assert self._command().endpoint_role == "storage_node"
+
+    def test_http_method(self) -> None:
+        """A metadata read is a GET."""
+        assert self._command().http_method() == "GET"
+
+    def test_url_path(self) -> None:
+        """The metadata URL uses the URL-safe base64 blob ID."""
+        blob_id = b"x" * 32
+        cmd = GetMetadata(blob_id=blob_id)
+        expected = (
+            f"http://node/v1/blobs/"
+            f"{blob_id_to_url_base64(blob_id=blob_id)}/metadata"
+        )
+        assert cmd.url_path("http://node") == expected
+
+    def test_parse_response_returns_raw_bytes(self) -> None:
+        """A successful read yields the node's BCS bytes unmodified."""
+        payload = b"\x20\x00outer BlobMetadataWithId bytes\xfe"
+        response = httpx.Response(
+            status_code=200,
+            content=payload,
+            headers={"content-type": "application/octet-stream"},
+        )
+        result = self._command().parse_response(response)
+        assert result.is_ok()
+        assert isinstance(result.result_data, MetadataData)
+        assert result.result_data.content == payload
+
+    def test_json_shaped_body_is_not_unwrapped(self) -> None:
+        """REGRESSION: metadata bytes never go through the JSON envelope."""
+        payload = json.dumps(
+            {"success": {"code": 200, "data": "not-metadata"}}
+        ).encode()
+        response = httpx.Response(
+            status_code=200,
+            content=payload,
+            headers={"content-type": "application/json"},
+        )
+        result = self._command().parse_response(response)
+        assert result.is_ok()
+        assert isinstance(result.result_data, MetadataData)
+        assert result.result_data.content == payload
+
+    def test_parse_response_error(self) -> None:
+        """An HTTP error yields a failed result rather than raising."""
+        response = httpx.Response(
+            status_code=500,
+            content=b"boom",
+            headers={"content-type": "text/plain"},
+        )
+        result = self._command().parse_response(response)
+        assert not result.is_ok()

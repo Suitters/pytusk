@@ -97,6 +97,33 @@ class SignedConfirmation:
     signature: bytes
 
 
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class SliverData:
+    """Raw sliver bytes returned by a storage-node sliver GET.
+
+    Attributes:
+        content (bytes): The sliver's raw BCS bytes, exactly as the node
+            returned them. Not decoded here -- decoding is the caller's job.
+    """
+
+    content: bytes
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class MetadataData:
+    """Raw blob-metadata bytes returned by a storage-node metadata GET.
+
+    Attributes:
+        content (bytes): Raw BCS bytes of the OUTER ``BlobMetadataWithId``,
+            exactly as the node returned them. This is the form
+            :func:`~pytusk.core.encoding.redstuff.verify_blob_metadata`
+            expects, and differs from the inner ``BlobMetadata`` that a
+            metadata PUT sends by a leading 32-byte blob ID.
+    """
+
+    content: bytes
+
+
 @dataclasses.dataclass(kw_only=True)
 class PutSliver(WalrusCommand):
     """Store a primary or secondary sliver at a storage node.
@@ -224,6 +251,165 @@ class PutMetadata(WalrusCommand):
             "",
             MetadataAck(blob_id=blob_id_to_url_base64(blob_id=self.blob_id)),
         )
+
+
+@dataclasses.dataclass(kw_only=True)
+class GetSliver(WalrusCommand):
+    """Fetch a primary or secondary sliver from a storage node.
+
+    ``GET {base_url}/v1/blobs/{blob_id}/slivers/{sliver_pair_index}/{sliver_type}``
+
+    The response body is RAW BCS bytes with ``Content-Type:
+    application/octet-stream`` and NO JSON envelope. This is the same wire
+    form :class:`PutSliver` sends, and is deliberately NOT parsed with
+    ``unwrap_storage_node_envelope`` -- that helper is for the status and
+    confirmation endpoints, which do use the ``{success, data}`` JSON
+    envelope. Using it here would corrupt a sliver whose bytes happen to
+    parse as JSON.
+
+    ``sliver_pair_index`` is a SLIVER-PAIR index, not a shard index; the two
+    differ by a per-blob rotation (see
+    :func:`~pytusk.core.encoding.redstuff.shard_index_to_pair_index`).
+
+    Attributes:
+        blob_id (bytes): Raw 32-byte blob ID.
+        sliver_pair_index (int): Sliver-pair index to fetch.
+        sliver_type (str): ``"primary"`` or ``"secondary"``.
+    """
+
+    endpoint_role: ClassVar[str] = "storage_node"
+
+    blob_id: bytes
+    sliver_pair_index: int
+    sliver_type: str
+    max_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the sliver type.
+
+        Raises:
+            ValueError: If ``sliver_type`` is not a known axis.
+        """
+        if self.sliver_type not in _VALID_SLIVER_TYPES:
+            raise ValueError(
+                f"sliver_type must be one of {_VALID_SLIVER_TYPES!r}, "
+                f"got {self.sliver_type!r}"
+            )
+
+    def http_method(self) -> str:
+        """Return the HTTP method.
+
+        Returns:
+            str: Always ``"GET"``.
+        """
+        return "GET"
+
+    def max_response_bytes(self) -> int | None:
+        """Return the caller-supplied response cap, if any.
+
+        Returns:
+            int | None: ``max_bytes`` as given, or None for no limit.
+        """
+        return self.max_bytes
+
+    def url_path(self, base_url: str) -> str:
+        """Build the sliver URL for a storage node.
+
+        Args:
+            base_url (str): Storage node base URL.
+
+        Returns:
+            str: The fully-qualified sliver URL.
+        """
+        blob_id_b64 = blob_id_to_url_base64(blob_id=self.blob_id)
+        return (
+            f"{base_url}/v1/blobs/{blob_id_b64}/slivers/"
+            f"{self.sliver_pair_index}/{self.sliver_type}"
+        )
+
+    def parse_response(self, response: httpx.Response) -> SuiRpcResult:
+        """Return the sliver's raw bytes, unmodified.
+
+        Args:
+            response (httpx.Response): The node's response.
+
+        Returns:
+            SuiRpcResult: Carrying :class:`SliverData` on success.
+        """
+        if response.is_error:
+            context = (
+                f"blob_id={blob_id_to_url_base64(blob_id=self.blob_id)} "
+                f"sliver_pair_index={self.sliver_pair_index} "
+                f"sliver_type={self.sliver_type}"
+            )
+            return SuiRpcResult(
+                False, http_failure_message(response=response, context=context)
+            )
+        return SuiRpcResult(True, "", SliverData(content=response.content))
+
+
+@dataclasses.dataclass(kw_only=True)
+class GetMetadata(WalrusCommand):
+    """Fetch a blob's metadata from a storage node.
+
+    ``GET {base_url}/v1/blobs/{blob_id}/metadata``
+
+    Returns the OUTER ``BlobMetadataWithId`` as raw BCS bytes, with no JSON
+    envelope -- see :class:`GetSliver` for why
+    ``unwrap_storage_node_envelope`` must not be used on this response.
+
+    Attributes:
+        blob_id (bytes): Raw 32-byte blob ID.
+    """
+
+    endpoint_role: ClassVar[str] = "storage_node"
+
+    blob_id: bytes
+    max_bytes: int | None = None
+
+    def http_method(self) -> str:
+        """Return the HTTP method.
+
+        Returns:
+            str: Always ``"GET"``.
+        """
+        return "GET"
+
+    def max_response_bytes(self) -> int | None:
+        """Return the caller-supplied response cap, if any.
+
+        Returns:
+            int | None: ``max_bytes`` as given, or None for no limit.
+        """
+        return self.max_bytes
+
+    def url_path(self, base_url: str) -> str:
+        """Build the metadata URL for a storage node.
+
+        Args:
+            base_url (str): Storage node base URL.
+
+        Returns:
+            str: The fully-qualified metadata URL.
+        """
+        blob_id_b64 = blob_id_to_url_base64(blob_id=self.blob_id)
+        return f"{base_url}/v1/blobs/{blob_id_b64}/metadata"
+
+    def parse_response(self, response: httpx.Response) -> SuiRpcResult:
+        """Return the metadata's raw bytes, unmodified.
+
+        Args:
+            response (httpx.Response): The node's response.
+
+        Returns:
+            SuiRpcResult: Carrying :class:`MetadataData` on success.
+        """
+        if response.is_error:
+            context = f"blob_id={blob_id_to_url_base64(blob_id=self.blob_id)}"
+            return SuiRpcResult(
+                False, http_failure_message(response=response, context=context)
+            )
+        return SuiRpcResult(True, "", MetadataData(content=response.content))
 
 
 @dataclasses.dataclass(kw_only=True)

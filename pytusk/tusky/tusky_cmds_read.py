@@ -5,10 +5,12 @@
 
 """Read command handlers for the tusky CLI.
 
-Handlers for reading blob/quilt content via the Walrus HTTP aggregator.
-Each handler takes the parsed argparse.Namespace for its subcommand and
-performs the corresponding pytusk operation. Handlers are async; tusky.py
-drives them via asyncio.run.
+Handlers for reading blob/quilt content, either via the Walrus HTTP
+aggregator or -- for ``read_blob_native`` -- by fetching slivers from the
+storage nodes and reconstructing the blob locally, with no aggregator in
+the path. Each handler takes the parsed argparse.Namespace for its
+subcommand and performs the corresponding pytusk operation. Handlers are
+async; tusky.py drives them via asyncio.run.
 """
 
 import argparse
@@ -19,9 +21,11 @@ from pysui import GetObject
 
 from pytusk import (
     BlobData,
+    BlobDecodeError,
     DeletableStatus,
     InvalidStatus,
     ListQuiltPatches,
+    NativeReadError,
     NonexistentStatus,
     PermanentStatus,
     QuiltPatch,
@@ -37,6 +41,7 @@ from pytusk import (
     fetch_blob_status,
     resolve_blob_sui_objects,
 )
+from pytusk import read_blob_native as _read_blob_native_pipeline
 from pytusk.tusky.tusky_cmds_common import config_from_args
 
 
@@ -230,3 +235,49 @@ async def quilt_patches(args: argparse.Namespace) -> None:
         enriched["ladder_tier"] = tier
     enriched["patches"] = listing.to_dict()["patches"]
     print(json.dumps(enriched, indent=2))
+
+
+async def read_blob_native(args: argparse.Namespace) -> None:
+    """Reconstruct a blob from storage-node slivers, bypassing the aggregator.
+
+    Content goes to ``--file`` when one is given, otherwise to stdout. The
+    summary line is printed ONLY in the ``--file`` case: when the content
+    itself is on stdout, anything else written there would corrupt it for a
+    caller piping the output into a file or another process.
+
+    Args:
+        args (argparse.Namespace): Parsed `read_blob_native` subcommand
+            arguments.
+    """
+    config = config_from_args(args)
+    blob_id = blob_id_from_url_base64(value=args.blob_id)
+    async with WalrusClient(pytusk_config=config) as client:
+        try:
+            result = await _read_blob_native_pipeline(
+                client=client, blob_id=blob_id, verify=args.verify
+            )
+        except NativeReadError as exc:
+            print(f"Error in {exc.stage}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        except (
+            BlobDecodeError,
+            RuntimeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            print(f"Error reading blob: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    if args.file is None:
+        sys.stdout.buffer.write(result.content)
+        if sys.stdout.isatty():
+            sys.stdout.buffer.write(b"\n")
+        return
+
+    with open(args.file, "wb") as handle:
+        handle.write(result.content)
+    print(
+        f"Wrote {len(result.content)} bytes to {args.file} "
+        f"(epoch {result.epoch}, {result.slivers_used} {result.axis} slivers)"
+    )

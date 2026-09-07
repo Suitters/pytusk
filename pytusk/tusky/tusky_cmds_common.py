@@ -48,7 +48,7 @@ from pytusk import (
     extract_balance_change_costs,
     resolve_package_id,
 )
-from pytusk import wal_balance_and_decimals as core_wal_balance_and_decimals
+from pytusk import wal_balance_and_decimals as _wal_balance_and_decimals_lib
 
 # The domain half of what this module used to do itself. Plan #28 step 10
 # moved it into the library proper under the placement rule: matching a WAL
@@ -253,7 +253,7 @@ async def wal_balance_and_decimals(
             and WAL's decimals.
     """
     try:
-        return await core_wal_balance_and_decimals(client=client, owner=owner)
+        return await _wal_balance_and_decimals_lib(client=client, owner=owner)
     except RuntimeError as exc:
         # The library function raises where this one used to exit: a library
         # must not terminate its caller's process. The message text is
