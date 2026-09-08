@@ -27,7 +27,7 @@ def _consistency_params(
 ) -> dict[str, Any]:
     """Build the integrity-check query parameters shared by three read commands.
 
-    ``ReadBlob``, ``ReadBlobByObjectId`` and ``ConcatBlobs`` all accept the
+    ``ReadBlob``, ``ReadBlobByObjectId`` and ``ReadConcatBlobs`` all accept the
     same pair of flags and encode them identically. Held in one function so a
     correction to a parameter NAME cannot be applied to one command and missed
     on the other two -- the drift this was copy-pasted into being. The other
@@ -255,7 +255,7 @@ class ReadQuiltPatchById(WalrusCommand):
 
 
 @dataclasses.dataclass(kw_only=True)
-class ListQuiltPatches(WalrusCommand):
+class ReadQuiltPatches(WalrusCommand):
     """List the patches contained in a quilt.
 
     GET {aggregator}/v1/quilts/{quilt_id}/patches
@@ -292,7 +292,7 @@ class ListQuiltPatches(WalrusCommand):
 
 
 @dataclasses.dataclass(kw_only=True)
-class ConcatBlobs(WalrusCommand):
+class ReadConcatBlobs(WalrusCommand):
     """Concatenate multiple blobs and return the combined content.
 
     GET {aggregator}/v1alpha/blobs/concat

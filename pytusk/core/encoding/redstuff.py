@@ -522,7 +522,7 @@ class EncodedBlob:
             indexed by shard.
         metadata_bcs (bytes): BCS-encoded Walrus ``BlobMetadata`` payload.
             A storage node requires this to be PUT to it (see
-            :class:`~pytusk.commands.node_commands.PutMetadata`) before it
+            :class:`~pytusk.commands.node_commands.WriteMetadata`) before it
             will accept any sliver PUT for this blob.
     """
 
@@ -602,7 +602,7 @@ def encode_blob(*, data: bytes, n_shards: int) -> EncodedBlob:
         # dependency on pysui_fastcrypto exposing this property: no
         # getattr fallback or default is used, so this line raises
         # AttributeError against any wheel that lacks it, rather than
-        # silently degrading. See PutMetadata/native-upload's
+        # silently degrading. See WriteMetadata/native-upload's
         # metadata-stage work for why this field is required.
         metadata_bcs=result.metadata_bcs,
     )

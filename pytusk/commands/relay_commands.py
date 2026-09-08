@@ -88,10 +88,11 @@ def _tip_amount(*, value: object, field: str) -> int:
         int: The validated amount, in MIST.
 
     Raises:
-        ValueError: If ``value`` is not a non-negative, non-boolean integer.
+        TypeError: If ``value`` is not an integer, or is a ``bool``.
+        ValueError: If ``value`` is negative.
     """
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{field} must be an integer, got {value!r}")
+        raise TypeError(f"{field} must be an integer, got {value!r}")
     if value < 0:
         raise ValueError(f"{field} must not be negative, got {value}")
     return value
@@ -111,8 +112,9 @@ def _parse_tip_kind(*, payload: object) -> TipKind:
         TipKind: The parsed tip formula.
 
     Raises:
+        TypeError: If any amount is not an integer, or is a ``bool``.
         ValueError: If the payload does not match either variant, or if any
-            amount is not a non-negative, non-boolean integer.
+            amount is negative.
     """
     if not isinstance(payload, dict) or len(payload) != 1:
         raise ValueError(f"Unrecognised tip kind payload: {payload!r}")
@@ -156,10 +158,11 @@ def _tip_address(*, value: object) -> str:
         str: The validated address, unchanged.
 
     Raises:
+        TypeError: If ``value`` is not a string.
         ValueError: If ``value`` is not a well-formed Sui address.
     """
     if not isinstance(value, str):
-        raise ValueError(f"tip address must be a string, got {value!r}")
+        raise TypeError(f"tip address must be a string, got {value!r}")
     if not value.startswith("0x"):
         raise ValueError(f"tip address must be 0x-prefixed, got {value!r}")
     digits = value[2:]
@@ -231,12 +234,12 @@ class ReadTipConfig(WalrusCommand):
             )
         try:
             return SuiRpcResult(True, "", _parse_tip_config(payload=response.json()))
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             return SuiRpcResult(False, str(exc))
 
 
 @dataclasses.dataclass(kw_only=True)
-class UploadRelayBlob(WalrusCommand):
+class WriteRelayBlob(WalrusCommand):
     """Hand an unencoded blob to a relay, which fans slivers out for us.
 
     POST {relay}/v1/blob-upload-relay

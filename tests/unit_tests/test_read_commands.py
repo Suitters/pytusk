@@ -11,13 +11,13 @@ import httpx
 import pytest
 
 from pytusk.commands.read_commands import (
-    ConcatBlobs,
-    ListQuiltPatches,
     ReadBlob,
     ReadBlobByObjectId,
     ReadBlobPartial,
+    ReadConcatBlobs,
     ReadQuiltPatch,
     ReadQuiltPatchById,
+    ReadQuiltPatches,
 )
 from pytusk.commands.walrus_command import (
     BlobData,
@@ -206,19 +206,19 @@ class TestReadQuiltPatchById:
         assert result.is_err()
 
 
-class TestListQuiltPatches:
+class TestReadQuiltPatches:
     def test_http_method(self) -> None:
-        assert ListQuiltPatches(quilt_id="q1").http_method() == "GET"
+        assert ReadQuiltPatches(quilt_id="q1").http_method() == "GET"
 
     def test_url_path(self) -> None:
-        cmd = ListQuiltPatches(quilt_id="q1")
+        cmd = ReadQuiltPatches(quilt_id="q1")
         assert cmd.url_path(AGG) == f"{AGG}/v1/quilts/q1/patches"
 
     def test_query_params_empty(self) -> None:
-        assert ListQuiltPatches(quilt_id="q1").query_params() == {}
+        assert ReadQuiltPatches(quilt_id="q1").query_params() == {}
 
     def test_parse_response_success(self) -> None:
-        cmd = ListQuiltPatches(quilt_id="q1")
+        cmd = ReadQuiltPatches(quilt_id="q1")
         body = [
             {"identifier": "file_a", "patch_id": "patch1", "tags": {"k": "v"}},
             {"identifier": "file_b", "patch_id": "patch2", "tags": {}},
@@ -233,36 +233,36 @@ class TestListQuiltPatches:
         assert result.result_data.patches[1].tags == {}
 
     def test_parse_response_error(self) -> None:
-        cmd = ListQuiltPatches(quilt_id="q1")
+        cmd = ReadQuiltPatches(quilt_id="q1")
         result = cmd.parse_response(mock_response(is_error=True, text="Quilt not found"))
         assert result.is_err()
 
 
-class TestConcatBlobs:
+class TestReadConcatBlobs:
     def test_http_method(self) -> None:
-        assert ConcatBlobs(ids=["a", "b"]).http_method() == "GET"
+        assert ReadConcatBlobs(ids=["a", "b"]).http_method() == "GET"
 
     def test_url_path(self) -> None:
-        cmd = ConcatBlobs(ids=["a", "b"])
+        cmd = ReadConcatBlobs(ids=["a", "b"])
         assert cmd.url_path(AGG) == f"{AGG}/v1alpha/blobs/concat"
 
     def test_query_params(self) -> None:
-        cmd = ConcatBlobs(ids=["id1", "id2", "id3"])
+        cmd = ReadConcatBlobs(ids=["id1", "id2", "id3"])
         params = cmd.query_params()
         assert params["ids"] == "id1,id2,id3"
 
     def test_request_body_none(self) -> None:
-        assert ConcatBlobs(ids=["a"]).request_body() is None
+        assert ReadConcatBlobs(ids=["a"]).request_body() is None
 
     def test_parse_response_success(self) -> None:
-        cmd = ConcatBlobs(ids=["a", "b"])
+        cmd = ReadConcatBlobs(ids=["a", "b"])
         result = cmd.parse_response(mock_response(content=b"combined"))
         assert result.is_ok()
         assert isinstance(result.result_data, BlobData)
         assert result.result_data.content == b"combined"
 
     def test_parse_response_error(self) -> None:
-        cmd = ConcatBlobs(ids=["a", "b"])
+        cmd = ReadConcatBlobs(ids=["a", "b"])
         result = cmd.parse_response(mock_response(is_error=True, text="Concat failed"))
         assert result.is_err()
         assert "Concat failed" in result.result_string

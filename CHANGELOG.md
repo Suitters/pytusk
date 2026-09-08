@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Breaking:** `WalrusCommand` naming settled on `Read<Command>`/`Write<Command>`. Renamed `GetSliver`→`ReadSliver`, `GetMetadata`→`ReadMetadata`, `GetBlobStatus`→`ReadBlobStatus`, `GetStorageConfirmation`→`ReadStorageConfirmation`, `GetTipConfig`→`ReadTipConfig`. No deprecation alias — `GetBlobStatus`/`GetStorageConfirmation`/`GetTipConfig` callers (published since v0.3.0/v0.5.0) must update. `ReadBlobStatus` is now also exported from top-level `pytusk`.
+- **Breaking:** The last 7 grandfathered `WalrusCommand` names converted to `Read<Command>`/`Write<Command>`, closing out the naming convention with no exceptions remaining. Renamed `StoreBlob`→`WriteBlob`, `StoreQuilt`→`WriteQuilt`, `PutSliver`→`WriteSliver`, `PutMetadata`→`WriteMetadata`, `UploadRelayBlob`→`WriteRelayBlob`, `ListQuiltPatches`→`ReadQuiltPatches`, `ConcatBlobs`→`ReadConcatBlobs`. No deprecation alias — all 7 (published since v0.3.0-v0.5.0) require caller updates.
 
 ### Removed
 

@@ -168,7 +168,7 @@ def unwrap_storage_node_envelope(
     assuming an object.
 
     THIS IS THE STORAGE-NODE ENVELOPE ONLY. Publisher responses
-    (``StoreBlob``/``StoreQuilt``) use a different ``newlyCreated`` /
+    (``WriteBlob``/``WriteQuilt``) use a different ``newlyCreated`` /
     ``alreadyCertified`` shape with no ``success`` wrapper and must never be
     passed here. Error bodies are not wrapped in ``success`` either -- they
     carry the AIP-193 shape :func:`error_reason` parses -- so call this only
@@ -338,7 +338,7 @@ class WalrusCommand(ABC):
 class BlobData(DataClassJsonMixin):
     """Raw blob content returned by blob read operations.
 
-    Used by: ReadBlob, ReadBlobByObjectId, ConcatBlobs.
+    Used by: ReadBlob, ReadBlobByObjectId, ReadConcatBlobs.
 
     Args:
         content (bytes): Raw blob bytes.
@@ -377,7 +377,7 @@ class QuiltPatch(DataClassJsonMixin):
 class BlobReceipt(DataClassJsonMixin):
     """Receipt returned after storing a blob.
 
-    Used by: StoreBlob.
+    Used by: WriteBlob.
 
     Args:
         object_id (str): Sui object ID of the stored blob (empty for alreadyCertified blobs).
@@ -398,7 +398,7 @@ class BlobReceipt(DataClassJsonMixin):
 class QuiltReceipt(DataClassJsonMixin):
     """Receipt returned after storing a quilt.
 
-    Used by: StoreQuilt.
+    Used by: WriteQuilt.
 
     Args:
         quilt_id (str): Walrus quilt identifier.
@@ -419,7 +419,7 @@ class QuiltReceipt(DataClassJsonMixin):
 class QuiltPatchItem(DataClassJsonMixin):
     """One patch's identity within a quilt.
 
-    Used by: ListQuiltPatches.
+    Used by: ReadQuiltPatches.
 
     Args:
         patch_key (str): Patch key assigned within the quilt. Named to
@@ -440,7 +440,7 @@ class QuiltPatchItem(DataClassJsonMixin):
 class QuiltPatchListing(DataClassJsonMixin):
     """Patches contained in a quilt, as returned by list-patches-in-quilt.
 
-    Used by: ListQuiltPatches.
+    Used by: ReadQuiltPatches.
 
     Args:
         patches (list[QuiltPatchItem]): One entry per patch in the quilt.

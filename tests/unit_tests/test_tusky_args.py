@@ -15,7 +15,6 @@ import pytest
 
 from pytusk.tusky.tusky_args import build_parser
 
-
 OBJECT_ID = "0x" + "1" * 64
 OBJECT_ID_2 = "0x" + "2" * 64
 STORAGE_ID = "0x" + "3" * 64
@@ -178,7 +177,7 @@ class TestStorageIdArguments:
         assert args.storage_id == STORAGE_ID
 
 
-class TestStoreQuiltPatchFlags:
+class TestWriteQuiltPatchFlags:
     """--patch-file/--patch-content parse to dest patch_file/patch_content."""
 
     def test_patch_file_repeatable_key_value(self) -> None:
@@ -302,7 +301,7 @@ class TestTipGasSource:
         assert args.tip_gas_source == OBJECT_ID
 
 
-class TestStoreBlobRelayLogVerbose:
+class TestWriteBlobRelayLogVerbose:
     """--log-file/--verbose exist on BOTH relay commands, as on store_blob_native."""
 
     def test_log_file_and_verbose(self, tmp_path) -> None:
@@ -383,7 +382,7 @@ class TestFuseStorageUnchanged:
         assert args.fuse_from == [OBJECT_ID]
 
 
-class TestStoreQuiltRelayArgs:
+class TestWriteQuiltRelayArgs:
     """store_quilt_relay takes the quilt's patch flags AND the relay flags.
 
     It is a separate subcommand rather than a flag on store_quilt, so the

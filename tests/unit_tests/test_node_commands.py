@@ -16,14 +16,14 @@ import pytest
 from pytusk.commands.node_commands import (
     MetadataAck,
     MetadataData,
-    PutMetadata,
-    PutSliver,
     ReadMetadata,
     ReadSliver,
     ReadStorageConfirmation,
     SignedConfirmation,
     SliverAck,
     SliverData,
+    WriteMetadata,
+    WriteSliver,
 )
 from pytusk.commands.walrus_command import error_reason
 from pytusk.core.encoding import blob_id_to_url_base64
@@ -80,13 +80,13 @@ class TestErrorReason:
         assert error_reason(response=response) is None
 
 
-class TestPutSliver:
+class TestWriteSliver:
     def test_endpoint_role_is_storage_node(self) -> None:
-        assert PutSliver.endpoint_role == "storage_node"
+        assert WriteSliver.endpoint_role == "storage_node"
 
     def test_url_path_exact_string(self) -> None:
         blob_id = bytes(range(32))
-        cmd = PutSliver(
+        cmd = WriteSliver(
             blob_id=blob_id, sliver_pair_index=7, sliver_type="primary", data=b"x"
         )
         expected_b64 = blob_id_to_url_base64(blob_id=blob_id)
@@ -98,7 +98,7 @@ class TestPutSliver:
     def test_url_path_blob_id_segment_is_url_safe_unpadded(self) -> None:
         # A blob_id chosen so the standard alphabet would emit '+', '/', '='.
         blob_id = bytes([0xFF, 0xFE, 0xFD]) + bytes(29)
-        cmd = PutSliver(
+        cmd = WriteSliver(
             blob_id=blob_id, sliver_pair_index=0, sliver_type="secondary", data=b"x"
         )
         url = cmd.url_path(BASE_URL)
@@ -109,7 +109,7 @@ class TestPutSliver:
 
     @pytest.mark.parametrize("sliver_type", ["primary", "secondary"])
     def test_accepts_valid_sliver_type(self, sliver_type: str) -> None:
-        cmd = PutSliver(
+        cmd = WriteSliver(
             blob_id=b"x" * 32, sliver_pair_index=0, sliver_type=sliver_type, data=b"x"
         )
         assert cmd.sliver_type == sliver_type
@@ -119,7 +119,7 @@ class TestPutSliver:
     )
     def test_rejects_invalid_sliver_type(self, sliver_type: str) -> None:
         with pytest.raises(ValueError):
-            PutSliver(
+            WriteSliver(
                 blob_id=b"x" * 32,
                 sliver_pair_index=0,
                 sliver_type=sliver_type,
@@ -127,21 +127,21 @@ class TestPutSliver:
             )
 
     def test_http_method(self) -> None:
-        cmd = PutSliver(
+        cmd = WriteSliver(
             blob_id=b"x" * 32, sliver_pair_index=0, sliver_type="primary", data=b"x"
         )
         assert cmd.http_method() == "PUT"
 
     def test_request_body_returns_exact_bytes(self) -> None:
         payload = b"\x00\x01\xffraw-bcs-bytes"
-        cmd = PutSliver(
+        cmd = WriteSliver(
             blob_id=b"x" * 32, sliver_pair_index=0, sliver_type="primary", data=payload
         )
         assert cmd.request_body() == payload
 
     def test_parse_response_success(self) -> None:
         blob_id = b"x" * 32
-        cmd = PutSliver(
+        cmd = WriteSliver(
             blob_id=blob_id, sliver_pair_index=3, sliver_type="secondary", data=b"x"
         )
         response = httpx.Response(
@@ -158,7 +158,7 @@ class TestPutSliver:
         assert ack.sliver_type == "secondary"
 
     def test_parse_response_error_not_registered(self) -> None:
-        cmd = PutSliver(
+        cmd = WriteSliver(
             blob_id=b"x" * 32, sliver_pair_index=0, sliver_type="primary", data=b"x"
         )
         result = cmd.parse_response(_error_response(reason="NOT_REGISTERED"))
@@ -166,7 +166,7 @@ class TestPutSliver:
         assert "NOT_REGISTERED" in result.result_string
 
     def test_parse_response_error_missing_slivers(self) -> None:
-        cmd = PutSliver(
+        cmd = WriteSliver(
             blob_id=b"x" * 32, sliver_pair_index=0, sliver_type="primary", data=b"x"
         )
         result = cmd.parse_response(_error_response(reason="MISSING_SLIVERS"))
@@ -174,20 +174,20 @@ class TestPutSliver:
         assert "MISSING_SLIVERS" in result.result_string
 
 
-class TestPutMetadata:
+class TestWriteMetadata:
     def test_endpoint_role_is_storage_node(self) -> None:
-        assert PutMetadata.endpoint_role == "storage_node"
+        assert WriteMetadata.endpoint_role == "storage_node"
 
     def test_url_path_exact_string(self) -> None:
         blob_id = bytes(range(32))
-        cmd = PutMetadata(blob_id=blob_id, metadata_bcs=b"x")
+        cmd = WriteMetadata(blob_id=blob_id, metadata_bcs=b"x")
         expected_b64 = blob_id_to_url_base64(blob_id=blob_id)
         assert cmd.url_path(BASE_URL) == f"{BASE_URL}/v1/blobs/{expected_b64}/metadata"
 
     def test_url_path_blob_id_segment_is_url_safe_unpadded(self) -> None:
         # A blob_id chosen so the standard alphabet would emit '+', '/', '='.
         blob_id = bytes([0xFF, 0xFE, 0xFD]) + bytes(29)
-        cmd = PutMetadata(blob_id=blob_id, metadata_bcs=b"x")
+        cmd = WriteMetadata(blob_id=blob_id, metadata_bcs=b"x")
         url = cmd.url_path(BASE_URL)
         segment = url.split("/v1/blobs/", 1)[1].split("/metadata", 1)[0]
         assert "=" not in segment
@@ -195,12 +195,12 @@ class TestPutMetadata:
         assert "/" not in segment
 
     def test_http_method(self) -> None:
-        cmd = PutMetadata(blob_id=b"x" * 32, metadata_bcs=b"x")
+        cmd = WriteMetadata(blob_id=b"x" * 32, metadata_bcs=b"x")
         assert cmd.http_method() == "PUT"
 
     def test_request_body_returns_exact_bytes(self) -> None:
         payload = b"\x00\x01\xffraw-bcs-metadata-bytes"
-        cmd = PutMetadata(blob_id=b"x" * 32, metadata_bcs=payload)
+        cmd = WriteMetadata(blob_id=b"x" * 32, metadata_bcs=payload)
         assert cmd.request_body() == payload
 
     @pytest.mark.parametrize("status_code", [200, 201, 202])
@@ -208,7 +208,7 @@ class TestPutMetadata:
         """200 (already stored), 201 (stored) and 202 (buffered pending
         registration) are ALL success."""
         blob_id = b"x" * 32
-        cmd = PutMetadata(blob_id=blob_id, metadata_bcs=b"x")
+        cmd = WriteMetadata(blob_id=blob_id, metadata_bcs=b"x")
         response = httpx.Response(
             status_code=status_code,
             content=json.dumps(
@@ -223,7 +223,7 @@ class TestPutMetadata:
         assert ack.blob_id == blob_id_to_url_base64(blob_id=blob_id)
 
     def test_parse_response_error_includes_status_and_reason(self) -> None:
-        cmd = PutMetadata(blob_id=b"x" * 32, metadata_bcs=b"x")
+        cmd = WriteMetadata(blob_id=b"x" * 32, metadata_bcs=b"x")
         result = cmd.parse_response(_error_response(reason="METADATA_NOT_FOUND"))
         assert result.is_err()
         assert "400" in result.result_string
@@ -349,7 +349,7 @@ class TestBaseUrlResolution:
     async def test_storage_node_command_without_base_url_raises(
         self, client: Any
     ) -> None:
-        cmd = PutSliver(
+        cmd = WriteSliver(
             blob_id=b"x" * 32, sliver_pair_index=0, sliver_type="primary", data=b"x"
         )
         with pytest.raises(ValueError, match="requires an explicit base_url"):
@@ -370,7 +370,7 @@ class TestBaseUrlResolution:
             return "sent"
 
         monkeypatch.setattr(client, "_send", fake_send)
-        cmd = PutSliver(
+        cmd = WriteSliver(
             blob_id=b"x" * 32, sliver_pair_index=0, sliver_type="primary", data=b"x"
         )
         result = await client._dispatch_walrus(
@@ -383,7 +383,7 @@ class TestBaseUrlResolution:
     async def test_explicit_base_url_wins_over_publisher_role(
         self, client: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from pytusk.commands.write_commands import StoreBlob
+        from pytusk.commands.write_commands import WriteBlob
 
         captured: dict[str, Any] = {}
 
@@ -394,7 +394,7 @@ class TestBaseUrlResolution:
             return "sent"
 
         monkeypatch.setattr(client, "_send", fake_send)
-        cmd = StoreBlob(data=b"x", epochs=1, send_object_to="0xabc")
+        cmd = WriteBlob(data=b"x", epochs=1, send_object_to="0xabc")
         await client._dispatch_walrus(
             cmd, timeout=None, headers=None, base_url="https://override.example.com"
         )

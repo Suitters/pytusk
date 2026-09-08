@@ -817,7 +817,7 @@ Unlike the operations above, a native blob upload is not a single
 second, later transaction) bracketing an off-chain step: uploading
 erasure-coded slivers to the storage-node committee and collecting their
 signed confirmations. This is pytusk's alternative to the HTTP publisher/
-aggregator commands (``StoreBlob``/``ReadBlob`` and friends) — see
+aggregator commands (``WriteBlob``/``ReadBlob`` and friends) — see
 :doc:`intro` for when to choose one over the other.
 
 The highest-level entry point runs the whole pipeline in one call:

@@ -16,7 +16,7 @@ import logging
 import random
 import time
 
-from pytusk.commands.node_commands import PutMetadata, PutSliver
+from pytusk.commands.node_commands import WriteMetadata, WriteSliver
 from pytusk.core.certification import min_weight_for_quorum
 from pytusk.core.chain import WalrusCommittee, WalrusCommitteeMember
 from pytusk.core.committee_fanout import fan_out_to_committee
@@ -443,7 +443,7 @@ async def _put_metadata(
             # No timeout= passed: inherits the client's configured default
             # (see the module-level comment near _HEARTBEAT_INTERVAL_SECONDS).
             result = await client.execute(
-                command=PutMetadata(blob_id=blob_id, metadata_bcs=metadata_bcs),
+                command=WriteMetadata(blob_id=blob_id, metadata_bcs=metadata_bcs),
                 base_url=member.base_url,
             )
         if result.is_ok():
@@ -574,7 +574,7 @@ async def _put_sliver(
                 # default (300s flat read timeout, upstream parity -- see
                 # module-level comment near _HEARTBEAT_INTERVAL_SECONDS).
                 result = await client.execute(
-                    command=PutSliver(
+                    command=WriteSliver(
                         blob_id=blob_id,
                         sliver_pair_index=sliver_pair_index,
                         sliver_type=sliver_type,
@@ -638,7 +638,7 @@ async def _upload_node(
 ) -> NodeUploadOutcome:
     """Upload a node's blob metadata, then every sliver pair it is assigned.
 
-    The node's ``PutMetadata`` is issued FIRST and awaited to completion
+    The node's ``WriteMetadata`` is issued FIRST and awaited to completion
     (with the same retry policy as sliver PUTs -- see :func:`_put_metadata`)
     before any sliver PUT for this node is even created. If it fails after
     retries are exhausted, the WHOLE NODE is abandoned immediately with a
@@ -919,7 +919,7 @@ async def upload_slivers(
 ) -> FanoutReport:
     """Fan out each node's metadata, then every sliver pair, and await quorum.
 
-    Per node, ``PutMetadata`` is sent BEFORE any of that node's sliver PUTs
+    Per node, ``WriteMetadata`` is sent BEFORE any of that node's sliver PUTs
     (see :func:`_upload_node`) -- storage nodes reject sliver PUTs for a
     blob whose metadata they have not yet received, so a node whose
     metadata PUT fails after retries is abandoned entirely (weight not
@@ -932,7 +932,7 @@ async def upload_slivers(
     recomputed here. The target node is
     ``committee.member_for_shard(shard_index=i)``, while the URL path index
     used in the PUT is ``pair.sliver_pair_index`` -- these two are NOT the
-    same value and must not be conflated. Two ``PutSliver`` commands are
+    same value and must not be conflated. Two ``WriteSliver`` commands are
     issued per pair (``"primary"``/``"secondary"``).
 
     Work is grouped BY NODE, not by raw shard index, before any upload

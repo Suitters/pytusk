@@ -14,8 +14,6 @@ from pytusk.client.walrus_client import WalrusClient, get_walrus_epoch
 from pytusk.commands.node_commands import (
     MetadataAck,
     MetadataData,
-    PutMetadata,
-    PutSliver,
     ReadBlobStatus,
     ReadMetadata,
     ReadSliver,
@@ -23,24 +21,26 @@ from pytusk.commands.node_commands import (
     SignedConfirmation,
     SliverAck,
     SliverData,
+    WriteMetadata,
+    WriteSliver,
 )
 
 # Read commands
 from pytusk.commands.read_commands import (
-    ConcatBlobs,
-    ListQuiltPatches,
     ReadBlob,
     ReadBlobByObjectId,
     ReadBlobPartial,
+    ReadConcatBlobs,
     ReadQuiltPatch,
     ReadQuiltPatchById,
+    ReadQuiltPatches,
 )
 
 # Relay commands (upload-relay tip config and blob upload)
 from pytusk.commands.relay_commands import (
     ReadTipConfig,
     RelayUploadAck,
-    UploadRelayBlob,
+    WriteRelayBlob,
 )
 
 # Command base and response types
@@ -61,8 +61,8 @@ from pytusk.commands.walrus_command import (
 
 # Write commands
 from pytusk.commands.write_commands import (
-    StoreBlob,
-    StoreQuilt,
+    WriteBlob,
+    WriteQuilt,
 )
 
 # Configuration
@@ -377,20 +377,20 @@ __all__ = [  # noqa: RUF022
     "ReadBlobByObjectId",
     "ReadQuiltPatch",
     "ReadQuiltPatchById",
-    "ListQuiltPatches",
-    "ConcatBlobs",
+    "ReadQuiltPatches",
+    "ReadConcatBlobs",
     # Relay commands
     "ReadTipConfig",
     "RelayUploadAck",
-    "UploadRelayBlob",
+    "WriteRelayBlob",
     # Write commands
-    "StoreBlob",
-    "StoreQuilt",
+    "WriteBlob",
+    "WriteQuilt",
     # Storage-node commands
     "MetadataAck",
     "MetadataData",
-    "PutMetadata",
-    "PutSliver",
+    "WriteMetadata",
+    "WriteSliver",
     "ReadBlobStatus",
     "ReadMetadata",
     "ReadSliver",

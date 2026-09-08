@@ -27,17 +27,17 @@ import httpx
 import pytest
 
 from pytusk.client.walrus_client import WalrusClient
-from pytusk.commands.node_commands import PutSliver
+from pytusk.commands.node_commands import WriteSliver
 from pytusk.config.tusk_config import PytuskConfiguration
 
 BASE_URL = "https://node-1.example.com:9185"
 
 
-def _put_sliver_command() -> PutSliver:
-    """A well-formed ``PutSliver`` command used only to drive ``_send``;
+def _write_sliver_command() -> WriteSliver:
+    """A well-formed ``WriteSliver`` command used only to drive ``_send``;
     its URL/body shape is not itself under test here -- see
     ``test_node_commands.py`` for that."""
-    return PutSliver(
+    return WriteSliver(
         blob_id=b"x" * 32, sliver_pair_index=0, sliver_type="primary", data=b"payload"
     )
 
@@ -76,7 +76,7 @@ class TestSendTransportExceptionHandling:
             raise ssl.SSLError("[SSL: SSLV3_ALERT_BAD_RECORD_MAC] bad record mac")
 
         monkeypatch.setattr(client._httpx, "request", fake_request)
-        cmd = _put_sliver_command()
+        cmd = _write_sliver_command()
         expected_url = cmd.url_path(BASE_URL)
 
         result = await client._send(
@@ -99,7 +99,7 @@ class TestSendTransportExceptionHandling:
             raise OSError("Network is unreachable")
 
         monkeypatch.setattr(client._httpx, "request", fake_request)
-        cmd = _put_sliver_command()
+        cmd = _write_sliver_command()
         expected_url = cmd.url_path(BASE_URL)
 
         result = await client._send(
@@ -122,7 +122,7 @@ class TestSendTransportExceptionHandling:
             raise httpx.ConnectError("Connection refused")
 
         monkeypatch.setattr(client._httpx, "request", fake_request)
-        cmd = _put_sliver_command()
+        cmd = _write_sliver_command()
         expected_url = cmd.url_path(BASE_URL)
 
         result = await client._send(
@@ -155,7 +155,7 @@ class TestSendCancelledErrorPropagates:
             raise asyncio.CancelledError()
 
         monkeypatch.setattr(client._httpx, "request", fake_request)
-        cmd = _put_sliver_command()
+        cmd = _write_sliver_command()
 
         with pytest.raises(asyncio.CancelledError):
             await client._send(

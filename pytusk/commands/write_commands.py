@@ -20,7 +20,7 @@ from pytusk.commands.walrus_command import (
 
 
 @dataclasses.dataclass(kw_only=True)
-class StoreBlob(WalrusCommand):
+class WriteBlob(WalrusCommand):
     """Store a blob on Walrus.
 
     PUT {walrus_publisher_url}/v1/blobs
@@ -96,7 +96,7 @@ class StoreBlob(WalrusCommand):
 
 
 @dataclasses.dataclass(kw_only=True)
-class StoreQuilt(WalrusCommand):
+class WriteQuilt(WalrusCommand):
     """Store a quilt (collection of named blobs) on Walrus.
 
     PUT {walrus_publisher_url}/v1/quilts
@@ -110,7 +110,7 @@ class StoreQuilt(WalrusCommand):
             caller otherwise.
         permanent (bool): If True, the quilt cannot be deleted before expiry.
             Quilts are deletable by default (Walrus v1.33+), matching
-            StoreBlob's persistence semantics.
+            WriteBlob's persistence semantics.
     """
 
     endpoint_role: ClassVar[str] = "publisher"

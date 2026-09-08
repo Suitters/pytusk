@@ -88,22 +88,30 @@ Command Reference
    * - :py:class:`~pytusk.ReadQuiltPatchById`
      - Read a single patch from a quilt directly by its QuiltPatchId.
      - Result data: :py:class:`~pytusk.QuiltPatch`.
-   * - :py:class:`~pytusk.ConcatBlobs`
+   * - :py:class:`~pytusk.ReadQuiltPatches`
+     - List the patches contained in a quilt.
+     - Result data: :py:class:`~pytusk.QuiltPatchListing`.
+   * - :py:class:`~pytusk.ReadConcatBlobs`
      - Read and concatenate multiple blobs into a single response.
      - Result data: :py:class:`~pytusk.BlobData`. Uses the ``v1alpha`` endpoint.
-   * - :py:class:`~pytusk.StoreBlob`
+   * - :py:class:`~pytusk.WriteBlob`
      - Store a blob on Walrus.
      - Result data: :py:class:`~pytusk.BlobReceipt`. Deletable by default —
        pass ``permanent=True`` to disable.
-   * - :py:class:`~pytusk.StoreQuilt`
+   * - :py:class:`~pytusk.WriteQuilt`
      - Store a collection of named blobs (a quilt) on Walrus.
      - Result data: :py:class:`~pytusk.QuiltReceipt`. Deletable by default —
        pass ``permanent=True`` to disable.
-   * - :py:class:`~pytusk.PutMetadata`
+   * - :py:class:`~pytusk.WriteRelayBlob`
+     - Hand an unencoded blob to an upload relay, which fans slivers out
+       on the caller's behalf.
+     - Result data: :py:class:`~pytusk.RelayUploadAck`. Targets a relay
+       endpoint, not the publisher.
+   * - :py:class:`~pytusk.WriteMetadata`
      - Store a blob's Red Stuff metadata at a storage node.
      - Result data: :py:class:`~pytusk.MetadataAck`. Must succeed before
        the node will accept any sliver PUT for that blob.
-   * - :py:class:`~pytusk.PutSliver`
+   * - :py:class:`~pytusk.WriteSliver`
      - Store a primary or secondary sliver at a storage node.
      - Result data: :py:class:`~pytusk.SliverAck`.
    * - :py:class:`~pytusk.ReadStorageConfirmation`
@@ -284,7 +292,38 @@ Result data: :py:class:`~pytusk.QuiltPatch`.
 
     asyncio.run(main())
 
-ConcatBlobs
+ReadQuiltPatches
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+List the patches contained in a quilt.
+
+* ``quilt_id: str`` — Walrus quilt identifier.
+
+Result data: :py:class:`~pytusk.QuiltPatchListing`, a list of
+:py:class:`~pytusk.QuiltPatchItem` (``patch_key``, ``patch_id``, ``tags``).
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import PytuskConfiguration, WalrusClient, ReadQuiltPatches
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            result = await client.execute(
+                command=ReadQuiltPatches(quilt_id="...")
+            )
+            if result.is_ok():
+                for patch in result.result_data.patches:
+                    print(patch.patch_key, patch.patch_id)
+
+    asyncio.run(main())
+
+ReadConcatBlobs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Read and concatenate multiple blobs into a single response, in the order
@@ -299,7 +338,7 @@ Result data: :py:class:`~pytusk.BlobData`. Uses the Walrus ``v1alpha`` API.
 .. code-block:: python
 
     import asyncio
-    from pytusk import PytuskConfiguration, WalrusClient, ConcatBlobs
+    from pytusk import PytuskConfiguration, WalrusClient, ReadConcatBlobs
 
     async def main():
         config = PytuskConfiguration(
@@ -309,7 +348,7 @@ Result data: :py:class:`~pytusk.BlobData`. Uses the Walrus ``v1alpha`` API.
         )
         async with WalrusClient(pytusk_config=config) as client:
             result = await client.execute(
-                command=ConcatBlobs(ids=["blob_id_1", "blob_id_2"])
+                command=ReadConcatBlobs(ids=["blob_id_1", "blob_id_2"])
             )
             if result.is_ok():
                 blob = result.result_data
@@ -322,7 +361,7 @@ Write Commands
 
 Detail for the write (publisher) commands.
 
-StoreBlob
+WriteBlob
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Store a blob on Walrus.
@@ -344,7 +383,7 @@ Result data: :py:class:`~pytusk.BlobReceipt`.
 .. code-block:: python
 
     import asyncio
-    from pytusk import PytuskConfiguration, WalrusClient, StoreBlob
+    from pytusk import PytuskConfiguration, WalrusClient, WriteBlob
 
     async def main():
         config = PytuskConfiguration(
@@ -354,7 +393,7 @@ Result data: :py:class:`~pytusk.BlobReceipt`.
         )
         async with WalrusClient(pytusk_config=config) as client:
             result = await client.execute(
-                command=StoreBlob(
+                command=WriteBlob(
                     data=b"hello walrus",
                     epochs=5,
                     send_object_to="0x...",
@@ -366,7 +405,7 @@ Result data: :py:class:`~pytusk.BlobReceipt`.
 
     asyncio.run(main())
 
-StoreQuilt
+WriteQuilt
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Store a quilt — a collection of named blobs — on Walrus.
@@ -380,14 +419,14 @@ Store a quilt — a collection of named blobs — on Walrus.
   otherwise.
 * ``permanent: bool = False`` — if ``True``, the quilt cannot be deleted
   before expiry. Quilts are deletable by default (Walrus v1.33+),
-  matching :py:class:`~pytusk.StoreBlob`'s persistence semantics.
+  matching :py:class:`~pytusk.WriteBlob`'s persistence semantics.
 
 Result data: :py:class:`~pytusk.QuiltReceipt`.
 
 .. code-block:: python
 
     import asyncio
-    from pytusk import PytuskConfiguration, WalrusClient, StoreQuilt
+    from pytusk import PytuskConfiguration, WalrusClient, WriteQuilt
 
     async def main():
         config = PytuskConfiguration(
@@ -397,7 +436,7 @@ Result data: :py:class:`~pytusk.QuiltReceipt`.
         )
         async with WalrusClient(pytusk_config=config) as client:
             result = await client.execute(
-                command=StoreQuilt(
+                command=WriteQuilt(
                     files={"a.txt": b"...", "b.txt": b"..."},
                     epochs=5,
                     send_object_to="0x...",
@@ -409,6 +448,58 @@ Result data: :py:class:`~pytusk.QuiltReceipt`.
 
     asyncio.run(main())
 
+WriteRelayBlob
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Hand an unencoded blob to an upload relay, which fans slivers out on the
+caller's behalf. Targets a relay endpoint (``endpoint_role = "relay"``),
+not the publisher. The blob must already be registered on chain, and any
+tip the relay charges must already be executed and confirmed — posting
+early yields HTTP 401, not a retryable error.
+
+* ``blob_id: str`` — blob ID as URL-safe unpadded base64.
+* ``data: bytes`` — the raw UNENCODED blob bytes; the relay performs the
+  encoding. The server caps the body at 1 GiB.
+* ``register_tip_tx_digest: str | None = None`` — digest of the
+  transaction that paid the tip. Omit only against a ``no_tip`` relay.
+* ``nonce: str | None = None`` — base64url nonce from the authentication
+  package. Omit only against a ``no_tip`` relay.
+* ``deletable_blob_object: str | None = None`` — object ID when the blob
+  was registered deletable. Omitted means permanent — the two are
+  distinguished by presence, not by a boolean.
+* ``encoding_type: int | None = None`` — omitted means the relay's
+  default, RS2, the only live variant.
+
+Result data: :py:class:`~pytusk.RelayUploadAck` — carries an
+:py:class:`~pytusk.RelayUploadOutcome` rather than raising on a refused
+upload, since this call runs post-spend (tip paid, blob registered).
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import PytuskConfiguration, WalrusClient, WriteRelayBlob
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            result = await client.execute(
+                command=WriteRelayBlob(
+                    blob_id="...",
+                    data=b"hello walrus",
+                    register_tip_tx_digest="...",
+                    nonce="...",
+                )
+            )
+            if result.is_ok():
+                ack = result.result_data
+                print(ack.outcome, ack.confirmation_certificate)
+
+    asyncio.run(main())
+
 Storage Node Commands
 ---------------------
 
@@ -416,7 +507,7 @@ Detail for the commands sent directly to an individual storage node.
 The base URL for these is a specific node's address resolved from the
 committee, not an aggregator or publisher daemon.
 
-PutMetadata
+WriteMetadata
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Store a blob's Red Stuff metadata at a storage node. A node requires this
@@ -429,7 +520,7 @@ that has not received it rejects every sliver PUT with HTTP 400
 
 Result data: :py:class:`~pytusk.MetadataAck`.
 
-PutSliver
+WriteSliver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Store a primary or secondary sliver at a storage node.
@@ -448,7 +539,7 @@ ReadMetadata
 
 Fetch a blob's Red Stuff metadata from a storage node. The response is the
 OUTER ``BlobMetadataWithId`` payload as raw BCS bytes with no JSON envelope
-— not the inner ``BlobMetadata`` that :py:class:`~pytusk.PutMetadata` sends.
+— not the inner ``BlobMetadata`` that :py:class:`~pytusk.WriteMetadata` sends.
 The two differ by a leading 32-byte blob ID.
 
 * ``blob_id: bytes`` — raw 32-byte blob ID.

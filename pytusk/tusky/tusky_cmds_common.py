@@ -445,6 +445,17 @@ def read_file_bytes(path: str | Path) -> bytes:
         return f.read()
 
 
+def write_file_bytes(path: str | Path, data: bytes) -> None:
+    """Write bytes to a file synchronously.
+
+    Args:
+        path (str | Path): Filesystem path to write.
+        data (bytes): Raw content to write.
+    """
+    with open(path, "wb") as f:
+        f.write(data)
+
+
 async def collect_quilt_patches(*, args: argparse.Namespace) -> dict[str, bytes]:
     """Merge the three patch sources into one identifier-to-bytes mapping.
 

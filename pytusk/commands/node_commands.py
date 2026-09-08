@@ -53,7 +53,7 @@ _VALID_SLIVER_TYPES = ("primary", "secondary")
 class SliverAck:
     """Acknowledgement that a storage node accepted a sliver PUT.
 
-    Used by: PutSliver.
+    Used by: WriteSliver.
 
     Attributes:
         blob_id (str): Blob ID the sliver belongs to, URL-safe base64.
@@ -70,7 +70,7 @@ class SliverAck:
 class MetadataAck:
     """Acknowledgement that a storage node accepted a blob-metadata PUT.
 
-    Used by: PutMetadata.
+    Used by: WriteMetadata.
 
     Attributes:
         blob_id (str): Blob ID the metadata belongs to, URL-safe base64.
@@ -125,7 +125,7 @@ class MetadataData:
 
 
 @dataclasses.dataclass(kw_only=True)
-class PutSliver(WalrusCommand):
+class WriteSliver(WalrusCommand):
     """Store a primary or secondary sliver at a storage node.
 
     PUT {base_url}/v1/blobs/{blob_id}/slivers/{sliver_pair_index}/{sliver_type}
@@ -198,7 +198,7 @@ class PutSliver(WalrusCommand):
 
 
 @dataclasses.dataclass(kw_only=True)
-class PutMetadata(WalrusCommand):
+class WriteMetadata(WalrusCommand):
     """Store a blob's Red Stuff metadata at a storage node.
 
     PUT {base_url}/v1/blobs/{blob_id}/metadata
@@ -240,7 +240,7 @@ class PutMetadata(WalrusCommand):
         # registration) are ALL success -- see the class docstring. Using
         # response.is_error (True only for status >= 400) rather than an
         # explicit status-code allowlist naturally treats all three as
-        # success, matching PutSliver's "not response.is_error" convention.
+        # success, matching WriteSliver's "not response.is_error" convention.
         if response.is_error:
             context = f"blob_id={blob_id_to_url_base64(blob_id=self.blob_id)}"
             return SuiRpcResult(
@@ -261,7 +261,7 @@ class ReadSliver(WalrusCommand):
 
     The response body is RAW BCS bytes with ``Content-Type:
     application/octet-stream`` and NO JSON envelope. This is the same wire
-    form :class:`PutSliver` sends, and is deliberately NOT parsed with
+    form :class:`WriteSliver` sends, and is deliberately NOT parsed with
     ``unwrap_storage_node_envelope`` -- that helper is for the status and
     confirmation endpoints, which do use the ``{success, data}`` JSON
     envelope. Using it here would corrupt a sliver whose bytes happen to

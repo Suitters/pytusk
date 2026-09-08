@@ -192,7 +192,7 @@ class WalrusClient(AsyncClientBase):
             base_url (str | None): Explicit base URL to dispatch a
                 WalrusCommand against, bypassing the command's configured
                 aggregator/publisher role resolution. Pass this for
-                ``storage_node``-role commands (e.g. PutSliver,
+                ``storage_node``-role commands (e.g. WriteSliver,
                 ReadStorageConfirmation), whose target host is per-call data
                 resolved from the committee rather than a fixed configured
                 endpoint -- dispatch raises ValueError if a storage-node

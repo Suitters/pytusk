@@ -14,6 +14,7 @@ async; tusky.py drives them via asyncio.run.
 """
 
 import argparse
+import asyncio
 import json
 import sys
 
@@ -24,7 +25,6 @@ from pytusk import (
     BlobDecodeError,
     DeletableStatus,
     InvalidStatus,
-    ListQuiltPatches,
     NativeReadError,
     NonexistentStatus,
     PermanentStatus,
@@ -33,6 +33,7 @@ from pytusk import (
     ReadBlob,
     ReadQuiltPatch,
     ReadQuiltPatchById,
+    ReadQuiltPatches,
     WalrusClient,
     blob_deletable_and_end_epoch,
     blob_id_from_object,
@@ -42,7 +43,7 @@ from pytusk import (
     resolve_blob_sui_objects,
 )
 from pytusk import read_blob_native as _read_blob_native_pipeline
-from pytusk.tusky.tusky_cmds_common import config_from_args
+from pytusk.tusky.tusky_cmds_common import config_from_args, write_file_bytes
 
 
 async def read_blob(args: argparse.Namespace) -> None:
@@ -219,7 +220,7 @@ async def quilt_patches(args: argparse.Namespace) -> None:
         # expiry signal either way -- proceed and let the aggregator answer.
 
         quilt_id = blob_id_to_url_base64(blob_id=blob_id)
-        result = await client.execute(command=ListQuiltPatches(quilt_id=quilt_id))
+        result = await client.execute(command=ReadQuiltPatches(quilt_id=quilt_id))
     if not result.is_ok():
         print(f"Error listing quilt patches: {result.result_string}", file=sys.stderr)
         sys.exit(1)
@@ -275,8 +276,7 @@ async def read_blob_native(args: argparse.Namespace) -> None:
             sys.stdout.buffer.write(b"\n")
         return
 
-    with open(args.file, "wb") as handle:
-        handle.write(result.content)
+    await asyncio.to_thread(write_file_bytes, args.file, result.content)
     print(
         f"Wrote {len(result.content)} bytes to {args.file} "
         f"(epoch {result.epoch}, {result.slivers_used} {result.axis} slivers)"

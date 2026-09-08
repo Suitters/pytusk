@@ -29,6 +29,7 @@ from typing import Any
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 import pytest
 from pysui import SuiRpcResult
+from typing_extensions import Self
 
 from pytusk import (
     NativeBlobReceipt,
@@ -440,7 +441,7 @@ def _base_native_args(**overrides: object) -> argparse.Namespace:
     return argparse.Namespace(**defaults)
 
 
-class TestStoreBlobNativeSimulateSkipsSponsorPreflight:
+class TestWriteBlobNativeSimulateSkipsSponsorPreflight:
     """``store_blob_native``'s simulate branch composes Tx1 via
     ``add_registration_sequence(tip=None)`` and ``preflight_payment``, but
     deliberately does NOT call ``preflight_sponsor`` -- matching
@@ -994,7 +995,7 @@ class _FakeReadQuiltClient:
         self._result = result
         self.received_command: object = None
 
-    async def __aenter__(self) -> "_FakeReadQuiltClient":
+    async def __aenter__(self) -> Self:
         """Enter the fake client's async context, returning itself."""
         return self
 

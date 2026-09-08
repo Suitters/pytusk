@@ -15,7 +15,7 @@ Storage nodes REJECT sliver PUTs for an unregistered blob, so Tx1 must
 complete before any sliver is uploaded. Storage nodes ALSO reject sliver
 PUTs for a blob whose metadata they have not yet received -- see
 :func:`~pytusk.core.native_upload.fanout._upload_node`, which PUTs a node's
-``PutMetadata`` before any of that node's sliver PUTs and abandons the node
+``WriteMetadata`` before any of that node's sliver PUTs and abandons the node
 entirely (no sliver PUT attempted) if the metadata PUT fails. This package
 owns everything AFTER encoding (:mod:`pytusk.core.encoding`) and Tx1
 (:mod:`pytusk.core.ops.blob_execute`): the per-node metadata+sliver fan-out (see
