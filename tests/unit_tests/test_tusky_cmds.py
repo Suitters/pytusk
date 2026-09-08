@@ -14,16 +14,20 @@ under test. Covers:
 - ``store_blob_native``'s simulate mode with an unsignable sponsor
 - ``tusky_cmds_storage``'s split predicates and ``_destroy_storage_batches``
 - ``relay_configs``: per-relay quoting and failure isolation
-- ``read_quilt``: the exactly-one-of-two-addressing-modes validation that
-  argparse itself can't express (pair-vs-single), and dispatch to the
-  right command class per mode
+- ``read_blob``/``read_quilt``: dispatch to the right command class,
+  writing to ``--file`` vs. stdout, and refusing a TTY destination when
+  writing to stdout. ``read_quilt`` additionally covers the
+  exactly-one-of-two-addressing-modes validation that argparse itself
+  can't express (pair-vs-single)
 
 Argument parsing and ``tusky_format`` rendering are deliberately not
 covered here.
 """
 
 import argparse
+import sys
 import types
+from pathlib import Path
 from typing import Any
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
@@ -32,8 +36,10 @@ from pysui import SuiRpcResult
 from typing_extensions import Self
 
 from pytusk import (
+    BlobData,
     NativeBlobReceipt,
     QuiltPatch,
+    ReadBlob,
     ReadQuiltPatch,
     ReadQuiltPatchById,
     StageTimings,
@@ -977,12 +983,94 @@ class TestRelayConfigs:
             await tusky_cmds_relay.relay_configs(_relay_configs_args(size=-1))
 
 
+def _read_blob_args(**overrides: object) -> argparse.Namespace:
+    """Build a Namespace with every attribute read_blob reads."""
+    defaults: dict[str, object] = {
+        "blob_id": "b" * 43,
+        "file": None,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+class _FakeReadBlobClient:
+    """Fake WalrusClient recording whichever command read_blob built."""
+
+    def __init__(self, *, result: SuiRpcResult) -> None:
+        self._result = result
+        self.received_command: object = None
+
+    async def __aenter__(self) -> Self:
+        """Enter the fake client's async context, returning itself."""
+        return self
+
+    async def __aexit__(
+        self, exc_type: object, exc_val: object, exc_tb: object
+    ) -> None:
+        """Exit the fake client's async context; nothing to clean up."""
+        return
+
+    async def execute(self, *, command: object) -> SuiRpcResult:
+        """Record the command it was given and return the canned result."""
+        self.received_command = command
+        return self._result
+
+
+class TestReadBlob:
+    """read_blob writes content to stdout by default, to --file when given,
+    and refuses a TTY destination up front when writing to stdout."""
+
+    async def test_refuses_tty_when_no_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_blob(_read_blob_args())
+
+    async def test_writes_content_to_stdout_when_no_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _FakeReadBlobClient(
+            result=SuiRpcResult(True, "", BlobData(content=b"hello"))
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        await tusky_cmds_read.read_blob(_read_blob_args())
+        assert isinstance(client.received_command, ReadBlob)
+        assert client.received_command.blob_id == "b" * 43
+
+    async def test_writes_content_to_file_when_file_given(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        client = _FakeReadBlobClient(
+            result=SuiRpcResult(True, "", BlobData(content=b"hello"))
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        target = tmp_path / "out.bin"
+        await tusky_cmds_read.read_blob(_read_blob_args(file=target))
+        assert target.read_bytes() == b"hello"
+        assert f"Wrote 5 bytes to {target}" in capsys.readouterr().out
+
+
 def _read_quilt_args(**overrides: object) -> argparse.Namespace:
     """Build a Namespace with every attribute read_quilt reads."""
     defaults: dict[str, object] = {
         "quilt_id": None,
         "patch_key": None,
         "patch_id": None,
+        "file": None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -1071,3 +1159,32 @@ class TestReadQuilt:
         assert isinstance(client.received_command, ReadQuiltPatch)
         assert client.received_command.quilt_id == "q1"
         assert client.received_command.patch_key == "file_a"
+
+    async def test_refuses_tty_when_no_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(_read_quilt_args())
+
+    async def test_writes_content_to_file_when_file_given(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        client = _FakeReadQuiltClient(
+            result=SuiRpcResult(True, "", QuiltPatch(content=b"hello"))
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        target = tmp_path / "out.bin"
+        await tusky_cmds_read.read_quilt(
+            _read_quilt_args(patch_id="patch1", file=target)
+        )
+        assert target.read_bytes() == b"hello"
+        assert f"Wrote 5 bytes to {target}" in capsys.readouterr().out

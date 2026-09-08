@@ -474,6 +474,13 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         p_read_blob,
         help_text="Walrus blob ID (URL-safe base64, content hash) to read.",
     )
+    p_read_blob.add_argument(
+        "--file",
+        dest="file",
+        type=Path,
+        default=None,
+        help="Write blob content to this path instead of stdout.",
+    )
     _add_config_args(p_read_blob)
 
     p_read_blob_native = subparsers.add_parser(
@@ -540,6 +547,13 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
             "Walrus QuiltPatchId (URL-safe base64) addressing the patch "
             "directly. Not combined with --quilt-id/--patch-key."
         ),
+    )
+    p_read_quilt.add_argument(
+        "--file",
+        dest="file",
+        type=Path,
+        default=None,
+        help="Write quilt patch content to this path instead of stdout.",
     )
     _add_config_args(p_read_quilt)
 

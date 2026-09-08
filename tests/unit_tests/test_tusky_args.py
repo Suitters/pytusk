@@ -119,6 +119,29 @@ class TestBlobIdArgument:
             build_parser(in_args=["read_blob", "-b", BLOB_ID + "A"])
 
 
+class TestReadBlobFileArgument:
+    """read_blob's --file mirrors read_blob_native's: a plain output path,
+    not existence-checked like the input --file flags elsewhere in tusky."""
+
+    def test_file_defaults_to_none(self) -> None:
+        """Without --file the handler writes to stdout."""
+        args = build_parser(in_args=["read_blob", "-b", BLOB_ID])
+        assert args.file is None
+
+    def test_file_is_not_existence_checked(self, tmp_path) -> None:
+        """--file here is an OUTPUT path, not an input -- see the identical
+        regression note on
+        TestReadBlobNativeArgs.test_file_is_not_existence_checked."""
+        target = tmp_path / "not-created-yet.bin"
+        assert not target.exists()
+
+        args = build_parser(
+            in_args=["read_blob", "-b", BLOB_ID, "--file", str(target)]
+        )
+
+        assert str(args.file) == str(target)
+
+
 class TestBurnBlobRepeatable:
     """burn_blob's -o/--object-id is repeatable and validates each value."""
 
@@ -273,6 +296,24 @@ class TestReadQuiltArguments:
         assert args.quilt_id is None
         assert args.patch_key is None
         assert args.patch_id is None
+
+    def test_file_defaults_to_none(self) -> None:
+        """Without --file the handler writes to stdout."""
+        args = build_parser(in_args=["read_quilt", "--patch-id", "patch1"])
+        assert args.file is None
+
+    def test_file_is_not_existence_checked(self, tmp_path) -> None:
+        """--file here is an OUTPUT path, not an input -- see the identical
+        regression note on
+        TestReadBlobNativeArgs.test_file_is_not_existence_checked."""
+        target = tmp_path / "not-created-yet.bin"
+        assert not target.exists()
+
+        args = build_parser(
+            in_args=["read_quilt", "--patch-id", "patch1", "--file", str(target)]
+        )
+
+        assert str(args.file) == str(target)
 
 
 class TestTipGasSource:

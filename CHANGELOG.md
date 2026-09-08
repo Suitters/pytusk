@@ -10,12 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - [feature](https://github.com/Suitters/pytusk/issues/14) Sliver reconstruction from native storage nodes.
+- `--file` options to all tusky blob/quilt read commands
 
 ### Fixed
 
 - [bug](https://github.com/Suitters/pytusk/issues/13) Missing SharedBlob docs.
 - Native blob reads now recover from a storage node serving unusable slivers, instead of one bad sliver failing the whole read.
 - The native read sliver threshold now counts distinct slivers, so a node repeating a single sliver can no longer stall a read.
+- tusky `read` commands prevent writting binary to tty while allowing redirects and --file arguments.
 
 ### Changed
 

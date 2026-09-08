@@ -80,6 +80,30 @@ The pure-HTTP commands (``store_blob``, ``read_blob``, ``store_quilt``,
 HTTP has no simulate/execute distinction; every invocation is live against
 the configured publisher/aggregator.
 
+Reading Blobs/Quilt
+--------------------
+
+Every ``tusky`` read command that returns content -- ``read_blob``,
+``read_quilt``, and ``read_blob_native`` -- writes it to stdout by
+default. Passing ``--file PATH`` instead writes the content to that path:
+atomically (a failed or partial write never truncates or corrupts an
+existing file at that path) and without following a symlink at the
+destination.
+
+When ``--file`` is *not* given and stdout is a terminal, the command
+refuses to run rather than writing raw bytes to it: content is arbitrary
+binary data, and a terminal that tries to render it can be corrupted, or
+worse, interpret stray bytes as its own control sequences. Redirecting
+stdout to a file or piping it to another process is unaffected, since
+neither is a TTY -- only an interactive terminal with no redirect at all
+is refused.
+
+``--file`` is available on:
+
+- `read_blob`_
+- `read_quilt`_
+- `read_blob_native`_
+
 Blob & Quilt Storage (HTTP)
 ----------------------------
 
@@ -146,8 +170,9 @@ bypassing the Walrus HTTP aggregator entirely.
    Walrus blob ID (URL-safe base64, content hash) to read.
 
 ``--file``
-   Write the reconstructed content to this path instead of stdout. Prefer
-   this over a shell redirect for binary content.
+   Write the reconstructed content to this path instead of stdout. See
+   `Reading Blobs/Quilt`_ above for the shared stdout/``--file``/TTY
+   behavior across all three read commands.
 
 ``--no-verify``
    Skip content authentication. The reconstructed blob's slivers are not
@@ -176,12 +201,11 @@ Example:
 read_blob
 ~~~~~~~~~
 
-Read blob content via the Walrus HTTP aggregator, writing raw bytes to
-stdout.
+Read blob content via the Walrus HTTP aggregator.
 
 .. code-block:: console
 
-   tusky read_blob -b BLOB_ID
+   tusky read_blob -b BLOB_ID [--file PATH]
 
 ``-b`` / ``--blob-id``
    The **Walrus blob ID** (URL-safe base64, content hash) to read. This
@@ -189,6 +213,10 @@ stdout.
    blob-targeting command — see the note under `blob inspection &
    reporting`_ below), because ``read_blob`` addresses content by its
    Walrus blob ID rather than by the blob's Sui object ID.
+
+``--file``
+   Write the content to this path instead of stdout. See `Reading
+   Blobs/Quilt`_ above.
 
 store_quilt
 ~~~~~~~~~~~
@@ -258,14 +286,14 @@ filenames:
 read_quilt
 ~~~~~~~~~~
 
-Read a single patch from a quilt via the Walrus HTTP aggregator, writing
-its raw bytes to stdout. Two mutually exclusive addressing modes: either
-``--quilt-id`` and ``--patch-key`` together, or ``--patch-id`` alone.
+Read a single patch from a quilt via the Walrus HTTP aggregator. Two
+mutually exclusive addressing modes: either ``--quilt-id`` and
+``--patch-key`` together, or ``--patch-id`` alone.
 
 .. code-block:: console
 
-   tusky read_quilt --quilt-id QUILT_ID --patch-key KEY
-   tusky read_quilt --patch-id PATCH_ID
+   tusky read_quilt --quilt-id QUILT_ID --patch-key KEY [--file PATH]
+   tusky read_quilt --patch-id PATCH_ID [--file PATH]
 
 ``--quilt-id``
    The quilt's Walrus identifier (as returned in ``store_quilt``'s
@@ -279,6 +307,10 @@ its raw bytes to stdout. Two mutually exclusive addressing modes: either
    The patch's Walrus QuiltPatchId (as returned in ``quilt_patches``'
    per-patch ``patch_id`` field), addressing it directly without a
    separate quilt ID. Not combined with ``--quilt-id``/``--patch-key``.
+
+``--file``
+   Write the patch content to this path instead of stdout. See `Reading
+   Blobs/Quilt`_ above.
 
 Example, continuing from the ``store_quilt`` example above:
 

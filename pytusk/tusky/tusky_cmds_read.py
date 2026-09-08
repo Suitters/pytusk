@@ -69,12 +69,15 @@ def _refuse_tty_stdout() -> None:
 
 
 async def read_blob(args: argparse.Namespace) -> None:
-    """Read a blob via the Walrus HTTP aggregator and write its content to stdout.
+    """Read a blob via the Walrus HTTP aggregator.
+
+    Content goes to ``--file`` when one is given, otherwise to stdout.
 
     Args:
         args (argparse.Namespace): Parsed `read_blob` subcommand arguments.
     """
-    _refuse_tty_stdout()
+    if args.file is None:
+        _refuse_tty_stdout()
     config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         result = await client.execute(command=ReadBlob(blob_id=args.blob_id))
@@ -82,13 +85,18 @@ async def read_blob(args: argparse.Namespace) -> None:
         print(f"Error reading blob: {result.result_string}", file=sys.stderr)
         sys.exit(1)
     data: BlobData = result.result_data
-    sys.stdout.buffer.write(data.content)
+    if args.file is None:
+        sys.stdout.buffer.write(data.content)
+        return
+    await asyncio.to_thread(write_file_bytes, args.file, data.content)
+    print(f"Wrote {len(data.content)} bytes to {args.file}")
 
 
 async def read_quilt(args: argparse.Namespace) -> None:
-    """Read a single quilt patch via the Walrus HTTP aggregator and write it to stdout.
+    """Read a single quilt patch via the Walrus HTTP aggregator.
 
-    Two mutually exclusive addressing modes: ``--patch-id`` alone, or
+    Content goes to ``--file`` when one is given, otherwise to stdout. Two
+    mutually exclusive addressing modes: ``--patch-id`` alone, or
     ``--quilt-id``/``--patch-key`` together. Argparse can't express this
     pair-vs-single shape as a single mutually exclusive group, so it's
     validated here instead.
@@ -96,7 +104,8 @@ async def read_quilt(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `read_quilt` subcommand arguments.
     """
-    _refuse_tty_stdout()
+    if args.file is None:
+        _refuse_tty_stdout()
     if args.patch_id and (args.quilt_id or args.patch_key):
         print(
             "Error: --patch-id is not combined with --quilt-id/--patch-key.",
@@ -123,7 +132,11 @@ async def read_quilt(args: argparse.Namespace) -> None:
         print(f"Error reading quilt patch: {result.result_string}", file=sys.stderr)
         sys.exit(1)
     data: QuiltPatch = result.result_data
-    sys.stdout.buffer.write(data.content)
+    if args.file is None:
+        sys.stdout.buffer.write(data.content)
+        return
+    await asyncio.to_thread(write_file_bytes, args.file, data.content)
+    print(f"Wrote {len(data.content)} bytes to {args.file}")
 
 
 async def quilt_patches(args: argparse.Namespace) -> None:
