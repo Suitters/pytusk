@@ -30,6 +30,7 @@ import io
 import logging
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -446,14 +447,30 @@ def read_file_bytes(path: str | Path) -> bytes:
 
 
 def write_file_bytes(path: str | Path, data: bytes) -> None:
-    """Write bytes to a file synchronously.
+    """Write bytes to a file synchronously, atomically, without following symlinks.
+
+    Writes to a temporary file in the same directory first, then
+    ``os.replace``s it onto ``path``. This fixes two issues with a plain
+    ``open(path, "wb")``: a failed or partial write no longer truncates
+    (and loses) the destination's existing content, since nothing touches
+    ``path`` until the write has already succeeded; and ``os.replace``
+    replaces the directory entry at ``path`` itself rather than following
+    it, so a symlinked destination is replaced instead of written through
+    to whatever it points at.
 
     Args:
         path (str | Path): Filesystem path to write.
         data (bytes): Raw content to write.
     """
-    with open(path, "wb") as f:
-        f.write(data)
+    target = Path(path)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp_name, target)
+    except BaseException:
+        os.unlink(tmp_name)
+        raise
 
 
 async def collect_quilt_patches(*, args: argparse.Namespace) -> dict[str, bytes]:

@@ -46,12 +46,35 @@ from pytusk import read_blob_native as _read_blob_native_pipeline
 from pytusk.tusky.tusky_cmds_common import config_from_args, write_file_bytes
 
 
+def _refuse_tty_stdout() -> None:
+    """Exit with an error if stdout is a terminal, before any network I/O.
+
+    Blob and quilt content is untrusted, arbitrary binary data -- unlike
+    the HTTP error-body text filtered in
+    :func:`pytusk.commands.walrus_command._response_body_for_log`, there is
+    no way to strip terminal escape sequences from arbitrary bytes without
+    risking corruption of content that isn't text at all (an image, an
+    archive, ...). Checked before the aggregator fetch or committee
+    read/reconstruct runs, so a doomed invocation fails immediately rather
+    than after a potentially long read. Redirecting stdout to a file or
+    another process is unaffected, since neither is a TTY.
+    """
+    if sys.stdout.isatty():
+        print(
+            "Error: refusing to write binary content to a terminal. "
+            "Redirect stdout to a file or pipe, or use --file.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 async def read_blob(args: argparse.Namespace) -> None:
     """Read a blob via the Walrus HTTP aggregator and write its content to stdout.
 
     Args:
         args (argparse.Namespace): Parsed `read_blob` subcommand arguments.
     """
+    _refuse_tty_stdout()
     config = config_from_args(args)
     async with WalrusClient(pytusk_config=config) as client:
         result = await client.execute(command=ReadBlob(blob_id=args.blob_id))
@@ -60,8 +83,6 @@ async def read_blob(args: argparse.Namespace) -> None:
         sys.exit(1)
     data: BlobData = result.result_data
     sys.stdout.buffer.write(data.content)
-    if sys.stdout.isatty():
-        sys.stdout.buffer.write(b"\n")
 
 
 async def read_quilt(args: argparse.Namespace) -> None:
@@ -75,6 +96,7 @@ async def read_quilt(args: argparse.Namespace) -> None:
     Args:
         args (argparse.Namespace): Parsed `read_quilt` subcommand arguments.
     """
+    _refuse_tty_stdout()
     if args.patch_id and (args.quilt_id or args.patch_key):
         print(
             "Error: --patch-id is not combined with --quilt-id/--patch-key.",
@@ -102,8 +124,6 @@ async def read_quilt(args: argparse.Namespace) -> None:
         sys.exit(1)
     data: QuiltPatch = result.result_data
     sys.stdout.buffer.write(data.content)
-    if sys.stdout.isatty():
-        sys.stdout.buffer.write(b"\n")
 
 
 async def quilt_patches(args: argparse.Namespace) -> None:
@@ -250,6 +270,8 @@ async def read_blob_native(args: argparse.Namespace) -> None:
         args (argparse.Namespace): Parsed `read_blob_native` subcommand
             arguments.
     """
+    if args.file is None:
+        _refuse_tty_stdout()
     config = config_from_args(args)
     blob_id = blob_id_from_url_base64(value=args.blob_id)
     async with WalrusClient(pytusk_config=config) as client:
@@ -272,8 +294,6 @@ async def read_blob_native(args: argparse.Namespace) -> None:
 
     if args.file is None:
         sys.stdout.buffer.write(result.content)
-        if sys.stdout.isatty():
-            sys.stdout.buffer.write(b"\n")
         return
 
     await asyncio.to_thread(write_file_bytes, args.file, result.content)
