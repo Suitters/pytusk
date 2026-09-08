@@ -195,7 +195,9 @@ Example:
 
 .. code-block:: console
 
-   $ tusky read_blob_native -b OgrPHsCfZIQm_m3U3fzddQff5ubQOFuSE0RHkMY7sa8
+   $ tusky read_blob_native -b OgrPHsCfZIQm_m3U3fzddQff5ubQOFuSE0RHkMY7sa8 --file blob.txt
+   Wrote 9 bytes to blob.txt
+   $ cat blob.txt
    gap1-test
 
 read_blob
@@ -210,8 +212,8 @@ Read blob content via the Walrus HTTP aggregator.
 ``-b`` / ``--blob-id``
    The **Walrus blob ID** (URL-safe base64, content hash) to read. This
    is a different flag from ``-o``/``--object-id`` (used by every other
-   blob-targeting command — see the note under `blob inspection &
-   reporting`_ below), because ``read_blob`` addresses content by its
+   blob-targeting command — see the note under `Blob & Quilt Inspection &
+   Reporting`_ below), because ``read_blob`` addresses content by its
    Walrus blob ID rather than by the blob's Sui object ID.
 
 ``--file``
@@ -286,45 +288,89 @@ filenames:
 read_quilt
 ~~~~~~~~~~
 
-Read a single patch from a quilt via the Walrus HTTP aggregator. Two
-mutually exclusive addressing modes: either ``--quilt-id`` and
-``--patch-key`` together, or ``--patch-id`` alone.
+Read one or more patches from a quilt via the Walrus HTTP aggregator. Two
+addressing modes: repeatable ``--patch-id`` (each a direct,
+quilt-independent QuiltPatchId), or ``--quilt-id`` together with one or
+more of repeatable ``--patch-key``/``--tag``. Reading more than one patch
+requires ``--out-dir``; a single patch may still go to ``--file`` or
+stdout.
 
 .. code-block:: console
 
-   tusky read_quilt --quilt-id QUILT_ID --patch-key KEY [--file PATH]
-   tusky read_quilt --patch-id PATCH_ID [--file PATH]
+   tusky read_quilt --quilt-id QUILT_ID --patch-key KEY [--file PATH | --out-dir DIR]
+   tusky read_quilt --patch-id PATCH_ID [--file PATH | --out-dir DIR]
+   tusky read_quilt --quilt-id QUILT_ID --patch-key KEY --patch-key KEY --out-dir DIR
+   tusky read_quilt --quilt-id QUILT_ID --tag KEY=VALUE --out-dir DIR
+   tusky read_quilt --patch-id PATCH_ID --patch-id PATCH_ID --out-dir DIR
 
 ``--quilt-id``
    The quilt's Walrus identifier (as returned in ``store_quilt``'s
-   ``quilt_id`` field). Used with ``--patch-key``.
+   ``quilt_id`` field). Used with ``--patch-key``/``--tag``.
 
 ``--patch-key``
-   The key identifying the patch within the quilt (as returned in
-   ``store_quilt``'s ``patch_keys`` list). Used with ``--quilt-id``.
+   The key identifying a patch within the quilt (as returned in
+   ``store_quilt``'s ``patch_keys`` list). Used with ``--quilt-id``;
+   repeatable for a batch read.
+
+``--tag``
+   Select patches within the quilt whose tags contain this ``KEY=VALUE``
+   pair (as returned in ``quilt_patches``' per-patch ``tags`` field). Used
+   with ``--quilt-id``; repeatable for a batch read, combinable with
+   ``--patch-key``.
 
 ``--patch-id``
    The patch's Walrus QuiltPatchId (as returned in ``quilt_patches``'
    per-patch ``patch_id`` field), addressing it directly without a
-   separate quilt ID. Not combined with ``--quilt-id``/``--patch-key``.
+   separate quilt ID. Not combined with
+   ``--quilt-id``/``--patch-key``/``--tag``; repeatable for a batch read.
 
 ``--file``
-   Write the patch content to this path instead of stdout. See `Reading
-   Blobs/Quilt`_ above.
+   Write the patch content to this path instead of stdout. Only valid
+   when exactly one patch is being read; not combined with ``--out-dir``.
+   See `Reading Blobs/Quilt`_ above.
+
+``--out-dir``
+   Write each read patch to its own file in this directory, named by its
+   patch key (or patch ID when read via ``--patch-id`` and no key is
+   known). Required when more than one patch is requested; a crafted
+   patch key cannot escape the target directory -- only its final path
+   component is used as the filename.
 
 Example, continuing from the ``store_quilt`` example above:
 
 .. code-block:: console
 
-   $ tusky read_quilt --quilt-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHY --patch-key patch1
+   $ tusky read_quilt --quilt-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHY --patch-key patch1 --file patch1.txt
+   Wrote 11 bytes to patch1.txt
+   $ cat patch1.txt
    hello quilt
 
 Or, reading the same patch directly by its ``QuiltPatchId``:
 
 .. code-block:: console
 
-   $ tusky read_quilt --patch-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHYBAQBdAg
+   $ tusky read_quilt --patch-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHYBAQBdAg --file patch1.txt
+   Wrote 11 bytes to patch1.txt
+   $ cat patch1.txt
    hello quilt
+
+Reading several patches at once, writing each to ``out/`` under its patch
+key:
+
+.. code-block:: console
+
+   $ tusky read_quilt --quilt-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHY \
+       --patch-key patch1 --patch-key patch2 --out-dir out/
+   Wrote 11 bytes to out/patch1
+   Wrote 9 bytes to out/patch2
+
+Or by matching a tag set at store time:
+
+.. code-block:: console
+
+   $ tusky read_quilt --quilt-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHY \
+       --tag kind=image --out-dir out/
+   Wrote 2048 bytes to out/photo1.jpg
 
 Blob & Quilt Inspection & Reporting
 -----------------------------------

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [feature](https://github.com/Suitters/pytusk/issues/14) Sliver reconstruction from native storage nodes.
 - `--file` options to all tusky blob/quilt read commands
+- `tusky read_quilt` batch reads (repeatable `--patch-id`/`--patch-key`, tag-matching `--tag`) with `--out-dir` directory output.
 
 ### Fixed
 

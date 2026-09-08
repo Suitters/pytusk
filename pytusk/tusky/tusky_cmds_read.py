@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import json
 import sys
+from pathlib import Path
 
 from pysui import GetObject
 
@@ -29,6 +30,7 @@ from pytusk import (
     NonexistentStatus,
     PermanentStatus,
     QuiltPatch,
+    QuiltPatchItem,
     QuiltPatchListing,
     ReadBlob,
     ReadQuiltPatch,
@@ -92,51 +94,178 @@ async def read_blob(args: argparse.Namespace) -> None:
     print(f"Wrote {len(data.content)} bytes to {args.file}")
 
 
-async def read_quilt(args: argparse.Namespace) -> None:
-    """Read a single quilt patch via the Walrus HTTP aggregator.
+def _safe_out_name(identifier: str) -> str:
+    """Sanitize a patch key/ID into a safe filename for --out-dir.
 
-    Content goes to ``--file`` when one is given, otherwise to stdout. Two
-    mutually exclusive addressing modes: ``--patch-id`` alone, or
-    ``--quilt-id``/``--patch-key`` together. Argparse can't express this
-    pair-vs-single shape as a single mutually exclusive group, so it's
-    validated here instead.
+    Patch keys and tag values come from the quilt's own stored content,
+    written by whoever stored it -- not from this reader. Taking only the
+    final path component strips any directory traversal a crafted key
+    could otherwise smuggle into a written filename.
+
+    Args:
+        identifier (str): The patch key or patch ID to sanitize.
+
+    Returns:
+        str: A filename with no directory components. Empty or dot-only
+            input becomes "patch" so a write is never attempted with an
+            unusable name.
+    """
+    name = Path(identifier).name
+    if not name or name in (".", ".."):
+        return "patch"
+    return name
+
+
+def _parse_tag(raw: str) -> tuple[str, str]:
+    """Split a --tag KEY=VALUE argument into its key and value.
+
+    Args:
+        raw (str): Raw --tag argument text.
+
+    Returns:
+        tuple[str, str]: (key, value).
+    """
+    if "=" not in raw:
+        print(f"Error: --tag {raw!r} is not KEY=VALUE.", file=sys.stderr)
+        sys.exit(1)
+    key, _, value = raw.partition("=")
+    return key, value
+
+
+async def read_quilt(args: argparse.Namespace) -> None:
+    """Read one or more quilt patches via the Walrus HTTP aggregator.
+
+    A single resolved patch goes to ``--file`` when given, otherwise
+    stdout. More than one resolved patch requires ``--out-dir``, writing
+    each to its own file named by patch key (or patch ID, when no key is
+    known). Two addressing modes: repeatable ``--patch-id`` alone, or
+    ``--quilt-id`` with one or more of repeatable ``--patch-key``/``--tag``.
+    Argparse can't express this pair-vs-single, mutually-exclusive-mode
+    shape as argument groups, so it's validated here instead.
 
     Args:
         args (argparse.Namespace): Parsed `read_quilt` subcommand arguments.
     """
-    if args.file is None:
-        _refuse_tty_stdout()
-    if args.patch_id and (args.quilt_id or args.patch_key):
+    patch_ids: list[str] = args.patch_ids or []
+    patch_keys: list[str] = args.patch_keys or []
+    tags: list[str] = args.tags or []
+
+    if patch_ids and (args.quilt_id or patch_keys or tags):
         print(
-            "Error: --patch-id is not combined with --quilt-id/--patch-key.",
+            "Error: --patch-id is not combined with "
+            "--quilt-id/--patch-key/--tag.",
             file=sys.stderr,
         )
         sys.exit(1)
-    if not args.patch_id and not (args.quilt_id and args.patch_key):
+    if not patch_ids and not (args.quilt_id and (patch_keys or tags)):
         print(
-            "Error: provide either --patch-id, or both --quilt-id and "
-            "--patch-key.",
+            "Error: provide either --patch-id (repeatable), or "
+            "--quilt-id with at least one --patch-key/--tag.",
             file=sys.stderr,
         )
+        sys.exit(1)
+    if args.file is not None and args.out_dir is not None:
+        print("Error: --file is not combined with --out-dir.", file=sys.stderr)
         sys.exit(1)
 
     config = config_from_args(args)
-    command = (
-        ReadQuiltPatchById(patch_id=args.patch_id)
-        if args.patch_id
-        else ReadQuiltPatch(quilt_id=args.quilt_id, patch_key=args.patch_key)
-    )
+    requests: list[tuple[str, object]] = []
     async with WalrusClient(pytusk_config=config) as client:
-        result = await client.execute(command=command)
-    if not result.is_ok():
-        print(f"Error reading quilt patch: {result.result_string}", file=sys.stderr)
-        sys.exit(1)
-    data: QuiltPatch = result.result_data
-    if args.file is None:
-        sys.stdout.buffer.write(data.content)
+        if patch_ids:
+            requests = [
+                (patch_id, ReadQuiltPatchById(patch_id=patch_id))
+                for patch_id in patch_ids
+            ]
+        else:
+            requests = [
+                (
+                    patch_key,
+                    ReadQuiltPatch(quilt_id=args.quilt_id, patch_key=patch_key),
+                )
+                for patch_key in patch_keys
+            ]
+            if tags:
+                listing_result = await client.execute(
+                    command=ReadQuiltPatches(quilt_id=args.quilt_id)
+                )
+                if not listing_result.is_ok():
+                    print(
+                        "Error listing quilt patches: "
+                        f"{listing_result.result_string}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                listing: QuiltPatchListing = listing_result.result_data
+                wanted = {_parse_tag(t) for t in tags}
+                seen_keys = {key for key, _ in requests}
+                item: QuiltPatchItem
+                for item in listing.patches:
+                    matches = any(
+                        item.tags.get(key) == value for key, value in wanted
+                    )
+                    if matches and item.patch_key not in seen_keys:
+                        requests.append(
+                            (
+                                item.patch_key,
+                                ReadQuiltPatchById(patch_id=item.patch_id),
+                            )
+                        )
+                        seen_keys.add(item.patch_key)
+
+        if not requests:
+            print(
+                "Error: no patches matched the given --tag selector(s).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if len(requests) > 1 and args.out_dir is None:
+            print(
+                "Error: more than one patch was requested; use --out-dir.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if len(requests) == 1 and args.out_dir is None and args.file is None:
+            _refuse_tty_stdout()
+
+        results: list[tuple[str, bytes]] = []
+        names_seen: dict[str, str] = {}
+        for identifier, command in requests:
+            result = await client.execute(command=command)
+            if not result.is_ok():
+                print(
+                    f"Error reading quilt patch {identifier}: "
+                    f"{result.result_string}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            data: QuiltPatch = result.result_data
+            if args.out_dir is not None:
+                name = _safe_out_name(identifier)
+                if name in names_seen:
+                    print(
+                        f"Error: patches {names_seen[name]!r} and "
+                        f"{identifier!r} both sanitize to output filename "
+                        f"{name!r}.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                names_seen[name] = identifier
+            results.append((identifier, data.content))
+
+    if args.out_dir is None:
+        _, content = results[0]
+        if args.file is None:
+            sys.stdout.buffer.write(content)
+            return
+        await asyncio.to_thread(write_file_bytes, args.file, content)
+        print(f"Wrote {len(content)} bytes to {args.file}")
         return
-    await asyncio.to_thread(write_file_bytes, args.file, data.content)
-    print(f"Wrote {len(data.content)} bytes to {args.file}")
+
+    await asyncio.to_thread(args.out_dir.mkdir, parents=True, exist_ok=True)
+    for identifier, content in results:
+        target = args.out_dir / _safe_out_name(identifier)
+        await asyncio.to_thread(write_file_bytes, target, content)
+        print(f"Wrote {len(content)} bytes to {target}")
 
 
 async def quilt_patches(args: argparse.Namespace) -> None:

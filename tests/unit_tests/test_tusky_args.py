@@ -269,38 +269,90 @@ class TestQuiltPatches:
 
 
 class TestReadQuiltArguments:
-    """read_quilt's --quilt-id/--patch-key/--patch-id all default to None at
-    the parser level -- the pair-vs-single exactly-one-of requirement is
-    validated in the read_quilt() handler, not expressible as a single
-    argparse mutually exclusive group."""
+    """read_quilt's --quilt-id/--patch-key/--patch-id/--tag/--out-dir all
+    default to None at the parser level -- the pair-vs-single,
+    mode-exclusivity, and batch-vs-single-output requirements are all
+    validated in the read_quilt() handler, not expressible as argparse
+    argument groups."""
 
     def test_quilt_id_and_patch_key_flags(self) -> None:
-        """--quilt-id/--patch-key parse to their dests; --patch-id defaults None."""
+        """--quilt-id/--patch-key parse to their dests; others default None."""
         args = build_parser(
             in_args=["read_quilt", "--quilt-id", "q1", "--patch-key", "file_a"]
         )
         assert args.quilt_id == "q1"
-        assert args.patch_key == "file_a"
-        assert args.patch_id is None
+        assert args.patch_keys == ["file_a"]
+        assert args.patch_ids is None
+        assert args.tags is None
+
+    def test_patch_key_repeatable(self) -> None:
+        """--patch-key may be given more than once, appending to one list."""
+        args = build_parser(
+            in_args=[
+                "read_quilt",
+                "--quilt-id",
+                "q1",
+                "--patch-key",
+                "file_a",
+                "--patch-key",
+                "file_b",
+            ]
+        )
+        assert args.patch_keys == ["file_a", "file_b"]
 
     def test_patch_id_flag(self) -> None:
-        """--patch-id parses to its dest; --quilt-id/--patch-key default None."""
+        """--patch-id parses to its dest; --quilt-id/--patch-key/--tag default None."""
         args = build_parser(in_args=["read_quilt", "--patch-id", "patch1"])
-        assert args.patch_id == "patch1"
+        assert args.patch_ids == ["patch1"]
         assert args.quilt_id is None
-        assert args.patch_key is None
+        assert args.patch_keys is None
+        assert args.tags is None
+
+    def test_patch_id_repeatable(self) -> None:
+        """--patch-id may be given more than once, appending to one list."""
+        args = build_parser(
+            in_args=[
+                "read_quilt",
+                "--patch-id",
+                "patch1",
+                "--patch-id",
+                "patch2",
+            ]
+        )
+        assert args.patch_ids == ["patch1", "patch2"]
+
+    def test_tag_repeatable(self) -> None:
+        """--tag may be given more than once, appending to one list."""
+        args = build_parser(
+            in_args=[
+                "read_quilt",
+                "--quilt-id",
+                "q1",
+                "--tag",
+                "kind=image",
+                "--tag",
+                "owner=alice",
+            ]
+        )
+        assert args.tags == ["kind=image", "owner=alice"]
 
     def test_no_flags_accepted_by_parser(self) -> None:
-        """Omitting all three is accepted by argparse -- read_quilt() rejects it."""
+        """Omitting all addressing flags is accepted by argparse -- read_quilt() rejects it."""
         args = build_parser(in_args=["read_quilt"])
         assert args.quilt_id is None
-        assert args.patch_key is None
-        assert args.patch_id is None
+        assert args.patch_keys is None
+        assert args.patch_ids is None
+        assert args.tags is None
 
     def test_file_defaults_to_none(self) -> None:
         """Without --file the handler writes to stdout."""
         args = build_parser(in_args=["read_quilt", "--patch-id", "patch1"])
         assert args.file is None
+
+    def test_out_dir_defaults_to_none(self) -> None:
+        """Without --out-dir the handler uses --file/stdout for a single patch."""
+        args = build_parser(in_args=["read_quilt", "--patch-id", "patch1"])
+        assert args.out_dir is None
 
     def test_file_is_not_existence_checked(self, tmp_path) -> None:
         """--file here is an OUTPUT path, not an input -- see the identical
@@ -314,6 +366,18 @@ class TestReadQuiltArguments:
         )
 
         assert str(args.file) == str(target)
+
+    def test_out_dir_is_not_existence_checked(self, tmp_path) -> None:
+        """--out-dir here is an OUTPUT directory, not an input -- same
+        regression concern as --file above."""
+        target = tmp_path / "not-created-yet"
+        assert not target.exists()
+
+        args = build_parser(
+            in_args=["read_quilt", "--patch-id", "patch1", "--out-dir", str(target)]
+        )
+
+        assert str(args.out_dir) == str(target)
 
 
 class TestTipGasSource:

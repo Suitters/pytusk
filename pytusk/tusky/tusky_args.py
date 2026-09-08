@@ -519,33 +519,55 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
 
     p_read_quilt = subparsers.add_parser(
         "read_quilt",
-        help="Read a single patch from a quilt via the Walrus HTTP aggregator.",
+        help="Read one or more patches from a quilt via the Walrus HTTP aggregator.",
         description=(
-            "Read a single patch from a quilt via the Walrus HTTP "
-            "aggregator. Two addressing modes: --quilt-id and --patch-key "
-            "together (the name given at store time), or --patch-id alone "
-            "(the opaque QuiltPatchId, e.g. from 'quilt_patches')."
+            "Read one or more patches from a quilt via the Walrus HTTP "
+            "aggregator. Two addressing modes: repeatable --patch-id "
+            "(each a direct, quilt-independent QuiltPatchId), or "
+            "--quilt-id together with one or more of repeatable "
+            "--patch-key/--tag (the name(s)/tag(s) given at store time, "
+            "or discovered via 'quilt_patches'). Reading more than one "
+            "patch requires --out-dir; a single patch may still go to "
+            "--file or stdout."
         ),
     )
     p_read_quilt.add_argument(
         "--quilt-id",
         dest="quilt_id",
         default=None,
-        help="Walrus quilt identifier. Used with --patch-key.",
+        help="Walrus quilt identifier. Used with --patch-key/--tag.",
     )
     p_read_quilt.add_argument(
         "--patch-key",
-        dest="patch_key",
+        dest="patch_keys",
+        action="append",
         default=None,
-        help="Key identifying the patch within the quilt. Used with --quilt-id.",
+        help=(
+            "Key identifying a patch within the quilt. Used with "
+            "--quilt-id; repeatable for a batch read."
+        ),
+    )
+    p_read_quilt.add_argument(
+        "--tag",
+        dest="tags",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help=(
+            "Select patches within the quilt whose tags contain this "
+            "KEY=VALUE pair. Used with --quilt-id; repeatable for a "
+            "batch read, combinable with --patch-key."
+        ),
     )
     p_read_quilt.add_argument(
         "--patch-id",
-        dest="patch_id",
+        dest="patch_ids",
+        action="append",
         default=None,
         help=(
-            "Walrus QuiltPatchId (URL-safe base64) addressing the patch "
-            "directly. Not combined with --quilt-id/--patch-key."
+            "Walrus QuiltPatchId (URL-safe base64) addressing a patch "
+            "directly. Not combined with --quilt-id/--patch-key/--tag; "
+            "repeatable for a batch read."
         ),
     )
     p_read_quilt.add_argument(
@@ -553,7 +575,23 @@ def build_parser(*, in_args: list[str]) -> argparse.Namespace:
         dest="file",
         type=Path,
         default=None,
-        help="Write quilt patch content to this path instead of stdout.",
+        help=(
+            "Write patch content to this path instead of stdout. Only "
+            "valid when exactly one patch is being read; not combined "
+            "with --out-dir."
+        ),
+    )
+    p_read_quilt.add_argument(
+        "--out-dir",
+        dest="out_dir",
+        type=Path,
+        default=None,
+        help=(
+            "Write each read patch to its own file in this directory "
+            "(named by patch key, or patch ID when no key is known), "
+            "instead of --file/stdout. Required when more than one "
+            "patch is requested."
+        ),
     )
     _add_config_args(p_read_quilt)
 
