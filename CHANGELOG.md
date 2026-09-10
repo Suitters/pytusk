@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-10
+
+### Added
+
+- [feature](https://github.com/Suitters/pytusk/issues/14) Sliver reconstruction from native storage nodes.
+- `--file` options to all tusky blob/quilt read commands
+- `tusky read_quilt` batch reads (repeatable `--patch-id`/`--patch-key`, tag-matching `--tag`) with `--out-dir` directory output.
+
+### Fixed
+
+- [bug](https://github.com/Suitters/pytusk/issues/13) Missing SharedBlob docs.
+- Native blob reads now recover from a storage node serving unusable slivers, instead of one bad sliver failing the whole read.
+- The native read sliver threshold now counts distinct slivers, so a node repeating a single sliver can no longer stall a read.
+- tusky `read` commands prevent writting binary to tty while allowing redirects and --file arguments.
+
+### Changed
+
+- **Breaking:** `WalrusCommand` naming settled on `Read<Command>`/`Write<Command>`. Renamed `GetSliver`→`ReadSliver`, `GetMetadata`→`ReadMetadata`, `GetBlobStatus`→`ReadBlobStatus`, `GetStorageConfirmation`→`ReadStorageConfirmation`, `GetTipConfig`→`ReadTipConfig`. No deprecation alias — `GetBlobStatus`/`GetStorageConfirmation`/`GetTipConfig` callers (published since v0.3.0/v0.5.0) must update. `ReadBlobStatus` is now also exported from top-level `pytusk`.
+- **Breaking:** The last 7 grandfathered `WalrusCommand` names converted to `Read<Command>`/`Write<Command>`, closing out the naming convention with no exceptions remaining. Renamed `StoreBlob`→`WriteBlob`, `StoreQuilt`→`WriteQuilt`, `PutSliver`→`WriteSliver`, `PutMetadata`→`WriteMetadata`, `UploadRelayBlob`→`WriteRelayBlob`, `ListQuiltPatches`→`ReadQuiltPatches`, `ConcatBlobs`→`ReadConcatBlobs`. No deprecation alias — all 7 (published since v0.3.0-v0.5.0) require caller updates.
+
+### Removed
+
 ## [0.5.0] - 2026-09-04
 
 ### Added

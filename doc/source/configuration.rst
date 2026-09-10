@@ -446,7 +446,7 @@ Mysten Labs deliberately runs no public unauthenticated publisher on
 mainnet (aggregator only). Writing blobs on mainnet requires a
 self-hosted or authenticated publisher — set it explicitly with
 ``set_walrus_publisher_url`` (see Update Existing above) before attempting
-any ``StoreBlob``/``StoreQuilt`` command against mainnet; otherwise
+any ``WriteBlob``/``WriteQuilt`` command against mainnet; otherwise
 ``WalrusClient`` raises ``ValueError``.
 
 Can I add or remove testnet/mainnet?

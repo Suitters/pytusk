@@ -12,9 +12,9 @@ import httpx
 import pytest
 
 from pytusk.commands.relay_commands import (
-    GetTipConfig,
+    ReadTipConfig,
     RelayUploadAck,
-    UploadRelayBlob,
+    WriteRelayBlob,
     _parse_tip_kind,
     _tip_address,
 )
@@ -33,11 +33,11 @@ can reach the tip-kind assertion it was written for.
 """
 
 
-class TestGetTipConfig:
+class TestReadTipConfig:
     """Tip config request shape and payload parsing."""
 
     def test_request_shape(self) -> None:
-        cmd = GetTipConfig()
+        cmd = ReadTipConfig()
         assert cmd.endpoint_role == "relay"
         assert cmd.http_method() == "GET"
         assert cmd.url_path("https://r.example.com") == (
@@ -46,7 +46,7 @@ class TestGetTipConfig:
 
     def test_parses_no_tip_bare_string(self) -> None:
         response = httpx.Response(200, json="no_tip")
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_ok()
         assert result.result_data.address is None
         assert result.result_data.kind is None
@@ -56,7 +56,7 @@ class TestGetTipConfig:
         response = httpx.Response(
             200, json={"send_tip": {"address": _RELAY_ADDRESS, "kind": {"const": 31415}}}
         )
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_ok()
         assert result.result_data.address == _RELAY_ADDRESS
         assert result.result_data.kind == ConstTip(amount=31415)
@@ -72,7 +72,7 @@ class TestGetTipConfig:
                 }
             },
         )
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_ok()
         assert result.result_data.kind == LinearTip(
             base=101, encoded_size_mul_per_kib=42
@@ -82,7 +82,7 @@ class TestGetTipConfig:
         response = httpx.Response(
             200, json={"send_tip": {"address": _RELAY_ADDRESS, "kind": {"quadratic": 3}}}
         )
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_err()
         assert "Unknown tip kind" in result.result_string
 
@@ -90,28 +90,28 @@ class TestGetTipConfig:
         response = httpx.Response(
             200, json={"send_tip": {"address": _RELAY_ADDRESS, "kind": {"linear": {"base": 1}}}}
         )
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_err()
         assert "missing field" in result.result_string
 
     def test_unrecognised_payload_is_error(self) -> None:
         response = httpx.Response(200, json={"nope": {}})
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_err()
         assert "Unrecognised tip config payload" in result.result_string
 
     def test_http_error_is_error(self) -> None:
         response = httpx.Response(503, text="down")
-        result = GetTipConfig().parse_response(response)
+        result = ReadTipConfig().parse_response(response)
         assert result.is_err()
         assert "503" in result.result_string
 
 
-class TestUploadRelayBlob:
+class TestWriteRelayBlob:
     """Upload request shape and response parsing."""
 
     def test_request_shape(self) -> None:
-        cmd = UploadRelayBlob(blob_id="bid", data=b"payload")
+        cmd = WriteRelayBlob(blob_id="bid", data=b"payload")
         assert cmd.endpoint_role == "relay"
         assert cmd.http_method() == "POST"
         assert cmd.url_path("https://r.example.com") == (
@@ -120,11 +120,11 @@ class TestUploadRelayBlob:
         assert cmd.request_body() == b"payload"
 
     def test_untipped_sends_only_blob_id(self) -> None:
-        cmd = UploadRelayBlob(blob_id="bid", data=b"x")
+        cmd = WriteRelayBlob(blob_id="bid", data=b"x")
         assert cmd.query_params() == {"blob_id": "bid"}
 
     def test_tipped_sends_tokens(self) -> None:
-        cmd = UploadRelayBlob(
+        cmd = WriteRelayBlob(
             blob_id="bid", data=b"x", register_tip_tx_digest="0xd", nonce="nn"
         )
         assert cmd.query_params() == {
@@ -134,17 +134,17 @@ class TestUploadRelayBlob:
         }
 
     def test_deletable_included_only_when_set(self) -> None:
-        permanent = UploadRelayBlob(blob_id="bid", data=b"x")
+        permanent = WriteRelayBlob(blob_id="bid", data=b"x")
         assert "deletable_blob_object" not in permanent.query_params()
-        deletable = UploadRelayBlob(
+        deletable = WriteRelayBlob(
             blob_id="bid", data=b"x", deletable_blob_object="0xobj"
         )
         assert deletable.query_params()["deletable_blob_object"] == "0xobj"
 
     def test_encoding_type_included_only_when_set(self) -> None:
-        default = UploadRelayBlob(blob_id="bid", data=b"x")
+        default = WriteRelayBlob(blob_id="bid", data=b"x")
         assert "encoding_type" not in default.query_params()
-        explicit = UploadRelayBlob(blob_id="bid", data=b"x", encoding_type=1)
+        explicit = WriteRelayBlob(blob_id="bid", data=b"x", encoding_type=1)
         assert explicit.query_params()["encoding_type"] == 1
 
     def test_success_carries_uploaded_ack(self) -> None:
@@ -152,7 +152,7 @@ class TestUploadRelayBlob:
             200,
             json={"blob_id": "bid", "confirmation_certificate": {"signers": [1, 2]}},
         )
-        result = UploadRelayBlob(blob_id="bid", data=b"x").parse_response(response)
+        result = WriteRelayBlob(blob_id="bid", data=b"x").parse_response(response)
         assert result.is_ok()
         ack = result.result_data
         assert ack.outcome is RelayUploadOutcome.UPLOADED
@@ -161,7 +161,7 @@ class TestUploadRelayBlob:
 
     def test_refusal_carries_status_and_body(self) -> None:
         response = httpx.Response(402, text="tip too small")
-        result = UploadRelayBlob(blob_id="bid", data=b"x").parse_response(response)
+        result = WriteRelayBlob(blob_id="bid", data=b"x").parse_response(response)
         assert result.is_err()
         ack = result.result_data
         assert isinstance(ack, RelayUploadAck)
@@ -171,19 +171,19 @@ class TestUploadRelayBlob:
 
     def test_malformed_success_body_is_refused_not_retryable(self) -> None:
         response = httpx.Response(200, json={"blob_id": "bid"})
-        result = UploadRelayBlob(blob_id="bid", data=b"x").parse_response(response)
+        result = WriteRelayBlob(blob_id="bid", data=b"x").parse_response(response)
         assert result.is_err()
         ack = result.result_data
         assert ack.outcome is RelayUploadOutcome.REFUSED
         assert ack.relay_status == 200
 
     def test_result_data_type_is_stable_across_outcomes(self) -> None:
-        ok = UploadRelayBlob(blob_id="bid", data=b"x").parse_response(
+        ok = WriteRelayBlob(blob_id="bid", data=b"x").parse_response(
             httpx.Response(
                 200, json={"blob_id": "bid", "confirmation_certificate": {}}
             )
         )
-        bad = UploadRelayBlob(blob_id="bid", data=b"x").parse_response(
+        bad = WriteRelayBlob(blob_id="bid", data=b"x").parse_response(
             httpx.Response(400, text="nope")
         )
         assert isinstance(ok.result_data, RelayUploadAck)
@@ -207,7 +207,7 @@ class TestRelayRoleDispatch:
     async def test_relay_role_requires_explicit_base_url(self, client: Any) -> None:
         with pytest.raises(ValueError, match="requires an explicit base_url"):
             await client._dispatch_walrus(
-                GetTipConfig(), timeout=None, headers=None, base_url=None
+                ReadTipConfig(), timeout=None, headers=None, base_url=None
             )
 
     async def test_upload_relay_role_requires_explicit_base_url(
@@ -215,14 +215,14 @@ class TestRelayRoleDispatch:
     ) -> None:
         with pytest.raises(ValueError, match="requires an explicit base_url"):
             await client._dispatch_walrus(
-                UploadRelayBlob(blob_id="bid", data=b"x"),
+                WriteRelayBlob(blob_id="bid", data=b"x"),
                 timeout=None,
                 headers=None,
                 base_url=None,
             )
 
 
-class TestUploadRelayBlobNonJsonBody:
+class TestWriteRelayBlobNonJsonBody:
     """A 2xx body that is not JSON at all is refused, never raised."""
 
     def test_non_json_body_is_refused_not_raised(self) -> None:
@@ -235,7 +235,7 @@ class TestUploadRelayBlobNonJsonBody:
         """
         body = "<html>bad gateway</html>"
         response = httpx.Response(200, text=body)
-        result = UploadRelayBlob(blob_id="bid", data=b"x").parse_response(response)
+        result = WriteRelayBlob(blob_id="bid", data=b"x").parse_response(response)
         assert not result.is_ok()
         ack = result.result_data
         assert isinstance(ack, RelayUploadAck)
@@ -254,7 +254,7 @@ class TestTipAmountValidation:
 
     def test_bool_const_amount_rejected(self) -> None:
         """``bool`` subclasses ``int``, so JSON ``true`` would tip 1 MIST."""
-        with pytest.raises(ValueError, match="const tip amount must be an integer"):
+        with pytest.raises(TypeError, match="const tip amount must be an integer"):
             _parse_tip_kind(payload={"const": True})
 
     def test_negative_const_amount_rejected(self) -> None:
@@ -267,13 +267,13 @@ class TestTipAmountValidation:
         assert _parse_tip_kind(payload={"const": 0}) == ConstTip(amount=0)
 
     def test_bool_linear_base_rejected(self) -> None:
-        with pytest.raises(ValueError, match="linear tip base must be an integer"):
+        with pytest.raises(TypeError, match="linear tip base must be an integer"):
             _parse_tip_kind(
                 payload={"linear": {"base": False, "encoded_size_mul_per_kib": 1}}
             )
 
     def test_non_integer_linear_base_rejected(self) -> None:
-        with pytest.raises(ValueError, match="linear tip base must be an integer"):
+        with pytest.raises(TypeError, match="linear tip base must be an integer"):
             _parse_tip_kind(
                 payload={"linear": {"base": "10", "encoded_size_mul_per_kib": 1}}
             )
@@ -297,7 +297,7 @@ class TestTipAddressValidation:
     """
 
     def test_non_string_rejected(self) -> None:
-        with pytest.raises(ValueError, match="must be a string"):
+        with pytest.raises(TypeError, match="must be a string"):
             _tip_address(value=12345)
 
     def test_missing_prefix_rejected(self) -> None:

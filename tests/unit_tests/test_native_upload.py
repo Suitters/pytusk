@@ -51,10 +51,10 @@ from pysui import SuiRpcResult
 
 from pytusk.client.walrus_client import WalrusClient
 from pytusk.commands.node_commands import (
-    GetStorageConfirmation,
-    PutMetadata,
-    PutSliver,
+    ReadStorageConfirmation,
     SignedConfirmation,
+    WriteMetadata,
+    WriteSliver,
 )
 from pytusk.core.certification import (
     Certificate,
@@ -183,7 +183,7 @@ class _FakeStorageClient:
     native_upload stage functions use. ``put_failures`` maps
     ``(base_url, sliver_type)`` to a failure reason string; anything not
     listed succeeds. ``metadata_failures`` maps ``base_url`` to a
-    ``PutMetadata`` failure reason string; anything not listed succeeds --
+    ``WriteMetadata`` failure reason string; anything not listed succeeds --
     this defaults every node's metadata PUT to success so existing
     sliver-fan-out tests (written before the metadata stage existed) are
     unaffected. ``confirmations`` maps ``base_url`` to a canned
@@ -214,17 +214,17 @@ class _FakeStorageClient:
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
         assert base_url is not None
-        if isinstance(command, PutMetadata):
+        if isinstance(command, WriteMetadata):
             reason = self.metadata_failures.get(base_url)
             if reason is not None:
                 return SuiRpcResult(False, reason)
             return SuiRpcResult(True, "")
-        if isinstance(command, PutSliver):
+        if isinstance(command, WriteSliver):
             reason = self.put_failures.get((base_url, command.sliver_type))
             if reason is not None:
                 return SuiRpcResult(False, reason)
             return SuiRpcResult(True, "")
-        if isinstance(command, GetStorageConfirmation):
+        if isinstance(command, ReadStorageConfirmation):
             confirmation = self.confirmations.get(base_url)
             if confirmation is None:
                 return SuiRpcResult(False, f"no confirmation configured for {base_url}")
@@ -233,14 +233,14 @@ class _FakeStorageClient:
 
 
 class _FlakyPutClient:
-    """Fake client whose ``PutSliver`` dispatch fails a configurable number
+    """Fake client whose ``WriteSliver`` dispatch fails a configurable number
     of times per ``(base_url, sliver_type)`` before succeeding.
 
     ``fail_first`` maps ``(base_url, sliver_type)`` to how many leading
     attempts against that key should fail before the next attempt (and
     every attempt thereafter) succeeds; a key absent from ``fail_first``
     always succeeds. ``attempts`` records how many times each key was
-    dispatched, for asserting retry counts. Every ``PutMetadata`` dispatch
+    dispatched, for asserting retry counts. Every ``WriteMetadata`` dispatch
     unconditionally succeeds -- this fake only models sliver-PUT flakiness.
     """
 
@@ -259,9 +259,9 @@ class _FlakyPutClient:
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
         assert base_url is not None
-        if isinstance(command, PutMetadata):
+        if isinstance(command, WriteMetadata):
             return SuiRpcResult(True, "")
-        if not isinstance(command, PutSliver):
+        if not isinstance(command, WriteSliver):
             raise NotImplementedError(f"Unhandled command type: {type(command)}")
         key = (base_url, command.sliver_type)
         self.attempts[key] = self.attempts.get(key, 0) + 1
@@ -271,12 +271,12 @@ class _FlakyPutClient:
 
 
 class _RaisingPutClient:
-    """Fake client whose ``PutSliver`` dispatch RAISES a bare exception for
+    """Fake client whose ``WriteSliver`` dispatch RAISES a bare exception for
     one configured ``(base_url, sliver_type)`` key, instead of returning a
     failed ``SuiRpcResult`` -- models an exception escaping
     ``client.execute`` itself (e.g. a bug in the transport layer, or --
     before FIX 1 -- a raw ``ssl.SSLError`` that used to escape ``_send``).
-    Every other dispatch (``PutMetadata``, and any ``PutSliver`` not
+    Every other dispatch (``WriteMetadata``, and any ``WriteSliver`` not
     matching ``raise_for``) succeeds unconditionally.
     """
 
@@ -294,9 +294,9 @@ class _RaisingPutClient:
         base_url: str | None = None,
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
-        if isinstance(command, PutMetadata):
+        if isinstance(command, WriteMetadata):
             return SuiRpcResult(True, "")
-        if not isinstance(command, PutSliver):
+        if not isinstance(command, WriteSliver):
             raise NotImplementedError(f"Unhandled command type: {type(command)}")
         if (base_url, command.sliver_type) == self.raise_for:
             raise self.exc
@@ -304,7 +304,7 @@ class _RaisingPutClient:
 
 
 class _RaisingMetadataClient:
-    """Fake client whose ``PutMetadata`` dispatch RAISES a bare exception
+    """Fake client whose ``WriteMetadata`` dispatch RAISES a bare exception
     for one configured ``base_url``, instead of returning a failed
     ``SuiRpcResult`` -- models an exception escaping ``_upload_node``'s own
     task ENTIRELY: neither ``_put_metadata`` nor ``_upload_node`` wraps the
@@ -328,19 +328,19 @@ class _RaisingMetadataClient:
         base_url: str | None = None,
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
-        if isinstance(command, PutMetadata):
+        if isinstance(command, WriteMetadata):
             if base_url == self.raise_for_base_url:
                 raise self.exc
             return SuiRpcResult(True, "")
-        if isinstance(command, PutSliver):
+        if isinstance(command, WriteSliver):
             return SuiRpcResult(True, "")
         raise NotImplementedError(f"Unhandled command type: {type(command)}")
 
 
 class _HangingSliverPutClient:
-    """Fake client whose ``PutSliver`` dispatch for one configured
+    """Fake client whose ``WriteSliver`` dispatch for one configured
     ``(base_url, sliver_type)`` key hangs forever -- awaits an
-    ``asyncio.Event`` that is never set -- while ``PutMetadata`` and every
+    ``asyncio.Event`` that is never set -- while ``WriteMetadata`` and every
     other sliver dispatch succeed immediately. Models a node whose OWN
     ``_upload_node`` task must itself be cancelled from outside (
     ``upload_slivers``'s grace-window straggler cleanup) while it still has
@@ -363,9 +363,9 @@ class _HangingSliverPutClient:
         base_url: str | None = None,
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
-        if isinstance(command, PutMetadata):
+        if isinstance(command, WriteMetadata):
             return SuiRpcResult(True, "")
-        if not isinstance(command, PutSliver):
+        if not isinstance(command, WriteSliver):
             raise NotImplementedError(f"Unhandled command type: {type(command)}")
         if (base_url, command.sliver_type) == self.hang_for:
             await self._hang_event.wait()  # never set; cancelled by the caller
@@ -373,7 +373,7 @@ class _HangingSliverPutClient:
 
 
 class _HangingConfirmationClient:
-    """Fake client whose ``GetStorageConfirmation`` dispatch for a configured
+    """Fake client whose ``ReadStorageConfirmation`` dispatch for a configured
     subset of nodes hangs forever -- awaits an ``asyncio.Event`` that is
     never set -- while every other configured node responds immediately
     with a canned ``SignedConfirmation``. Models slow/dead storage nodes so
@@ -419,7 +419,7 @@ class _HangingConfirmationClient:
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
         assert base_url is not None
-        if not isinstance(command, GetStorageConfirmation):
+        if not isinstance(command, ReadStorageConfirmation):
             raise NotImplementedError(f"Unhandled command type: {type(command)}")
         if base_url in self.hang_for:
             await self._hang_event.wait()  # never set; cancelled by the caller
@@ -475,7 +475,7 @@ class _GatedStragglerConfirmationClient:
     ) -> SuiRpcResult:
         self.calls.append((base_url, command))
         assert base_url is not None
-        if not isinstance(command, GetStorageConfirmation):
+        if not isinstance(command, ReadStorageConfirmation):
             raise NotImplementedError(f"Unhandled command type: {type(command)}")
         if base_url == self.straggler_base_url:
             await self._release_event.wait()
@@ -602,7 +602,7 @@ class TestUploadSliversRouting:
         put_calls_to_correct_host = [
             command
             for base_url, command in client.calls
-            if isinstance(command, PutSliver) and base_url == correct_host
+            if isinstance(command, WriteSliver) and base_url == correct_host
         ]
         assert put_calls_to_correct_host, "the shard's PUTs never reached its own node"
         for command in put_calls_to_correct_host:
@@ -611,7 +611,7 @@ class TestUploadSliversRouting:
         put_calls_to_wrong_host = [
             command
             for base_url, command in client.calls
-            if isinstance(command, PutSliver)
+            if isinstance(command, WriteSliver)
             and base_url == wrong_host
             and command.sliver_pair_index == pair0.sliver_pair_index
         ]
@@ -697,10 +697,10 @@ class TestUploadNodeMetadataStage:
             command for base_url, command in client.calls if base_url == member.base_url
         ]
         assert node_calls, "no calls recorded for this node"
-        assert isinstance(node_calls[0], PutMetadata)
+        assert isinstance(node_calls[0], WriteMetadata)
         assert node_calls[0].blob_id == encoded.blob_id
         assert node_calls[0].metadata_bcs == encoded.metadata_bcs
-        assert all(isinstance(command, PutSliver) for command in node_calls[1:])
+        assert all(isinstance(command, WriteSliver) for command in node_calls[1:])
         # One metadata PUT, then primary+secondary per shard the node holds.
         assert len(node_calls) == 1 + 2 * len(member.shard_indices)
 
@@ -737,8 +737,8 @@ class TestUploadNodeMetadataStage:
             command for base_url, command in client.calls if base_url == member.base_url
         ]
         assert node_calls
-        assert all(isinstance(command, PutMetadata) for command in node_calls)
-        assert not any(isinstance(command, PutSliver) for command in node_calls)
+        assert all(isinstance(command, WriteMetadata) for command in node_calls)
+        assert not any(isinstance(command, WriteSliver) for command in node_calls)
         # max_retries=1 => initial attempt + 1 retry = 2 dispatches.
         assert len(node_calls) == 2
 
@@ -1055,7 +1055,7 @@ class TestUploadSliversNodeTaskException:
     """FIX 2 (node level) -- the single most important robustness test: one
     node's ``_upload_node`` TASK raising an unhandled exception must not
     abort ``upload_slivers`` for the rest of the fan-out. Here the exception
-    is a ``PutMetadata`` dispatch that escapes both ``_put_metadata`` and
+    is a ``WriteMetadata`` dispatch that escapes both ``_put_metadata`` and
     ``_upload_node`` entirely, uncaught, since neither wraps that call in a
     ``try``/``except``. ``_outcome_from_task`` converts the raised task into
     a synthesized failed ``NodeUploadOutcome``, and ``upload_slivers`` still
@@ -1389,7 +1389,7 @@ class TestCollectConfirmationsQueriesAll:
         confirmation_calls = [
             base_url
             for base_url, command in client.calls
-            if isinstance(command, GetStorageConfirmation) and base_url is not None
+            if isinstance(command, ReadStorageConfirmation) and base_url is not None
         ]
         assert failed_upload_node.base_url in confirmation_calls
         assert len(confirmation_calls) == len(committee.members)
@@ -1709,7 +1709,7 @@ class TestCollectConfirmationsFailurePathUnchanged:
         confirmation_calls = [
             base_url
             for base_url, command in client.calls
-            if isinstance(command, GetStorageConfirmation) and base_url is not None
+            if isinstance(command, ReadStorageConfirmation) and base_url is not None
         ]
         assert sorted(confirmation_calls) == sorted(
             member.base_url for member in signed_committee.members

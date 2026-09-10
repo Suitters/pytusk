@@ -22,7 +22,7 @@ not a stage layered on top of it.
 The Walrus PUBLISHER path is NOT a delivery strategy and is deliberately
 absent here. A publisher performs registration, encoding, fan-out,
 confirmation AND certification server-side from a single PUT (see
-:class:`~pytusk.commands.write_commands.StoreBlob`); it has no Tx1 and no Tx2
+:class:`~pytusk.commands.write_commands.WriteBlob`); it has no Tx1 and no Tx2
 of its own. Modelling it as a strategy inside a register -> deliver ->
 certify pipeline would mean an implementation whose registration and
 certification steps are both no-ops -- fitting a concept to a module that

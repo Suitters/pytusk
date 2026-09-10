@@ -12,30 +12,35 @@ from pytusk.client.walrus_client import WalrusClient, get_walrus_epoch
 
 # Storage-node commands
 from pytusk.commands.node_commands import (
-    GetStorageConfirmation,
     MetadataAck,
-    PutMetadata,
-    PutSliver,
+    MetadataData,
+    ReadBlobStatus,
+    ReadMetadata,
+    ReadSliver,
+    ReadStorageConfirmation,
     SignedConfirmation,
     SliverAck,
+    SliverData,
+    WriteMetadata,
+    WriteSliver,
 )
 
 # Read commands
 from pytusk.commands.read_commands import (
-    ConcatBlobs,
-    ListQuiltPatches,
     ReadBlob,
     ReadBlobByObjectId,
     ReadBlobPartial,
+    ReadConcatBlobs,
     ReadQuiltPatch,
     ReadQuiltPatchById,
+    ReadQuiltPatches,
 )
 
 # Relay commands (upload-relay tip config and blob upload)
 from pytusk.commands.relay_commands import (
-    GetTipConfig,
+    ReadTipConfig,
     RelayUploadAck,
-    UploadRelayBlob,
+    WriteRelayBlob,
 )
 
 # Command base and response types
@@ -56,8 +61,8 @@ from pytusk.commands.walrus_command import (
 
 # Write commands
 from pytusk.commands.write_commands import (
-    StoreBlob,
-    StoreQuilt,
+    WriteBlob,
+    WriteQuilt,
 )
 
 # Configuration
@@ -115,13 +120,18 @@ from pytusk.core.encoding import (
     RS2_ENCODING_TYPE,
     RS2_MAX_SYMBOL_SIZE,
     RS2_REQUIRED_ALIGNMENT,
+    BlobDecodeError,
     BlobTooLargeError,
     EncodedBlob,
+    MetadataVerificationError,
     QuiltAssemblyError,
+    SliverVerificationError,
+    VerifiedBlobMetadata,
     assemble_quilt,
     blob_id_from_url_base64,
     blob_id_to_u256,
     blob_id_to_url_base64,
+    decode_blob,
     decode_standard_base64,
     encode_blob,
     encoded_blob_length,
@@ -130,11 +140,25 @@ from pytusk.core.encoding import (
     metadata_length,
     min_n_correct,
     object_id_to_raw_bytes,
+    pair_index_to_shard_index,
     quilt_patch_id,
     root_hash_to_u256,
+    rotation_offset,
+    shard_index_to_pair_index,
     source_symbol_counts,
     symbol_size,
     validate_quilt_identifier,
+    verify_blob_metadata,
+    verify_sliver,
+)
+
+# Native read orchestration (metadata retrieval and verification, sliver
+# fan-out, thin end-to-end compose that reconstructs a blob from the
+# storage nodes without an aggregator)
+from pytusk.core.native_read import (
+    fetch_slivers,
+    fetch_verified_metadata,
+    reconstruct_blob,
 )
 
 # Native upload orchestration (sliver fan-out, confirmation collection,
@@ -215,6 +239,7 @@ from pytusk.core.ops.blob_status import fetch_blob_status, resolve_blob_sui_obje
 # End-to-end write pipelines (the compose functions that own stage order and
 # receipt construction -- see pytusk.core.pipelines's module docstring)
 from pytusk.core.pipelines import (
+    read_blob_native,
     store_blob_native,
     store_blob_relay,
     store_quilt_relay,
@@ -259,6 +284,9 @@ from pytusk.core.types import (
     InvalidStatus,
     LinearTip,
     Metadata,
+    MetadataFetchError,
+    NativeReadError,
+    NativeReadResult,
     NodeDissent,
     NodeRef,
     NonexistentStatus,
@@ -274,6 +302,7 @@ from pytusk.core.types import (
     Resolution,
     SharedBlobOpResult,
     SharedBlobReceipt,
+    SliverFetchError,
     SplitResult,
     StageTimingsProtocol,
     StorageObject,
@@ -348,28 +377,37 @@ __all__ = [  # noqa: RUF022
     "ReadBlobByObjectId",
     "ReadQuiltPatch",
     "ReadQuiltPatchById",
-    "ListQuiltPatches",
-    "ConcatBlobs",
+    "ReadQuiltPatches",
+    "ReadConcatBlobs",
     # Relay commands
-    "GetTipConfig",
+    "ReadTipConfig",
     "RelayUploadAck",
-    "UploadRelayBlob",
+    "WriteRelayBlob",
     # Write commands
-    "StoreBlob",
-    "StoreQuilt",
+    "WriteBlob",
+    "WriteQuilt",
     # Storage-node commands
-    "PutSliver",
-    "PutMetadata",
-    "GetStorageConfirmation",
-    "SliverAck",
     "MetadataAck",
+    "MetadataData",
+    "WriteMetadata",
+    "WriteSliver",
+    "ReadBlobStatus",
+    "ReadMetadata",
+    "ReadSliver",
+    "ReadStorageConfirmation",
     "SignedConfirmation",
+    "SliverAck",
+    "SliverData",
     # Encoding
     "RS2_ENCODING_TYPE",
     "RS2_MAX_SYMBOL_SIZE",
     "RS2_REQUIRED_ALIGNMENT",
+    "BlobDecodeError",
     "BlobTooLargeError",
     "EncodedBlob",
+    "MetadataVerificationError",
+    "SliverVerificationError",
+    "VerifiedBlobMetadata",
     "BlobMetadata",
     "BlobStatus",
     "BlobStatusReport",
@@ -392,6 +430,7 @@ __all__ = [  # noqa: RUF022
     "resolve_blob_sui_objects",
     "blob_id_to_u256",
     "blob_id_to_url_base64",
+    "decode_blob",
     "decode_standard_base64",
     "QUILT_BLOB_ATTRIBUTES",
     "QuiltAssemblyError",
@@ -404,9 +443,14 @@ __all__ = [  # noqa: RUF022
     "metadata_length",
     "min_n_correct",
     "object_id_to_raw_bytes",
+    "pair_index_to_shard_index",
     "root_hash_to_u256",
+    "rotation_offset",
+    "shard_index_to_pair_index",
     "source_symbol_counts",
     "symbol_size",
+    "verify_blob_metadata",
+    "verify_sliver",
     "validate_quilt_identifier",
     # Certification
     "Certificate",
@@ -499,6 +543,15 @@ __all__ = [  # noqa: RUF022
     "collect_confirmations",
     "store_blob_native",
     "upload_slivers",
+    # Native read orchestration
+    "MetadataFetchError",
+    "NativeReadError",
+    "NativeReadResult",
+    "SliverFetchError",
+    "fetch_slivers",
+    "fetch_verified_metadata",
+    "read_blob_native",
+    "reconstruct_blob",
     # Relay upload orchestration
     "RelayBlobReceipt",
     "RelayCertificateParseError",

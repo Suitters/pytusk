@@ -701,7 +701,7 @@ class TestUploadTimeout:
         assert rec.upload[0]["timeout"] is None
 
 
-class TestStoreQuiltRelay:
+class TestWriteQuiltRelay:
     """The quilt entry point rides the SAME relay stage order as the blob
     one -- which is the point of sharing a body rather than copying it --
     and adds exactly one thing: per-patch identities on the receipt.

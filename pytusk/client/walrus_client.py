@@ -42,6 +42,15 @@ the connection pool under heavy fan-out is not aborted prematurely.
 """
 
 
+class _ResponseTooLarge(Exception):
+    """A node's response body exceeded the cap its command declared.
+
+    Deliberately not an ``httpx`` or ``OSError`` type: it is not a transport
+    failure but a refusal, and it must not be swallowed by the clause that
+    handles genuine transport errors.
+    """
+
+
 class _RequestKwargs(TypedDict, total=False):
     """Optional keyword arguments forwarded to ``httpx.AsyncClient.request``.
 
@@ -183,8 +192,8 @@ class WalrusClient(AsyncClientBase):
             base_url (str | None): Explicit base URL to dispatch a
                 WalrusCommand against, bypassing the command's configured
                 aggregator/publisher role resolution. Pass this for
-                ``storage_node``-role commands (e.g. PutSliver,
-                GetStorageConfirmation), whose target host is per-call data
+                ``storage_node``-role commands (e.g. WriteSliver,
+                ReadStorageConfirmation), whose target host is per-call data
                 resolved from the committee rather than a fixed configured
                 endpoint -- dispatch raises ValueError if a storage-node
                 command is executed without one. Meaningless for a
@@ -365,7 +374,8 @@ class WalrusClient(AsyncClientBase):
         elif command.endpoint_role == "storage_node":
             raise ValueError(
                 f"{type(command).__name__} has endpoint_role='storage_node' "
-                "and requires an explicit base_url; none was supplied."
+                "and requires an explicit base_url; none was supplied. "
+                "Resolve one with committee member's base_url."
             )
         elif command.endpoint_role == "relay":
             raise ValueError(
@@ -388,6 +398,101 @@ class WalrusClient(AsyncClientBase):
             timeout=timeout,
             headers=headers,
         )
+
+    async def _stream_capped(
+        self,
+        *,
+        method: str,
+        url: str,
+        params: dict[str, Any] | None,
+        body: bytes | None,
+        form: dict[str, bytes] | None,
+        headers: dict[str, str] | None,
+        request_kwargs: _RequestKwargs,
+        max_bytes: int,
+    ) -> httpx.Response:
+        """Send a request whose response body is capped at ``max_bytes``.
+
+        Streams rather than buffering, so an oversized body is abandoned
+        mid-flight instead of being fully resident before anything has looked
+        at it. ``Content-Length`` is consulted first, because it lets a
+        truthful node be refused without transferring anything at all; the
+        running byte count is enforced as well, because a hostile one can
+        understate that header or omit it entirely under chunked encoding.
+
+        The collected bytes are returned in a NEW response object rather than
+        the streamed one: a streamed ``httpx.Response`` never populates
+        ``.content``, and every command's ``parse_response`` reads exactly
+        that.
+
+        Args:
+            method (str): HTTP method.
+            url (str): Fully-qualified request URL.
+            params (dict[str, Any] | None): Query parameters, if any.
+            body (bytes | None): Raw request body, if any.
+            form (dict[str, bytes] | None): Multipart form files, if any.
+            headers (dict[str, str] | None): Additional request headers.
+            request_kwargs (_RequestKwargs): Timeout kwarg, present only when
+                the caller supplied one -- see :meth:`_send`.
+            max_bytes (int): Ceiling on the response body.
+
+        Returns:
+            httpx.Response: A response carrying the collected body.
+
+        Raises:
+            _ResponseTooLarge: If the body exceeds ``max_bytes``, whether by
+                its declared length or its actual one.
+        """
+        if form:
+            httpx_files: dict[str, tuple[str, bytes, str]] = {
+                key: (key, data, "application/octet-stream")
+                for key, data in form.items()
+            }
+            stream = self._httpx.stream(
+                method=method,
+                url=url,
+                params=params,
+                files=httpx_files,
+                headers=headers or {},
+                **request_kwargs,
+            )
+        elif body is not None:
+            stream = self._httpx.stream(
+                method=method,
+                url=url,
+                params=params,
+                content=body,
+                headers=headers or {},
+                **request_kwargs,
+            )
+        else:
+            stream = self._httpx.stream(
+                method=method,
+                url=url,
+                params=params,
+                headers=headers or {},
+                **request_kwargs,
+            )
+
+        async with stream as response:
+            declared = response.headers.get("content-length")
+            if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+                raise _ResponseTooLarge(
+                    f"node declared a {declared}-byte body, cap is {max_bytes}"
+                )
+            collected = bytearray()
+            async for chunk in response.aiter_bytes():
+                collected.extend(chunk)
+                if len(collected) > max_bytes:
+                    raise _ResponseTooLarge(
+                        f"node body passed the {max_bytes}-byte cap"
+                    )
+            return httpx.Response(
+                status_code=response.status_code,
+                headers=response.headers,
+                content=bytes(collected),
+                request=response.request,
+            )
 
     async def _send(
         self,
@@ -448,6 +553,7 @@ class WalrusClient(AsyncClientBase):
         params = command.query_params() or None
         body = command.request_body()
         form = command.form_files()
+        max_bytes = command.max_response_bytes()
 
         # timeout is OMITTED from request_kwargs (rather than passed as
         # timeout=None) when the caller did not supply one, so the client's
@@ -457,7 +563,18 @@ class WalrusClient(AsyncClientBase):
             request_kwargs["timeout"] = timeout
 
         try:
-            if form:
+            if max_bytes is not None:
+                response = await self._stream_capped(
+                    method=method,
+                    url=url,
+                    params=params,
+                    body=body,
+                    form=form,
+                    headers=headers,
+                    request_kwargs=request_kwargs,
+                    max_bytes=max_bytes,
+                )
+            elif form:
                 httpx_files: dict[str, tuple[str, bytes, str]] = {
                     key: (key, data, "application/octet-stream")
                     for key, data in form.items()
@@ -487,6 +604,12 @@ class WalrusClient(AsyncClientBase):
                     headers=headers or {},
                     **request_kwargs,
                 )
+        except _ResponseTooLarge as exc:
+            # A node answering far over its expected size is refused the same
+            # way any other bad node is: a structured failure result the
+            # caller's quorum logic can skip past, never an exception that
+            # aborts a whole fan-out.
+            return SuiRpcResult(False, f"{method} {url}: {exc}")
         except (httpx.HTTPError, ssl.SSLError, OSError) as exc:
             # DIAGNOSTIC NOTE: httpx/httpcore timeout and connection
             # exceptions (ConnectTimeout, ReadTimeout, WriteTimeout,

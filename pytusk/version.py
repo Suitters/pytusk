@@ -14,5 +14,5 @@
 """Library Version"""
 
 # Read in command line and posting to PyPi
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 """Pytusk Version."""

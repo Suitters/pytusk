@@ -227,6 +227,164 @@ transfers back to the sender.
 
     asyncio.run(main())
 
+Shared Blobs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Operations on the ``shared_blob`` module: wrapping a permanent
+``Blob`` into a ``SharedBlob`` that anyone can fund and extend.
+
+Sharing a Blob
+''''''''''''''
+
+Only a permanent (non-deletable) blob can be wrapped into a
+``SharedBlob``; ``shared_blob::new`` consumes the ``Blob`` by value and
+shares the new object internally, so its object ID is not returned by
+the call and must be read back from the transaction's effects.
+
+.. code-block:: python
+
+    import asyncio
+    from pysui import ExecuteTransaction, GetObject
+    from pytusk import (
+        PytuskConfiguration,
+        WalrusClient,
+        find_created_shared_object_id,
+        require_success,
+    )
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            system_obj_id = client.config.network.system_object
+            sys_result = await client.execute(
+                command=GetObject(object_id=system_obj_id)
+            )
+            walrus_pkg = sys_result.result_data.json.struct_value.fields[
+                "package_id"
+            ].string_value
+            blob_object_id = "0x..."  # the permanent blob's Sui object ID
+
+            txn = await client.transaction(initial_sender=sender)
+            await txn.move_call(
+                target=f"{walrus_pkg}::shared_blob::new",
+                arguments=[blob_object_id],
+                type_arguments=[],
+            )
+
+            txdict = await txn.build_and_sign()
+            result = await client.execute(command=ExecuteTransaction(**txdict))
+            if result.is_ok():
+                effects = require_success(
+                    result_data=result.result_data, label="share_blob"
+                )
+                new_shared_blob_id = find_created_shared_object_id(
+                    effects=effects, object_type_substring="shared_blob::SharedBlob"
+                )
+                print(new_shared_blob_id)
+
+    asyncio.run(main())
+
+Funding a SharedBlob
+''''''''''''''''''''
+
+``fund`` consumes its ``Coin<WAL>`` argument's entire balance -- unlike
+a ``&mut`` payment coin that only deducts what it needs, the coin
+passed here must already hold exactly the amount being deposited (see
+``prepare_wal_coin_for_amount`` for building one via split/merge of
+owned WAL coins).
+
+.. code-block:: python
+
+    import asyncio
+    from pysui import ExecuteTransaction, GetObject
+    from pytusk import PytuskConfiguration, WalrusClient
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            system_obj_id = client.config.network.system_object
+            sys_result = await client.execute(
+                command=GetObject(object_id=system_obj_id)
+            )
+            walrus_pkg = sys_result.result_data.json.struct_value.fields[
+                "package_id"
+            ].string_value
+            shared_blob_object_id = "0x..."  # the SharedBlob's object ID
+            payment_coin_id = "0x..."  # a WAL coin holding exactly the amount to deposit
+
+            txn = await client.transaction(initial_sender=sender)
+            await txn.move_call(
+                target=f"{walrus_pkg}::shared_blob::fund",
+                arguments=[shared_blob_object_id, payment_coin_id],
+                type_arguments=[],
+            )
+
+            txdict = await txn.build_and_sign()
+            result = await client.execute(command=ExecuteTransaction(**txdict))
+            if result.is_ok():
+                print(result.result_data)
+
+    asyncio.run(main())
+
+Extending a SharedBlob
+''''''''''''''''''''''
+
+Unlike "Extending a Blob's Expiration" above, ``extend`` takes no
+payment coin from the caller -- it withdraws from the ``SharedBlob``'s
+own pooled ``funds`` balance and calls ``system::extend_blob``
+internally. This can abort on-chain if the pool's balance does not
+cover the extension cost; unlike a caller-supplied coin, that balance
+cannot be pre-checked client-side. Anyone may extend a shared blob,
+not only its original sharer.
+
+.. code-block:: python
+
+    import asyncio
+    from pysui import ExecuteTransaction, GetObject
+    from pytusk import PytuskConfiguration, WalrusClient
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            sender = client.pysui_client.config.active_address
+            system_obj_id = client.config.network.system_object
+            sys_result = await client.execute(
+                command=GetObject(object_id=system_obj_id)
+            )
+            walrus_pkg = sys_result.result_data.json.struct_value.fields[
+                "package_id"
+            ].string_value
+            shared_blob_object_id = "0x..."  # the SharedBlob's object ID
+            extended_epochs = 5
+
+            txn = await client.transaction(initial_sender=sender)
+            await txn.move_call(
+                target=f"{walrus_pkg}::shared_blob::extend",
+                arguments=[shared_blob_object_id, system_obj_id, extended_epochs],
+                type_arguments=[],
+            )
+
+            txdict = await txn.build_and_sign()
+            result = await client.execute(command=ExecuteTransaction(**txdict))
+            if result.is_ok():
+                print(result.result_data)
+
+    asyncio.run(main())
+
 Blob Metadata
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -659,7 +817,7 @@ Unlike the operations above, a native blob upload is not a single
 second, later transaction) bracketing an off-chain step: uploading
 erasure-coded slivers to the storage-node committee and collecting their
 signed confirmations. This is pytusk's alternative to the HTTP publisher/
-aggregator commands (``StoreBlob``/``ReadBlob`` and friends) — see
+aggregator commands (``WriteBlob``/``ReadBlob`` and friends) — see
 :doc:`intro` for when to choose one over the other.
 
 The highest-level entry point runs the whole pipeline in one call:

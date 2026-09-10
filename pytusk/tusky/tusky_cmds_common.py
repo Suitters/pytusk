@@ -30,6 +30,7 @@ import io
 import logging
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -48,7 +49,7 @@ from pytusk import (
     extract_balance_change_costs,
     resolve_package_id,
 )
-from pytusk import wal_balance_and_decimals as core_wal_balance_and_decimals
+from pytusk import wal_balance_and_decimals as _wal_balance_and_decimals_lib
 
 # The domain half of what this module used to do itself. Plan #28 step 10
 # moved it into the library proper under the placement rule: matching a WAL
@@ -253,7 +254,7 @@ async def wal_balance_and_decimals(
             and WAL's decimals.
     """
     try:
-        return await core_wal_balance_and_decimals(client=client, owner=owner)
+        return await _wal_balance_and_decimals_lib(client=client, owner=owner)
     except RuntimeError as exc:
         # The library function raises where this one used to exit: a library
         # must not terminate its caller's process. The message text is
@@ -443,6 +444,33 @@ def read_file_bytes(path: str | Path) -> bytes:
     """
     with open(path, "rb") as f:
         return f.read()
+
+
+def write_file_bytes(path: str | Path, data: bytes) -> None:
+    """Write bytes to a file synchronously, atomically, without following symlinks.
+
+    Writes to a temporary file in the same directory first, then
+    ``os.replace``s it onto ``path``. This fixes two issues with a plain
+    ``open(path, "wb")``: a failed or partial write no longer truncates
+    (and loses) the destination's existing content, since nothing touches
+    ``path`` until the write has already succeeded; and ``os.replace``
+    replaces the directory entry at ``path`` itself rather than following
+    it, so a symlinked destination is replaced instead of written through
+    to whatever it points at.
+
+    Args:
+        path (str | Path): Filesystem path to write.
+        data (bytes): Raw content to write.
+    """
+    target = Path(path)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp_name, target)
+    except BaseException:
+        os.unlink(tmp_name)
+        raise
 
 
 async def collect_quilt_patches(*, args: argparse.Namespace) -> dict[str, bytes]:

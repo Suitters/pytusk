@@ -3,12 +3,12 @@
 
 # -*- coding: utf-8 -*-
 
-"""Unit tests for GetBlobStatus request shape and response parsing."""
+"""Unit tests for ReadBlobStatus request shape and response parsing."""
 
 import httpx
 import pytest
 
-from pytusk.commands.node_commands import GetBlobStatus
+from pytusk.commands.node_commands import ReadBlobStatus
 from pytusk.core.types.blob_status import (
     DeletableStatus,
     InvalidStatus,
@@ -59,8 +59,8 @@ _SOURCE_DERIVED_INVALID = {
 
 
 def _parse(body: object, *, status_code: int = 200):
-    """Run GetBlobStatus.parse_response over a JSON body."""
-    return GetBlobStatus(blob_id=_BLOB_ID).parse_response(
+    """Run ReadBlobStatus.parse_response over a JSON body."""
+    return ReadBlobStatus(blob_id=_BLOB_ID).parse_response(
         httpx.Response(status_code, json=body)
     )
 
@@ -70,11 +70,11 @@ class TestRequestShape:
 
     def test_method_is_get(self) -> None:
         """Status is a read."""
-        assert GetBlobStatus(blob_id=_BLOB_ID).http_method() == "GET"
+        assert ReadBlobStatus(blob_id=_BLOB_ID).http_method() == "GET"
 
     def test_url_uses_url_safe_unpadded_base64(self) -> None:
         """The path carries the URL-safe alphabet, never the standard one."""
-        path = GetBlobStatus(blob_id=_BLOB_ID).url_path("http://node:9185")
+        path = ReadBlobStatus(blob_id=_BLOB_ID).url_path("http://node:9185")
         assert path.endswith("/status")
         assert "+" not in path and "/v1/blobs/" in path
         assert "=" not in path.rsplit("/", 2)[1]
@@ -208,7 +208,7 @@ class TestFailuresAreReturnedNotRaised:
 
     def test_http_error_is_reported(self) -> None:
         """A non-2xx response never reaches the envelope unwrap."""
-        result = GetBlobStatus(blob_id=_BLOB_ID).parse_response(
+        result = ReadBlobStatus(blob_id=_BLOB_ID).parse_response(
             httpx.Response(500, text="boom")
         )
         assert not result.is_ok()

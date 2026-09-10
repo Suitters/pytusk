@@ -25,6 +25,7 @@ from pytusk.core.pipelines.delivery import (
     RelayDelivery,
     RelayDeliveryResult,
 )
+from pytusk.core.pipelines.read import read_blob_native
 from pytusk.core.pipelines.registration import (
     BlobRegistration,
     PlainBlobRegistration,
@@ -47,6 +48,7 @@ __all__ = [
     "RelayDelivery",
     "RelayDeliveryResult",
     "TippedBlobRegistration",
+    "read_blob_native",
     "store_blob_native",
     "store_blob_relay",
     "store_quilt_relay",

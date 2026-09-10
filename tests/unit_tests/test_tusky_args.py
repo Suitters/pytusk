@@ -15,7 +15,6 @@ import pytest
 
 from pytusk.tusky.tusky_args import build_parser
 
-
 OBJECT_ID = "0x" + "1" * 64
 OBJECT_ID_2 = "0x" + "2" * 64
 STORAGE_ID = "0x" + "3" * 64
@@ -120,6 +119,29 @@ class TestBlobIdArgument:
             build_parser(in_args=["read_blob", "-b", BLOB_ID + "A"])
 
 
+class TestReadBlobFileArgument:
+    """read_blob's --file mirrors read_blob_native's: a plain output path,
+    not existence-checked like the input --file flags elsewhere in tusky."""
+
+    def test_file_defaults_to_none(self) -> None:
+        """Without --file the handler writes to stdout."""
+        args = build_parser(in_args=["read_blob", "-b", BLOB_ID])
+        assert args.file is None
+
+    def test_file_is_not_existence_checked(self, tmp_path) -> None:
+        """--file here is an OUTPUT path, not an input -- see the identical
+        regression note on
+        TestReadBlobNativeArgs.test_file_is_not_existence_checked."""
+        target = tmp_path / "not-created-yet.bin"
+        assert not target.exists()
+
+        args = build_parser(
+            in_args=["read_blob", "-b", BLOB_ID, "--file", str(target)]
+        )
+
+        assert str(args.file) == str(target)
+
+
 class TestBurnBlobRepeatable:
     """burn_blob's -o/--object-id is repeatable and validates each value."""
 
@@ -178,7 +200,7 @@ class TestStorageIdArguments:
         assert args.storage_id == STORAGE_ID
 
 
-class TestStoreQuiltPatchFlags:
+class TestWriteQuiltPatchFlags:
     """--patch-file/--patch-content parse to dest patch_file/patch_content."""
 
     def test_patch_file_repeatable_key_value(self) -> None:
@@ -247,33 +269,115 @@ class TestQuiltPatches:
 
 
 class TestReadQuiltArguments:
-    """read_quilt's --quilt-id/--patch-key/--patch-id all default to None at
-    the parser level -- the pair-vs-single exactly-one-of requirement is
-    validated in the read_quilt() handler, not expressible as a single
-    argparse mutually exclusive group."""
+    """read_quilt's --quilt-id/--patch-key/--patch-id/--tag/--out-dir all
+    default to None at the parser level -- the pair-vs-single,
+    mode-exclusivity, and batch-vs-single-output requirements are all
+    validated in the read_quilt() handler, not expressible as argparse
+    argument groups."""
 
     def test_quilt_id_and_patch_key_flags(self) -> None:
-        """--quilt-id/--patch-key parse to their dests; --patch-id defaults None."""
+        """--quilt-id/--patch-key parse to their dests; others default None."""
         args = build_parser(
             in_args=["read_quilt", "--quilt-id", "q1", "--patch-key", "file_a"]
         )
         assert args.quilt_id == "q1"
-        assert args.patch_key == "file_a"
-        assert args.patch_id is None
+        assert args.patch_keys == ["file_a"]
+        assert args.patch_ids is None
+        assert args.tags is None
+
+    def test_patch_key_repeatable(self) -> None:
+        """--patch-key may be given more than once, appending to one list."""
+        args = build_parser(
+            in_args=[
+                "read_quilt",
+                "--quilt-id",
+                "q1",
+                "--patch-key",
+                "file_a",
+                "--patch-key",
+                "file_b",
+            ]
+        )
+        assert args.patch_keys == ["file_a", "file_b"]
 
     def test_patch_id_flag(self) -> None:
-        """--patch-id parses to its dest; --quilt-id/--patch-key default None."""
+        """--patch-id parses to its dest; --quilt-id/--patch-key/--tag default None."""
         args = build_parser(in_args=["read_quilt", "--patch-id", "patch1"])
-        assert args.patch_id == "patch1"
+        assert args.patch_ids == ["patch1"]
         assert args.quilt_id is None
-        assert args.patch_key is None
+        assert args.patch_keys is None
+        assert args.tags is None
+
+    def test_patch_id_repeatable(self) -> None:
+        """--patch-id may be given more than once, appending to one list."""
+        args = build_parser(
+            in_args=[
+                "read_quilt",
+                "--patch-id",
+                "patch1",
+                "--patch-id",
+                "patch2",
+            ]
+        )
+        assert args.patch_ids == ["patch1", "patch2"]
+
+    def test_tag_repeatable(self) -> None:
+        """--tag may be given more than once, appending to one list."""
+        args = build_parser(
+            in_args=[
+                "read_quilt",
+                "--quilt-id",
+                "q1",
+                "--tag",
+                "kind=image",
+                "--tag",
+                "owner=alice",
+            ]
+        )
+        assert args.tags == ["kind=image", "owner=alice"]
 
     def test_no_flags_accepted_by_parser(self) -> None:
-        """Omitting all three is accepted by argparse -- read_quilt() rejects it."""
+        """Omitting all addressing flags is accepted by argparse -- read_quilt() rejects it."""
         args = build_parser(in_args=["read_quilt"])
         assert args.quilt_id is None
-        assert args.patch_key is None
-        assert args.patch_id is None
+        assert args.patch_keys is None
+        assert args.patch_ids is None
+        assert args.tags is None
+
+    def test_file_defaults_to_none(self) -> None:
+        """Without --file the handler writes to stdout."""
+        args = build_parser(in_args=["read_quilt", "--patch-id", "patch1"])
+        assert args.file is None
+
+    def test_out_dir_defaults_to_none(self) -> None:
+        """Without --out-dir the handler uses --file/stdout for a single patch."""
+        args = build_parser(in_args=["read_quilt", "--patch-id", "patch1"])
+        assert args.out_dir is None
+
+    def test_file_is_not_existence_checked(self, tmp_path) -> None:
+        """--file here is an OUTPUT path, not an input -- see the identical
+        regression note on
+        TestReadBlobNativeArgs.test_file_is_not_existence_checked."""
+        target = tmp_path / "not-created-yet.bin"
+        assert not target.exists()
+
+        args = build_parser(
+            in_args=["read_quilt", "--patch-id", "patch1", "--file", str(target)]
+        )
+
+        assert str(args.file) == str(target)
+
+    def test_out_dir_is_not_existence_checked(self, tmp_path) -> None:
+        """--out-dir here is an OUTPUT directory, not an input -- same
+        regression concern as --file above."""
+        target = tmp_path / "not-created-yet"
+        assert not target.exists()
+
+        args = build_parser(
+            in_args=["read_quilt", "--patch-id", "patch1", "--out-dir", str(target)]
+        )
+
+        assert str(args.out_dir) == str(target)
 
 
 class TestTipGasSource:
@@ -302,7 +406,7 @@ class TestTipGasSource:
         assert args.tip_gas_source == OBJECT_ID
 
 
-class TestStoreBlobRelayLogVerbose:
+class TestWriteBlobRelayLogVerbose:
     """--log-file/--verbose exist on BOTH relay commands, as on store_blob_native."""
 
     def test_log_file_and_verbose(self, tmp_path) -> None:
@@ -383,7 +487,7 @@ class TestFuseStorageUnchanged:
         assert args.fuse_from == [OBJECT_ID]
 
 
-class TestStoreQuiltRelayArgs:
+class TestWriteQuiltRelayArgs:
     """store_quilt_relay takes the quilt's patch flags AND the relay flags.
 
     It is a separate subcommand rather than a flag on store_quilt, so the
@@ -463,3 +567,63 @@ class TestStoreQuiltRelayArgs:
 
         assert "store_quilt_relay" in _DISPATCH
 
+
+
+class TestReadBlobNativeArgs:
+    """Argument shape for the read_blob_native subcommand."""
+
+    def test_blob_id_short_flag(self) -> None:
+        """read_blob_native accepts -b as a Walrus blob ID."""
+        args = build_parser(in_args=["read_blob_native", "-b", BLOB_ID])
+        assert args.blob_id == BLOB_ID
+
+    def test_blob_id_long_flag(self) -> None:
+        """read_blob_native accepts --blob-id."""
+        args = build_parser(in_args=["read_blob_native", "--blob-id", BLOB_ID])
+        assert args.blob_id == BLOB_ID
+
+    def test_file_defaults_to_none(self) -> None:
+        """Without --file the handler writes to stdout."""
+        args = build_parser(in_args=["read_blob_native", "-b", BLOB_ID])
+        assert args.file is None
+
+    def test_file_is_not_existence_checked(self, tmp_path) -> None:
+        """REGRESSION: --file here is an OUTPUT path, not an input.
+
+        Every other --file in tusky is an input guarded by ValidateFile,
+        which calls parser.error() when the path does not exist. Reusing
+        that action here would reject every destination that has not been
+        created yet -- which is nearly all of them.
+        """
+        target = tmp_path / "not-created-yet.bin"
+        assert not target.exists()
+
+        args = build_parser(
+            in_args=["read_blob_native", "-b", BLOB_ID, "--file", str(target)]
+        )
+
+        assert str(args.file) == str(target)
+
+    def test_verify_defaults_to_true(self) -> None:
+        """Verification is on unless explicitly disabled."""
+        args = build_parser(in_args=["read_blob_native", "-b", BLOB_ID])
+        assert args.verify is True
+
+    def test_no_verify_clears_verify(self) -> None:
+        """--no-verify sets verify False rather than a separate field.
+
+        The library parameter is `verify`; a `no_verify` field would have to
+        be inverted at the call site, which is the kind of double negative
+        that eventually gets inverted twice.
+        """
+        args = build_parser(
+            in_args=["read_blob_native", "-b", BLOB_ID, "--no-verify"]
+        )
+        assert args.verify is False
+        assert not hasattr(args, "no_verify")
+
+    def test_takes_no_signing_arguments(self) -> None:
+        """A native read submits no transaction, so it has no signer."""
+        args = build_parser(in_args=["read_blob_native", "-b", BLOB_ID])
+        assert not hasattr(args, "sender")
+        assert not hasattr(args, "sponsor")

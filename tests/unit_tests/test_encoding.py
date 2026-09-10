@@ -8,11 +8,15 @@
 import pytest
 
 from pytusk.core.encoding import (
+    BlobDecodeError,
     BlobTooLargeError,
     EncodedBlob,
+    MetadataVerificationError,
+    VerifiedBlobMetadata,
     blob_id_from_url_base64,
     blob_id_to_u256,
     blob_id_to_url_base64,
+    decode_blob,
     decode_standard_base64,
     encode_blob,
     encoded_blob_length,
@@ -20,9 +24,13 @@ from pytusk.core.encoding import (
     max_n_faulty,
     metadata_length,
     min_n_correct,
+    pair_index_to_shard_index,
     root_hash_to_u256,
+    rotation_offset,
+    shard_index_to_pair_index,
     source_symbol_counts,
     symbol_size,
+    verify_blob_metadata,
 )
 
 
@@ -364,3 +372,270 @@ class TestEncodeBlob:
         assert {pair.sliver_pair_index for pair in encoded.slivers} == set(
             range(n_shards)
         )
+
+
+class TestRotationOffset:
+    """Per-blob shard-rotation offset, including the endianness convention."""
+
+    def test_big_endian_not_little_endian(self) -> None:
+        """REGRESSION: the offset reads the blob ID as BIG-endian.
+
+        Upstream's ``bytes_mod`` folds bytes most-significant-first. Flipping
+        to little-endian is the highest-risk defect on the read path: it still
+        yields a plausible in-range offset, and the wrong shard mapping that
+        follows produces no error. This blob ID is chosen so the two
+        conventions disagree -- big-endian gives 1, little-endian gives 4.
+        """
+        blob_id = b"\x00" * 31 + b"\x01"
+        assert rotation_offset(blob_id=blob_id, n_shards=7) == 1
+        assert rotation_offset(blob_id=blob_id, n_shards=7) != 4
+
+    def test_big_endian_mirrored_blob_id(self) -> None:
+        """The byte-mirrored blob ID gives the mirrored disagreement."""
+        blob_id = b"\x01" + b"\x00" * 31
+        assert rotation_offset(blob_id=blob_id, n_shards=7) == 4
+
+    @pytest.mark.parametrize("n_shards", [1, 3, 7, 10, 100, 1000])
+    def test_offset_is_in_range(self, n_shards: int) -> None:
+        """The offset is always reduced into [0, n_shards)."""
+        offset = rotation_offset(blob_id=bytes(range(32)), n_shards=n_shards)
+        assert 0 <= offset < n_shards
+
+    def test_rejects_wrong_blob_id_length(self) -> None:
+        """A blob ID that is not exactly 32 bytes is rejected."""
+        with pytest.raises(ValueError, match="blob_id must be 32 bytes"):
+            rotation_offset(blob_id=b"\x00" * 31, n_shards=10)
+
+    def test_rejects_non_positive_shard_count(self) -> None:
+        """n_shards must be positive -- it is NonZeroU16 upstream."""
+        with pytest.raises(ValueError, match="n_shards must be positive"):
+            rotation_offset(blob_id=b"\x00" * 32, n_shards=0)
+
+
+class TestShardPairIndexRotation:
+    """Shard index <-> sliver-pair index conversion."""
+
+    @pytest.mark.parametrize("n_shards", [1, 3, 7, 10, 100, 1000])
+    def test_round_trip_is_identity_for_every_shard(self, n_shards: int) -> None:
+        """shard -> pair -> shard returns the original index, for every shard."""
+        blob_id = bytes(range(32))
+        for shard_index in range(n_shards):
+            pair_index = shard_index_to_pair_index(
+                shard_index=shard_index, blob_id=blob_id, n_shards=n_shards
+            )
+            assert (
+                pair_index_to_shard_index(
+                    pair_index=pair_index, blob_id=blob_id, n_shards=n_shards
+                )
+                == shard_index
+            )
+
+    @pytest.mark.parametrize("n_shards", [1, 3, 7, 10, 100])
+    def test_mapping_is_a_bijection(self, n_shards: int) -> None:
+        """Every shard maps to a distinct pair index covering the full range."""
+        blob_id = bytes(range(32))
+        pair_indices = {
+            shard_index_to_pair_index(
+                shard_index=shard_index, blob_id=blob_id, n_shards=n_shards
+            )
+            for shard_index in range(n_shards)
+        }
+        assert pair_indices == set(range(n_shards))
+
+    def test_matches_upstream_formula(self) -> None:
+        """Both directions match the upstream arithmetic for a known offset."""
+        blob_id = b"\x00" * 31 + b"\x05"
+        n_shards = 10
+        assert rotation_offset(blob_id=blob_id, n_shards=n_shards) == 5
+        assert (
+            shard_index_to_pair_index(
+                shard_index=0, blob_id=blob_id, n_shards=n_shards
+            )
+            == 5
+        )
+        assert (
+            shard_index_to_pair_index(
+                shard_index=7, blob_id=blob_id, n_shards=n_shards
+            )
+            == 2
+        )
+        assert (
+            pair_index_to_shard_index(
+                pair_index=5, blob_id=blob_id, n_shards=n_shards
+            )
+            == 0
+        )
+        assert (
+            pair_index_to_shard_index(
+                pair_index=2, blob_id=blob_id, n_shards=n_shards
+            )
+            == 7
+        )
+
+    def test_zero_offset_is_identity(self) -> None:
+        """A blob ID whose offset is zero leaves both mappings as identity."""
+        blob_id = b"\x00" * 32
+        n_shards = 10
+        assert rotation_offset(blob_id=blob_id, n_shards=n_shards) == 0
+        for index in range(n_shards):
+            assert (
+                shard_index_to_pair_index(
+                    shard_index=index, blob_id=blob_id, n_shards=n_shards
+                )
+                == index
+            )
+            assert (
+                pair_index_to_shard_index(
+                    pair_index=index, blob_id=blob_id, n_shards=n_shards
+                )
+                == index
+            )
+
+    def test_rejects_out_of_range_shard_index(self) -> None:
+        """A shard index at or beyond n_shards is rejected."""
+        with pytest.raises(ValueError, match=r"shard_index must be in \[0, 10\)"):
+            shard_index_to_pair_index(
+                shard_index=10, blob_id=b"\x00" * 32, n_shards=10
+            )
+
+    def test_rejects_negative_shard_index(self) -> None:
+        """A negative shard index is rejected rather than wrapping."""
+        with pytest.raises(ValueError, match=r"shard_index must be in \[0, 10\)"):
+            shard_index_to_pair_index(
+                shard_index=-1, blob_id=b"\x00" * 32, n_shards=10
+            )
+
+    def test_rejects_out_of_range_pair_index(self) -> None:
+        """A pair index at or beyond n_shards is rejected."""
+        with pytest.raises(ValueError, match=r"pair_index must be in \[0, 10\)"):
+            pair_index_to_shard_index(
+                pair_index=10, blob_id=b"\x00" * 32, n_shards=10
+            )
+
+
+class TestVerifyBlobMetadata:
+    """Verification of BCS blob metadata returned by a storage node."""
+
+    def test_round_trip_from_encode_result(self) -> None:
+        """Metadata built from an encode result verifies and matches its blob ID.
+
+        The outer ``BlobMetadataWithId`` that verification expects is the
+        encode result's blob ID followed by its inner ``BlobMetadata``.
+        """
+        data = b"payload for the metadata verification round trip"
+        n_shards = 10
+        encoded = encode_blob(data=data, n_shards=n_shards)
+        outer = encoded.blob_id + encoded.metadata_bcs
+        metadata = verify_blob_metadata(metadata_bcs=outer, n_shards=n_shards)
+        assert isinstance(metadata, VerifiedBlobMetadata)
+        assert metadata.blob_id == encoded.blob_id
+        assert metadata.unencoded_length == len(data)
+        assert metadata.n_shards == n_shards
+
+    def test_inner_metadata_is_rejected(self) -> None:
+        """REGRESSION: the INNER BlobMetadata is not the outer form.
+
+        ``EncodedBlob.metadata_bcs`` is what a metadata PUT sends; verification
+        needs the outer form, which additionally carries a leading 32-byte blob
+        ID. Passing the inner form is a documented footgun.
+        """
+        encoded = encode_blob(data=b"inner form is not accepted", n_shards=10)
+        with pytest.raises(MetadataVerificationError):
+            verify_blob_metadata(metadata_bcs=encoded.metadata_bcs, n_shards=10)
+
+    def test_garbage_is_rejected(self) -> None:
+        """Unparseable metadata bytes raise MetadataVerificationError."""
+        with pytest.raises(MetadataVerificationError):
+            verify_blob_metadata(metadata_bcs=b"\x00" * 64, n_shards=10)
+
+    def test_rejects_shard_count_below_one(self) -> None:
+        """n_shards must be at least 1."""
+        with pytest.raises(ValueError, match="n_shards must be at least 1"):
+            verify_blob_metadata(metadata_bcs=b"", n_shards=0)
+
+
+class TestDecodeBlob:
+    """Reconstruction of a blob from slivers of a single axis."""
+
+    @staticmethod
+    def _encoded_with_metadata(
+        data: bytes, n_shards: int
+    ) -> tuple[EncodedBlob, VerifiedBlobMetadata]:
+        """Encode data and return it alongside its verified metadata."""
+        encoded = encode_blob(data=data, n_shards=n_shards)
+        metadata = verify_blob_metadata(
+            metadata_bcs=encoded.blob_id + encoded.metadata_bcs,
+            n_shards=n_shards,
+        )
+        return encoded, metadata
+
+    def test_verified_round_trip(self) -> None:
+        """Encode then decode with verification returns the original bytes."""
+        data = b"a payload that survives the verified decode round trip"
+        encoded, metadata = self._encoded_with_metadata(data, 10)
+        slivers = [pair.primary for pair in encoded.slivers]
+        assert decode_blob(slivers=slivers, metadata=metadata, axis="primary") == data
+
+    def test_unverified_round_trip(self) -> None:
+        """The unverified path returns the same bytes for good slivers."""
+        data = b"a payload that survives the unverified decode round trip"
+        encoded, metadata = self._encoded_with_metadata(data, 10)
+        slivers = [pair.primary for pair in encoded.slivers]
+        assert (
+            decode_blob(
+                slivers=slivers, metadata=metadata, axis="primary", verify=False
+            )
+            == data
+        )
+
+    def test_threshold_subset_is_sufficient(self) -> None:
+        """A primary-axis subset at the decoding threshold still decodes.
+
+        Sliver order does not matter and gaps are fine -- each sliver carries
+        its own index in its bytes.
+        """
+        data = b"decoded from a threshold-sized subset of primary slivers"
+        n_shards = 10
+        encoded, metadata = self._encoded_with_metadata(data, n_shards)
+        primary_threshold, _ = source_symbol_counts(n_shards=n_shards)
+        slivers = [pair.primary for pair in encoded.slivers][:primary_threshold]
+        assert decode_blob(slivers=slivers, metadata=metadata, axis="primary") == data
+
+    def test_below_threshold_raises_decode_error(self) -> None:
+        """Fewer slivers than the threshold cannot reconstruct the blob."""
+        data = b"not enough slivers to reconstruct this payload"
+        n_shards = 10
+        encoded, metadata = self._encoded_with_metadata(data, n_shards)
+        primary_threshold, _ = source_symbol_counts(n_shards=n_shards)
+        slivers = [pair.primary for pair in encoded.slivers][: primary_threshold - 1]
+        with pytest.raises(BlobDecodeError):
+            decode_blob(slivers=slivers, metadata=metadata, axis="primary")
+
+    def test_wrong_axis_surfaces_as_decode_error(self) -> None:
+        """REGRESSION: wrong-axis slivers are DISCARDED, not rejected.
+
+        Both axes share one BCS shape, so primary bytes passed as
+        ``"secondary"`` deserialize, fail an internal length check, and are
+        silently dropped -- surfacing as a decode failure that looks exactly
+        like "not enough nodes answered".
+        """
+        data = b"primary slivers handed to the secondary axis"
+        encoded, metadata = self._encoded_with_metadata(data, 10)
+        slivers = [pair.primary for pair in encoded.slivers]
+        with pytest.raises(BlobDecodeError):
+            decode_blob(slivers=slivers, metadata=metadata, axis="secondary")
+
+    def test_caller_bug_code_propagates_unwrapped(self) -> None:
+        """REGRESSION: a caller-bug code is NOT wrapped as BlobDecodeError.
+
+        Codes that indicate a pytusk defect rather than a bad node response
+        must stay loud and untranslated. BlobDecodeError subclasses
+        ValueError, so this asserts the concrete type as well.
+        """
+        data = b"an axis that does not exist"
+        encoded, metadata = self._encoded_with_metadata(data, 10)
+        slivers = [pair.primary for pair in encoded.slivers]
+        with pytest.raises(ValueError) as excinfo:
+            decode_blob(slivers=slivers, metadata=metadata, axis="diagonal")
+        assert not isinstance(excinfo.value, BlobDecodeError)
+        assert excinfo.value.args[0] == "invalid_axis"

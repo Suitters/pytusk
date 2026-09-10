@@ -15,7 +15,7 @@ import argparse
 import asyncio
 import sys
 
-from pytusk import StoreBlob, StoreQuilt, WalrusClient
+from pytusk import WalrusClient, WriteBlob, WriteQuilt
 from pytusk.tusky.tusky_cmds_common import (
     collect_quilt_patches,
     config_from_args,
@@ -47,7 +47,7 @@ async def store_blob(args: argparse.Namespace) -> None:
     async with WalrusClient(pytusk_config=config) as client:
         recipient = args.recipient or client.pysui_client.config.active_address
         result = await client.execute(
-            command=StoreBlob(
+            command=WriteBlob(
                 data=data,
                 epochs=args.epochs,
                 send_object_to=recipient,
@@ -78,7 +78,7 @@ async def store_quilt(args: argparse.Namespace) -> None:
     async with WalrusClient(pytusk_config=config) as client:
         recipient = args.recipient or client.pysui_client.config.active_address
         result = await client.execute(
-            command=StoreQuilt(
+            command=WriteQuilt(
                 files=files,
                 epochs=args.epochs,
                 send_object_to=recipient,

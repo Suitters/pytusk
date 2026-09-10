@@ -15,7 +15,7 @@ Storage nodes REJECT sliver PUTs for an unregistered blob, so Tx1 must
 complete before any sliver is uploaded. Storage nodes ALSO reject sliver
 PUTs for a blob whose metadata they have not yet received -- see
 :func:`~pytusk.core.native_upload.fanout._upload_node`, which PUTs a node's
-``PutMetadata`` before any of that node's sliver PUTs and abandons the node
+``WriteMetadata`` before any of that node's sliver PUTs and abandons the node
 entirely (no sliver PUT attempted) if the metadata PUT fails. This package
 owns everything AFTER encoding (:mod:`pytusk.core.encoding`) and Tx1
 (:mod:`pytusk.core.ops.blob_execute`): the per-node metadata+sliver fan-out (see
@@ -45,7 +45,7 @@ corruption or a malformed request, not a type error:
   argument; see :func:`~pytusk.core.encoding.blob_id_to_u256`)
 - object ID, 32 bytes -> ``"0x"`` + 64 hex characters (the deletable
   confirmation URL path, passed through as-is by
-  :class:`~pytusk.commands.node_commands.GetStorageConfirmation`)
+  :class:`~pytusk.commands.node_commands.ReadStorageConfirmation`)
 - object ID, 32 bytes -> 32 RAW bytes (see :func:`object_id_to_raw_bytes`;
   used inside the signed confirmation message, never in a URL)
 """

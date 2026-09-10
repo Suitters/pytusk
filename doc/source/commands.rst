@@ -88,31 +88,47 @@ Command Reference
    * - :py:class:`~pytusk.ReadQuiltPatchById`
      - Read a single patch from a quilt directly by its QuiltPatchId.
      - Result data: :py:class:`~pytusk.QuiltPatch`.
-   * - :py:class:`~pytusk.ConcatBlobs`
+   * - :py:class:`~pytusk.ReadQuiltPatches`
+     - List the patches contained in a quilt.
+     - Result data: :py:class:`~pytusk.QuiltPatchListing`.
+   * - :py:class:`~pytusk.ReadConcatBlobs`
      - Read and concatenate multiple blobs into a single response.
      - Result data: :py:class:`~pytusk.BlobData`. Uses the ``v1alpha`` endpoint.
-   * - :py:class:`~pytusk.StoreBlob`
+   * - :py:class:`~pytusk.WriteBlob`
      - Store a blob on Walrus.
      - Result data: :py:class:`~pytusk.BlobReceipt`. Deletable by default —
        pass ``permanent=True`` to disable.
-   * - :py:class:`~pytusk.StoreQuilt`
+   * - :py:class:`~pytusk.WriteQuilt`
      - Store a collection of named blobs (a quilt) on Walrus.
      - Result data: :py:class:`~pytusk.QuiltReceipt`. Deletable by default —
        pass ``permanent=True`` to disable.
-   * - :py:class:`~pytusk.PutMetadata`
+   * - :py:class:`~pytusk.WriteRelayBlob`
+     - Hand an unencoded blob to an upload relay, which fans slivers out
+       on the caller's behalf.
+     - Result data: :py:class:`~pytusk.RelayUploadAck`. Targets a relay
+       endpoint, not the publisher.
+   * - :py:class:`~pytusk.WriteMetadata`
      - Store a blob's Red Stuff metadata at a storage node.
      - Result data: :py:class:`~pytusk.MetadataAck`. Must succeed before
        the node will accept any sliver PUT for that blob.
-   * - :py:class:`~pytusk.PutSliver`
+   * - :py:class:`~pytusk.WriteSliver`
      - Store a primary or secondary sliver at a storage node.
      - Result data: :py:class:`~pytusk.SliverAck`.
-   * - :py:class:`~pytusk.GetStorageConfirmation`
+   * - :py:class:`~pytusk.ReadStorageConfirmation`
      - Fetch a storage node's signed confirmation for a blob's slivers.
      - Result data: :py:class:`~pytusk.SignedConfirmation`.
-   * - :py:class:`~pytusk.GetBlobStatus`
+   * - :py:class:`~pytusk.ReadBlobStatus`
      - Ask ONE storage node for its view of a blob's status.
      - Result data: one of the :py:class:`~pytusk.BlobStatus` variants. A
        per-node opinion, never a verdict.
+   * - :py:class:`~pytusk.ReadMetadata`
+     - Fetch a blob's Red Stuff metadata from a storage node.
+     - Result data: :py:class:`~pytusk.MetadataData`. The outer
+       ``BlobMetadataWithId``, as raw BCS.
+   * - :py:class:`~pytusk.ReadSliver`
+     - Fetch one primary or secondary sliver from a storage node.
+     - Result data: :py:class:`~pytusk.SliverData`. Addressed by sliver-PAIR
+       index, not shard index.
 
 Read Commands
 ----------------
@@ -276,7 +292,38 @@ Result data: :py:class:`~pytusk.QuiltPatch`.
 
     asyncio.run(main())
 
-ConcatBlobs
+ReadQuiltPatches
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+List the patches contained in a quilt.
+
+* ``quilt_id: str`` — Walrus quilt identifier.
+
+Result data: :py:class:`~pytusk.QuiltPatchListing`, a list of
+:py:class:`~pytusk.QuiltPatchItem` (``patch_key``, ``patch_id``, ``tags``).
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import PytuskConfiguration, WalrusClient, ReadQuiltPatches
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            result = await client.execute(
+                command=ReadQuiltPatches(quilt_id="...")
+            )
+            if result.is_ok():
+                for patch in result.result_data.patches:
+                    print(patch.patch_key, patch.patch_id)
+
+    asyncio.run(main())
+
+ReadConcatBlobs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Read and concatenate multiple blobs into a single response, in the order
@@ -291,7 +338,7 @@ Result data: :py:class:`~pytusk.BlobData`. Uses the Walrus ``v1alpha`` API.
 .. code-block:: python
 
     import asyncio
-    from pytusk import PytuskConfiguration, WalrusClient, ConcatBlobs
+    from pytusk import PytuskConfiguration, WalrusClient, ReadConcatBlobs
 
     async def main():
         config = PytuskConfiguration(
@@ -301,7 +348,7 @@ Result data: :py:class:`~pytusk.BlobData`. Uses the Walrus ``v1alpha`` API.
         )
         async with WalrusClient(pytusk_config=config) as client:
             result = await client.execute(
-                command=ConcatBlobs(ids=["blob_id_1", "blob_id_2"])
+                command=ReadConcatBlobs(ids=["blob_id_1", "blob_id_2"])
             )
             if result.is_ok():
                 blob = result.result_data
@@ -314,7 +361,7 @@ Write Commands
 
 Detail for the write (publisher) commands.
 
-StoreBlob
+WriteBlob
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Store a blob on Walrus.
@@ -336,7 +383,7 @@ Result data: :py:class:`~pytusk.BlobReceipt`.
 .. code-block:: python
 
     import asyncio
-    from pytusk import PytuskConfiguration, WalrusClient, StoreBlob
+    from pytusk import PytuskConfiguration, WalrusClient, WriteBlob
 
     async def main():
         config = PytuskConfiguration(
@@ -346,7 +393,7 @@ Result data: :py:class:`~pytusk.BlobReceipt`.
         )
         async with WalrusClient(pytusk_config=config) as client:
             result = await client.execute(
-                command=StoreBlob(
+                command=WriteBlob(
                     data=b"hello walrus",
                     epochs=5,
                     send_object_to="0x...",
@@ -358,7 +405,7 @@ Result data: :py:class:`~pytusk.BlobReceipt`.
 
     asyncio.run(main())
 
-StoreQuilt
+WriteQuilt
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Store a quilt — a collection of named blobs — on Walrus.
@@ -372,14 +419,14 @@ Store a quilt — a collection of named blobs — on Walrus.
   otherwise.
 * ``permanent: bool = False`` — if ``True``, the quilt cannot be deleted
   before expiry. Quilts are deletable by default (Walrus v1.33+),
-  matching :py:class:`~pytusk.StoreBlob`'s persistence semantics.
+  matching :py:class:`~pytusk.WriteBlob`'s persistence semantics.
 
 Result data: :py:class:`~pytusk.QuiltReceipt`.
 
 .. code-block:: python
 
     import asyncio
-    from pytusk import PytuskConfiguration, WalrusClient, StoreQuilt
+    from pytusk import PytuskConfiguration, WalrusClient, WriteQuilt
 
     async def main():
         config = PytuskConfiguration(
@@ -389,7 +436,7 @@ Result data: :py:class:`~pytusk.QuiltReceipt`.
         )
         async with WalrusClient(pytusk_config=config) as client:
             result = await client.execute(
-                command=StoreQuilt(
+                command=WriteQuilt(
                     files={"a.txt": b"...", "b.txt": b"..."},
                     epochs=5,
                     send_object_to="0x...",
@@ -401,6 +448,58 @@ Result data: :py:class:`~pytusk.QuiltReceipt`.
 
     asyncio.run(main())
 
+WriteRelayBlob
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Hand an unencoded blob to an upload relay, which fans slivers out on the
+caller's behalf. Targets a relay endpoint (``endpoint_role = "relay"``),
+not the publisher. The blob must already be registered on chain, and any
+tip the relay charges must already be executed and confirmed — posting
+early yields HTTP 401, not a retryable error.
+
+* ``blob_id: str`` — blob ID as URL-safe unpadded base64.
+* ``data: bytes`` — the raw UNENCODED blob bytes; the relay performs the
+  encoding. The server caps the body at 1 GiB.
+* ``register_tip_tx_digest: str | None = None`` — digest of the
+  transaction that paid the tip. Omit only against a ``no_tip`` relay.
+* ``nonce: str | None = None`` — base64url nonce from the authentication
+  package. Omit only against a ``no_tip`` relay.
+* ``deletable_blob_object: str | None = None`` — object ID when the blob
+  was registered deletable. Omitted means permanent — the two are
+  distinguished by presence, not by a boolean.
+* ``encoding_type: int | None = None`` — omitted means the relay's
+  default, RS2, the only live variant.
+
+Result data: :py:class:`~pytusk.RelayUploadAck` — carries an
+:py:class:`~pytusk.RelayUploadOutcome` rather than raising on a refused
+upload, since this call runs post-spend (tip paid, blob registered).
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import PytuskConfiguration, WalrusClient, WriteRelayBlob
+
+    async def main():
+        config = PytuskConfiguration(
+            active_network="testnet",
+            pysui_group_name="sui_grpc_config",
+            pysui_profile_name="testnet",
+        )
+        async with WalrusClient(pytusk_config=config) as client:
+            result = await client.execute(
+                command=WriteRelayBlob(
+                    blob_id="...",
+                    data=b"hello walrus",
+                    register_tip_tx_digest="...",
+                    nonce="...",
+                )
+            )
+            if result.is_ok():
+                ack = result.result_data
+                print(ack.outcome, ack.confirmation_certificate)
+
+    asyncio.run(main())
+
 Storage Node Commands
 ---------------------
 
@@ -408,7 +507,7 @@ Detail for the commands sent directly to an individual storage node.
 The base URL for these is a specific node's address resolved from the
 committee, not an aggregator or publisher daemon.
 
-PutMetadata
+WriteMetadata
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Store a blob's Red Stuff metadata at a storage node. A node requires this
@@ -421,7 +520,7 @@ that has not received it rejects every sliver PUT with HTTP 400
 
 Result data: :py:class:`~pytusk.MetadataAck`.
 
-PutSliver
+WriteSliver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Store a primary or secondary sliver at a storage node.
@@ -435,7 +534,38 @@ Store a primary or secondary sliver at a storage node.
 
 Result data: :py:class:`~pytusk.SliverAck`.
 
-GetStorageConfirmation
+ReadMetadata
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Fetch a blob's Red Stuff metadata from a storage node. The response is the
+OUTER ``BlobMetadataWithId`` payload as raw BCS bytes with no JSON envelope
+— not the inner ``BlobMetadata`` that :py:class:`~pytusk.WriteMetadata` sends.
+The two differ by a leading 32-byte blob ID.
+
+* ``blob_id: bytes`` — raw 32-byte blob ID.
+* ``max_bytes: int | None`` — optional ceiling on the response body. The
+  native read path sets this from the committee's shard count, so a node
+  cannot answer a metadata request of a few tens of kilobytes with a
+  gigabyte. Callers rarely set it themselves.
+
+Result data: :py:class:`~pytusk.MetadataData`.
+
+ReadSliver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Fetch one primary or secondary sliver from a storage node.
+
+* ``blob_id: bytes`` — raw 32-byte blob ID.
+* ``sliver_pair_index: int`` — the SLIVER-PAIR index to fetch. This is not a
+  shard index: the two differ by a per-blob rotation, and passing a shard
+  index fetches the wrong sliver with no error to say so.
+* ``sliver_type: str`` — ``"primary"`` or ``"secondary"``, lowercase.
+* ``max_bytes: int | None`` — optional ceiling on the response body, set by
+  the native read path from the blob's own verified metadata.
+
+Result data: :py:class:`~pytusk.SliverData`.
+
+ReadStorageConfirmation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Fetch a storage node's signed confirmation that it holds a blob's
@@ -458,7 +588,7 @@ The result's ``serialized_message`` is passed VERBATIM into
 
 Result data: :py:class:`~pytusk.SignedConfirmation`.
 
-GetBlobStatus
+ReadBlobStatus
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Ask one storage node what it knows about a blob:
@@ -474,7 +604,102 @@ specifically want one node's answer.
 * ``blob_id: bytes`` — raw 32-byte blob ID.
 
 Parse failures come back as a failed ``SuiRpcResult`` rather than raising,
-matching ``GetStorageConfirmation``: one bad node response must never
+matching ``ReadStorageConfirmation``: one bad node response must never
 abort a committee-wide fan-out.
 
 Result data: one of the :py:class:`~pytusk.BlobStatus` variants.
+
+Composing a Native Read
+------------------------
+
+:py:func:`~pytusk.read_blob_native` is the orchestration layer above
+:py:class:`~pytusk.ReadMetadata` and :py:class:`~pytusk.ReadSliver`: it
+resolves the committee, fetches and verifies metadata, fans out for slivers
+until enough are held to decode, and reconstructs the blob locally. No
+aggregator takes part.
+
+Reach for it when you would rather not trust an aggregator to have served the
+right bytes, or when none is reachable. It issues many more requests than
+:py:class:`~pytusk.ReadBlob` and does considerably more work on the client.
+
+.. code-block:: python
+
+    import asyncio
+    from pytusk import (
+        PytuskConfiguration,
+        WalrusClient,
+        blob_id_from_url_base64,
+        read_blob_native,
+    )
+
+    async def main():
+        cfg = PytuskConfiguration(
+            active_network="testnet", pysui_profile_name="testnet"
+        )
+        async with WalrusClient(pytusk_config=cfg) as client:
+            result = await read_blob_native(
+                client=client,
+                blob_id=blob_id_from_url_base64(
+                    blob_id="OgrPHsCfZIQm_m3U3fzddQff5ubQOFuSE0RHkMY7sa8"
+                ),
+            )
+            print(len(result.content), result.epoch, result.axis)
+
+    asyncio.run(main())
+
+:py:class:`~pytusk.NativeReadResult` carries the reconstructed ``content``
+alongside the ``epoch`` its committee came from, the ``axis`` it decoded, and
+``slivers_used`` — the count of DISTINCT slivers the successful decode was
+given, not the number of node responses received.
+
+:py:func:`~pytusk.reconstruct_blob` is the stage beneath it, for a caller that
+has already resolved a committee and verified the metadata and wants only the
+fetch-and-decode step. :py:func:`~pytusk.read_blob_native` is the entry point
+for everything else.
+
+What Verification Buys You
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default the decoder re-derives the blob ID from the reconstructed content
+and rejects a mismatch, which is the only thing that detects a forged or
+corrupted sliver. Passing ``verify=False`` skips it, and that loses ALL
+content authentication of the slivers: verifying the metadata proves the
+metadata is authentic for the blob you asked for, and says nothing whatever
+about the sliver bytes the content was rebuilt from. Reserve it for slivers
+whose provenance is already established.
+
+Tolerating a Bad Node
+~~~~~~~~~~~~~~~~~~~~~
+
+The decoder is all-or-nothing over a batch of slivers, so one unparseable
+sliver would otherwise discard every good sliver fetched alongside it — and a
+plain retry fails identically, because the node that served it answers just as
+promptly the second time. One faulty node out of a thousand could deny a read
+outright, against a design meant to tolerate roughly a third of them.
+
+A native read handles this with no action from the caller. When a decode
+fails, each sliver is verified individually, whoever served an unusable one is
+barred, and the fan-out runs once more without them. This costs nothing on the
+ordinary path: the per-sliver check runs only after a decode has already
+failed.
+
+:py:class:`~pytusk.BlobDecodeError` therefore means the read failed even after
+that recovery round, or that no individual sliver could be blamed for the
+failure. :py:class:`~pytusk.SliverFetchError` means too few nodes answered to
+reach the decoding threshold at all.
+
+Verifying a Single Sliver
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:py:func:`~pytusk.verify_sliver` checks one sliver against verified metadata,
+raising :py:class:`~pytusk.SliverVerificationError` if it does not hold up. It
+is the expensive way to establish authenticity — each call re-encodes the
+sliver and rebuilds a Merkle tree over it, where one verified decode proves
+the same property for an entire blob — so reach for it to identify WHICH node
+served a bad sliver, not as a routine precaution.
+
+Note carefully what it does and does not establish. A sliver is bound to the
+index it declares for ITSELF, never to whichever index some node was asked
+for. A node answering with a genuine sliver for a different index passes this
+check, and that is correct: the decoder reads each sliver's own index and
+deduplicates on it.

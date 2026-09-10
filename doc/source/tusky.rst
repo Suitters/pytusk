@@ -58,7 +58,8 @@ The commands that build and submit a Programmable Transaction Block (PTB)
 -- ``store_blob_native``, ``store_blob_relay``, ``store_quilt_relay``,
 ``certify_blob``, ``exchange_for_wal``, ``exchange_for_sui``,
 ``extend_blob_expiration``, ``set_blob_metadata``, ``drop_blob_metadata``,
-``delete_blob``, ``burn_blob``, ``split_storage``, ``fuse_storage``,
+``delete_blob``, ``burn_blob``, ``share_blob``, ``fund_shared_blob``,
+``extend_shared_blob``, ``split_storage``, ``fuse_storage``,
 ``reclaim_storage`` and ``extend_blob_with_storage`` -- additionally
 accept:
 
@@ -78,6 +79,30 @@ The pure-HTTP commands (``store_blob``, ``read_blob``, ``store_quilt``,
 ``read_quilt``) do **not** accept ``--mode`` — storing/reading a blob over
 HTTP has no simulate/execute distinction; every invocation is live against
 the configured publisher/aggregator.
+
+Reading Blobs/Quilt
+--------------------
+
+Every ``tusky`` read command that returns content -- ``read_blob``,
+``read_quilt``, and ``read_blob_native`` -- writes it to stdout by
+default. Passing ``--file PATH`` instead writes the content to that path:
+atomically (a failed or partial write never truncates or corrupts an
+existing file at that path) and without following a symlink at the
+destination.
+
+When ``--file`` is *not* given and stdout is a terminal, the command
+refuses to run rather than writing raw bytes to it: content is arbitrary
+binary data, and a terminal that tries to render it can be corrupted, or
+worse, interpret stray bytes as its own control sequences. Redirecting
+stdout to a file or piping it to another process is unaffected, since
+neither is a TTY -- only an interactive terminal with no redirect at all
+is refused.
+
+``--file`` is available on:
+
+- `read_blob`_
+- `read_quilt`_
+- `read_blob_native`_
 
 Blob & Quilt Storage (HTTP)
 ----------------------------
@@ -131,22 +156,69 @@ Example:
      "deletable": true
    }
 
-read_blob
-~~~~~~~~~
+read_blob_native
+~~~~~~~~~~~~~~~~
 
-Read blob content via the Walrus HTTP aggregator, writing raw bytes to
-stdout.
+Read blob content by reconstructing it from the storage-node committee,
+bypassing the Walrus HTTP aggregator entirely.
 
 .. code-block:: console
 
-   tusky read_blob -b BLOB_ID
+   tusky read_blob_native -b BLOB_ID [--file PATH] [--no-verify]
+
+``-b`` / ``--blob-id``
+   Walrus blob ID (URL-safe base64, content hash) to read.
+
+``--file``
+   Write the reconstructed content to this path instead of stdout. See
+   `Reading Blobs/Quilt`_ above for the shared stdout/``--file``/TTY
+   behavior across all three read commands.
+
+``--no-verify``
+   Skip content authentication. The reconstructed blob's slivers are not
+   checked against the metadata's hashes and the blob ID is not re-derived.
+   Blob metadata is still verified, but that only authenticates the
+   METADATA — it says nothing about the sliver bytes the content was
+   rebuilt from, which is the whole attack surface. Leave this off unless
+   the slivers' provenance is already established.
+
+Where ``read_blob`` trusts one aggregator to hand back finished bytes, this
+fetches the blob's metadata, fans out to the storage nodes for erasure-coded
+slivers, and rebuilds the content locally. It does not depend on an
+aggregator being reachable or honest, at the cost of many more requests.
+
+A node that serves an unusable sliver does not fail the read: it is
+identified, barred, and the fan-out runs once more without it. No flag
+controls that.
+
+Example:
+
+.. code-block:: console
+
+   $ tusky read_blob_native -b OgrPHsCfZIQm_m3U3fzddQff5ubQOFuSE0RHkMY7sa8 --file blob.txt
+   Wrote 9 bytes to blob.txt
+   $ cat blob.txt
+   gap1-test
+
+read_blob
+~~~~~~~~~
+
+Read blob content via the Walrus HTTP aggregator.
+
+.. code-block:: console
+
+   tusky read_blob -b BLOB_ID [--file PATH]
 
 ``-b`` / ``--blob-id``
    The **Walrus blob ID** (URL-safe base64, content hash) to read. This
    is a different flag from ``-o``/``--object-id`` (used by every other
-   blob-targeting command — see the note under `blob inspection &
-   reporting`_ below), because ``read_blob`` addresses content by its
+   blob-targeting command — see the note under `Blob & Quilt Inspection &
+   Reporting`_ below), because ``read_blob`` addresses content by its
    Walrus blob ID rather than by the blob's Sui object ID.
+
+``--file``
+   Write the content to this path instead of stdout. See `Reading
+   Blobs/Quilt`_ above.
 
 store_quilt
 ~~~~~~~~~~~
@@ -216,41 +288,89 @@ filenames:
 read_quilt
 ~~~~~~~~~~
 
-Read a single patch from a quilt via the Walrus HTTP aggregator, writing
-its raw bytes to stdout. Two mutually exclusive addressing modes: either
-``--quilt-id`` and ``--patch-key`` together, or ``--patch-id`` alone.
+Read one or more patches from a quilt via the Walrus HTTP aggregator. Two
+addressing modes: repeatable ``--patch-id`` (each a direct,
+quilt-independent QuiltPatchId), or ``--quilt-id`` together with one or
+more of repeatable ``--patch-key``/``--tag``. Reading more than one patch
+requires ``--out-dir``; a single patch may still go to ``--file`` or
+stdout.
 
 .. code-block:: console
 
-   tusky read_quilt --quilt-id QUILT_ID --patch-key KEY
-   tusky read_quilt --patch-id PATCH_ID
+   tusky read_quilt --quilt-id QUILT_ID --patch-key KEY [--file PATH | --out-dir DIR]
+   tusky read_quilt --patch-id PATCH_ID [--file PATH | --out-dir DIR]
+   tusky read_quilt --quilt-id QUILT_ID --patch-key KEY --patch-key KEY --out-dir DIR
+   tusky read_quilt --quilt-id QUILT_ID --tag KEY=VALUE --out-dir DIR
+   tusky read_quilt --patch-id PATCH_ID --patch-id PATCH_ID --out-dir DIR
 
 ``--quilt-id``
    The quilt's Walrus identifier (as returned in ``store_quilt``'s
-   ``quilt_id`` field). Used with ``--patch-key``.
+   ``quilt_id`` field). Used with ``--patch-key``/``--tag``.
 
 ``--patch-key``
-   The key identifying the patch within the quilt (as returned in
-   ``store_quilt``'s ``patch_keys`` list). Used with ``--quilt-id``.
+   The key identifying a patch within the quilt (as returned in
+   ``store_quilt``'s ``patch_keys`` list). Used with ``--quilt-id``;
+   repeatable for a batch read.
+
+``--tag``
+   Select patches within the quilt whose tags contain this ``KEY=VALUE``
+   pair (as returned in ``quilt_patches``' per-patch ``tags`` field). Used
+   with ``--quilt-id``; repeatable for a batch read, combinable with
+   ``--patch-key``.
 
 ``--patch-id``
    The patch's Walrus QuiltPatchId (as returned in ``quilt_patches``'
    per-patch ``patch_id`` field), addressing it directly without a
-   separate quilt ID. Not combined with ``--quilt-id``/``--patch-key``.
+   separate quilt ID. Not combined with
+   ``--quilt-id``/``--patch-key``/``--tag``; repeatable for a batch read.
+
+``--file``
+   Write the patch content to this path instead of stdout. Only valid
+   when exactly one patch is being read; not combined with ``--out-dir``.
+   See `Reading Blobs/Quilt`_ above.
+
+``--out-dir``
+   Write each read patch to its own file in this directory, named by its
+   patch key (or patch ID when read via ``--patch-id`` and no key is
+   known). Required when more than one patch is requested; a crafted
+   patch key cannot escape the target directory -- only its final path
+   component is used as the filename.
 
 Example, continuing from the ``store_quilt`` example above:
 
 .. code-block:: console
 
-   $ tusky read_quilt --quilt-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHY --patch-key patch1
+   $ tusky read_quilt --quilt-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHY --patch-key patch1 --file patch1.txt
+   Wrote 11 bytes to patch1.txt
+   $ cat patch1.txt
    hello quilt
 
 Or, reading the same patch directly by its ``QuiltPatchId``:
 
 .. code-block:: console
 
-   $ tusky read_quilt --patch-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHYBAQBdAg
+   $ tusky read_quilt --patch-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHYBAQBdAg --file patch1.txt
+   Wrote 11 bytes to patch1.txt
+   $ cat patch1.txt
    hello quilt
+
+Reading several patches at once, writing each to ``out/`` under its patch
+key:
+
+.. code-block:: console
+
+   $ tusky read_quilt --quilt-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHY \
+       --patch-key patch1 --patch-key patch2 --out-dir out/
+   Wrote 11 bytes to out/patch1
+   Wrote 9 bytes to out/patch2
+
+Or by matching a tag set at store time:
+
+.. code-block:: console
+
+   $ tusky read_quilt --quilt-id sF5cQqDEYm3FTvdKAr8PnUP_BdEg5DwpU1kPzDiQXHY \
+       --tag kind=image --out-dir out/
+   Wrote 2048 bytes to out/photo1.jpg
 
 Blob & Quilt Inspection & Reporting
 -----------------------------------
@@ -830,6 +950,82 @@ guaranteed on-chain abort (``EMissingMetadata`` / ``vec_map::remove``).
 See :doc:`transactions`'s Blob Metadata section for the underlying PTB
 composition (including the pre-transaction existence gate) and
 ``get_blob_metadata``'s pure-read counterpart.
+
+share_blob
+~~~~~~~~~~
+
+Wrap an existing ``Blob`` into a new ``SharedBlob`` via
+``shared_blob::new``, so anyone can fund and extend it.
+
+.. code-block:: console
+
+   tusky share_blob -o OBJECT_ID
+                     [--sender ADDRESS] [--sponsor ADDRESS] [--mode simulate|execute]
+
+``-o`` / ``--object-id``
+   Sui object ID of the blob to share (not the Walrus blob ID).
+
+Only a permanent blob can be shared; the wrapped ``Blob`` is consumed
+and can no longer be used as an owned object. The new ``SharedBlob``'s
+object ID is only known after the transaction actually executes: in
+``--mode simulate`` (the default) it is not reported, since it is only
+a prediction; in ``--mode execute`` it is read back from the
+transaction's effects and printed as ``New SharedBlob object ID: ...``.
+
+See :doc:`transactions`'s Sharing a Blob section for the underlying
+PTB composition.
+
+fund_shared_blob
+~~~~~~~~~~~~~~~~~
+
+Deposit WAL into a ``SharedBlob``'s pooled funds via
+``shared_blob::fund``.
+
+.. code-block:: console
+
+   tusky fund_shared_blob -o OBJECT_ID (--amount FROST | --wal-coin COIN_ID)
+                           [--sender ADDRESS] [--sponsor ADDRESS] [--mode simulate|execute]
+
+``-o`` / ``--object-id``
+   Sui object ID of the ``SharedBlob`` to fund.
+
+``--amount`` / ``--wal-coin``
+   Mutually exclusive, one required. ``--amount`` gives an exact amount
+   of WAL to deposit, in FROST; a coin holding exactly that amount is
+   prepared automatically (splitting or merging owned WAL coins as
+   needed). ``--wal-coin`` instead names an owned WAL coin object to
+   donate in full -- ``fund`` consumes its ``Coin<WAL>`` argument's
+   entire balance either way.
+
+See :doc:`transactions`'s Funding a SharedBlob section for the
+underlying PTB composition.
+
+extend_shared_blob
+~~~~~~~~~~~~~~~~~~~
+
+Extend a ``SharedBlob``'s wrapped ``Blob`` via ``shared_blob::extend``,
+paid from the ``SharedBlob``'s own pooled WAL funds rather than a coin
+supplied by the caller.
+
+.. code-block:: console
+
+   tusky extend_shared_blob -o OBJECT_ID --epochs N
+                             [--sender ADDRESS] [--sponsor ADDRESS] [--mode simulate|execute]
+
+``-o`` / ``--object-id``
+   Sui object ID of the ``SharedBlob`` to extend.
+
+``--epochs``
+   Number of epochs to extend the wrapped blob's storage by, counted
+   from its current ``end_epoch``.
+
+Anyone may extend a shared blob, not only its original sharer. This
+can abort on-chain if the pool's balance does not cover the extension
+cost -- unlike ``extend_blob_expiration``, this cannot be pre-checked
+client-side.
+
+See :doc:`transactions`'s Extending a SharedBlob section for the
+underlying PTB composition.
 
 Native Upload (pysui PTB + Storage Nodes)
 --------------------------------------------

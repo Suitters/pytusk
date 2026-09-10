@@ -24,8 +24,8 @@ def object_id_to_raw_bytes(*, object_id: str) -> bytes:
     blob ID -- do not conflate the two. It is needed for the deletable-blob
     branch of :func:`~pytusk.core.certification.confirmation_message`'s
     ``object_id`` argument: the SIGNED MESSAGE requires the raw bytes, while
-    the ``GetStorageConfirmation`` URL path
-    (:class:`~pytusk.commands.node_commands.GetStorageConfirmation`) takes
+    the ``ReadStorageConfirmation`` URL path
+    (:class:`~pytusk.commands.node_commands.ReadStorageConfirmation`) takes
     the same object ID as the ``0x...`` string, unconverted. See
     :mod:`pytusk.core.native_upload`'s module docstring's four-row table for
     the complete set of 32-byte identifier encodings in play across native

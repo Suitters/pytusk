@@ -7,7 +7,7 @@
 
 One storage node's answer is an opinion, never a verdict: a node can be
 stale, byzantine, or simply unaware of a recent registration. This module
-fans :class:`~pytusk.commands.node_commands.GetBlobStatus` across the whole
+fans :class:`~pytusk.commands.node_commands.ReadBlobStatus` across the whole
 committee and resolves the answers against SHARD-WEIGHT thresholds.
 
 Two thresholds, in order:
@@ -37,7 +37,7 @@ import time
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 from pysui import GetObject, GetObjectsOwnedByAddress, SuiRpcResult
 
-from pytusk.commands.node_commands import GetBlobStatus
+from pytusk.commands.node_commands import ReadBlobStatus
 from pytusk.core.certification import min_weight_for_quorum, min_weight_for_validity
 from pytusk.core.chain.blob_fields import blob_id_from_object
 from pytusk.core.chain.committee import WalrusCommitteeMember, fetch_committee
@@ -131,7 +131,7 @@ async def _status_from_node(
     async with semaphore:
         try:
             result: SuiRpcResult = await client.execute(
-                command=GetBlobStatus(blob_id=blob_id),
+                command=ReadBlobStatus(blob_id=blob_id),
                 base_url=member.base_url,
                 timeout=_PER_REQUEST_TIMEOUT_SECONDS,
             )

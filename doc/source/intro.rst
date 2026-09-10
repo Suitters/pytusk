@@ -73,6 +73,12 @@ Walrus Terms
        bytes to the relay, then certifies on Sui using the confirmation
        certificate the relay returns — delivery is delegated, certification
        is not.
+   * - Native Read
+     - Reading a blob directly from the storage-node committee: fetch and
+       verify the blob's metadata, fan out for erasure-coded slivers until
+       enough are held to decode, then reconstruct the content locally. No
+       aggregator takes part, and a node that serves unusable slivers is
+       identified and excluded rather than being allowed to fail the read.
 
 Client Design
 --------------
@@ -82,7 +88,7 @@ single ``execute()`` entry point dispatches a command object rather than
 exposing one method per operation.
 
 - :py:class:`~pytusk.WalrusCommand` subclasses (e.g.
-  :py:class:`~pytusk.ReadBlob`, :py:class:`~pytusk.StoreBlob`) are
+  :py:class:`~pytusk.ReadBlob`, :py:class:`~pytusk.WriteBlob`) are
   dispatched over HTTP to the Walrus aggregator or publisher, depending
   on the command.
 - Sui-level commands (pysui ``SuiCommand`` subclasses) are forwarded
@@ -141,7 +147,7 @@ supported; which to use is a per-application choice.
      - ``store_blob_relay``, ``store_quilt_relay``, ``relay_configs``,
        ``certify_blob``
    * - Library entry point
-     - :py:class:`~pytusk.StoreBlob`
+     - :py:class:`~pytusk.WriteBlob`
      - :py:func:`~pytusk.store_blob_native`
      - :py:func:`~pytusk.store_blob_relay`,
        :py:func:`~pytusk.store_quilt_relay`
@@ -150,7 +156,7 @@ supported; which to use is a per-application choice.
      - Not exposed by ``pytusk``
      - Yes -- ``store_quilt_relay``
 
-**Publisher/Aggregator (HTTP)** — :py:class:`~pytusk.StoreBlob`,
+**Publisher/Aggregator (HTTP)** — :py:class:`~pytusk.WriteBlob`,
 :py:class:`~pytusk.ReadBlob`, and the other :py:class:`~pytusk.WalrusCommand`
 subclasses talk to a third-party Walrus publisher/aggregator over plain
 HTTP. A store is one HTTP request; the publisher handles committee

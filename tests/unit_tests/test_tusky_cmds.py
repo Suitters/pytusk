@@ -14,27 +14,37 @@ under test. Covers:
 - ``store_blob_native``'s simulate mode with an unsignable sponsor
 - ``tusky_cmds_storage``'s split predicates and ``_destroy_storage_batches``
 - ``relay_configs``: per-relay quoting and failure isolation
-- ``read_quilt``: the exactly-one-of-two-addressing-modes validation that
-  argparse itself can't express (pair-vs-single), and dispatch to the
-  right command class per mode
+- ``read_blob``/``read_quilt``: dispatch to the right command class,
+  writing to ``--file`` vs. stdout, and refusing a TTY destination when
+  writing to stdout. ``read_quilt`` additionally covers the
+  exactly-one-of-two-addressing-modes validation that argparse itself
+  can't express (pair-vs-single)
 
 Argument parsing and ``tusky_format`` rendering are deliberately not
 covered here.
 """
 
 import argparse
+import sys
 import types
+from pathlib import Path
 from typing import Any
 
 import pysui.sui.sui_grpc.suimsgs.sui.rpc.v2 as sui_prot
 import pytest
 from pysui import SuiRpcResult
+from typing_extensions import Self
 
 from pytusk import (
+    BlobData,
     NativeBlobReceipt,
     QuiltPatch,
+    QuiltPatchItem,
+    QuiltPatchListing,
+    ReadBlob,
     ReadQuiltPatch,
     ReadQuiltPatchById,
+    ReadQuiltPatches,
     StageTimings,
     StorageObject,
 )
@@ -440,7 +450,7 @@ def _base_native_args(**overrides: object) -> argparse.Namespace:
     return argparse.Namespace(**defaults)
 
 
-class TestStoreBlobNativeSimulateSkipsSponsorPreflight:
+class TestWriteBlobNativeSimulateSkipsSponsorPreflight:
     """``store_blob_native``'s simulate branch composes Tx1 via
     ``add_registration_sequence(tip=None)`` and ``preflight_payment``, but
     deliberately does NOT call ``preflight_sponsor`` -- matching
@@ -976,25 +986,24 @@ class TestRelayConfigs:
             await tusky_cmds_relay.relay_configs(_relay_configs_args(size=-1))
 
 
-def _read_quilt_args(**overrides: object) -> argparse.Namespace:
-    """Build a Namespace with every attribute read_quilt reads."""
+def _read_blob_args(**overrides: object) -> argparse.Namespace:
+    """Build a Namespace with every attribute read_blob reads."""
     defaults: dict[str, object] = {
-        "quilt_id": None,
-        "patch_key": None,
-        "patch_id": None,
+        "blob_id": "b" * 43,
+        "file": None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
 
-class _FakeReadQuiltClient:
-    """Fake WalrusClient recording whichever command read_quilt built."""
+class _FakeReadBlobClient:
+    """Fake WalrusClient recording whichever command read_blob built."""
 
     def __init__(self, *, result: SuiRpcResult) -> None:
         self._result = result
         self.received_command: object = None
 
-    async def __aenter__(self) -> "_FakeReadQuiltClient":
+    async def __aenter__(self) -> Self:
         """Enter the fake client's async context, returning itself."""
         return self
 
@@ -1010,11 +1019,123 @@ class _FakeReadQuiltClient:
         return self._result
 
 
+class TestReadBlob:
+    """read_blob writes content to stdout by default, to --file when given,
+    and refuses a TTY destination up front when writing to stdout."""
+
+    async def test_refuses_tty_when_no_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_blob(_read_blob_args())
+
+    async def test_writes_content_to_stdout_when_no_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _FakeReadBlobClient(
+            result=SuiRpcResult(True, "", BlobData(content=b"hello"))
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        await tusky_cmds_read.read_blob(_read_blob_args())
+        assert isinstance(client.received_command, ReadBlob)
+        assert client.received_command.blob_id == "b" * 43
+
+    async def test_writes_content_to_file_when_file_given(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        client = _FakeReadBlobClient(
+            result=SuiRpcResult(True, "", BlobData(content=b"hello"))
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        target = tmp_path / "out.bin"
+        await tusky_cmds_read.read_blob(_read_blob_args(file=target))
+        assert target.read_bytes() == b"hello"
+        assert f"Wrote 5 bytes to {target}" in capsys.readouterr().out
+
+
+def _read_quilt_args(**overrides: object) -> argparse.Namespace:
+    """Build a Namespace with every attribute read_quilt reads."""
+    defaults: dict[str, object] = {
+        "quilt_id": None,
+        "patch_keys": None,
+        "patch_ids": None,
+        "tags": None,
+        "file": None,
+        "out_dir": None,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+class _FakeReadQuiltClient:
+    """Fake WalrusClient recording whichever command read_quilt built."""
+
+    def __init__(self, *, result: SuiRpcResult) -> None:
+        self._result = result
+        self.received_command: object = None
+
+    async def __aenter__(self) -> Self:
+        """Enter the fake client's async context, returning itself."""
+        return self
+
+    async def __aexit__(
+        self, exc_type: object, exc_val: object, exc_tb: object
+    ) -> None:
+        """Exit the fake client's async context; nothing to clean up."""
+        return
+
+    async def execute(self, *, command: object) -> SuiRpcResult:
+        """Record the command it was given and return the canned result."""
+        self.received_command = command
+        return self._result
+
+
+class _FakeMultiReadQuiltClient:
+    """Fake WalrusClient returning canned results in call order, recording
+    every command it received -- for batch/tag read_quilt scenarios that
+    issue more than one execute() call."""
+
+    def __init__(self, *, results: list[SuiRpcResult]) -> None:
+        self._results = list(results)
+        self.received_commands: list[object] = []
+
+    async def __aenter__(self) -> Self:
+        """Enter the fake client's async context, returning itself."""
+        return self
+
+    async def __aexit__(
+        self, exc_type: object, exc_val: object, exc_tb: object
+    ) -> None:
+        """Exit the fake client's async context; nothing to clean up."""
+        return
+
+    async def execute(self, *, command: object) -> SuiRpcResult:
+        """Record the command it was given and return the next canned result."""
+        self.received_commands.append(command)
+        return self._results.pop(0)
+
+
 class TestReadQuilt:
-    """read_quilt requires exactly one of --patch-id or --quilt-id+--patch-key,
-    a pair-vs-single shape argparse can't express as one mutually exclusive
-    group, so it's validated in the handler instead -- and dispatches to the
-    matching command class per mode."""
+    """read_quilt requires exactly one of repeatable --patch-id, or
+    --quilt-id with at least one of repeatable --patch-key/--tag -- a
+    pair-vs-single shape argparse can't express as one mutually exclusive
+    group, so it's validated in the handler instead -- and dispatches to
+    the matching command class(es) per mode. More than one resolved patch
+    requires --out-dir; a single one may still go to --file or stdout."""
 
     async def test_missing_all_flags_exits(self) -> None:
         with pytest.raises(SystemExit):
@@ -1023,13 +1144,13 @@ class TestReadQuilt:
     async def test_patch_id_with_quilt_id_exits(self) -> None:
         with pytest.raises(SystemExit):
             await tusky_cmds_read.read_quilt(
-                _read_quilt_args(patch_id="patch1", quilt_id="q1")
+                _read_quilt_args(patch_ids=["patch1"], quilt_id="q1")
             )
 
     async def test_patch_id_with_patch_key_exits(self) -> None:
         with pytest.raises(SystemExit):
             await tusky_cmds_read.read_quilt(
-                _read_quilt_args(patch_id="patch1", patch_key="file_a")
+                _read_quilt_args(patch_ids=["patch1"], patch_keys=["file_a"])
             )
 
     async def test_partial_pair_exits(self) -> None:
@@ -1048,7 +1169,7 @@ class TestReadQuilt:
         monkeypatch.setattr(
             tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
         )
-        await tusky_cmds_read.read_quilt(_read_quilt_args(patch_id="patch1"))
+        await tusky_cmds_read.read_quilt(_read_quilt_args(patch_ids=["patch1"]))
         assert isinstance(client.received_command, ReadQuiltPatchById)
         assert client.received_command.patch_id == "patch1"
 
@@ -1065,8 +1186,217 @@ class TestReadQuilt:
             tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
         )
         await tusky_cmds_read.read_quilt(
-            _read_quilt_args(quilt_id="q1", patch_key="file_a")
+            _read_quilt_args(quilt_id="q1", patch_keys=["file_a"])
         )
         assert isinstance(client.received_command, ReadQuiltPatch)
         assert client.received_command.quilt_id == "q1"
         assert client.received_command.patch_key == "file_a"
+
+    async def test_refuses_tty_when_no_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(_read_quilt_args(patch_ids=["patch1"]))
+
+    async def test_writes_content_to_file_when_file_given(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        client = _FakeReadQuiltClient(
+            result=SuiRpcResult(True, "", QuiltPatch(content=b"hello"))
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        target = tmp_path / "out.bin"
+        await tusky_cmds_read.read_quilt(
+            _read_quilt_args(patch_ids=["patch1"], file=target)
+        )
+        assert target.read_bytes() == b"hello"
+        assert f"Wrote 5 bytes to {target}" in capsys.readouterr().out
+
+    async def test_multiple_patch_ids_without_out_dir_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(
+                _read_quilt_args(patch_ids=["patch1", "patch2"])
+            )
+
+    async def test_file_and_out_dir_together_exits(self, tmp_path: Path) -> None:
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(
+                _read_quilt_args(
+                    patch_ids=["patch1"], file=tmp_path / "a", out_dir=tmp_path
+                )
+            )
+
+    async def test_malformed_tag_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(
+                _read_quilt_args(quilt_id="q1", tags=["no-equals-sign"])
+            )
+
+    async def test_batch_patch_ids_writes_out_dir(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        client = _FakeMultiReadQuiltClient(
+            results=[
+                SuiRpcResult(True, "", QuiltPatch(content=b"one")),
+                SuiRpcResult(True, "", QuiltPatch(content=b"two")),
+            ]
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        await tusky_cmds_read.read_quilt(
+            _read_quilt_args(patch_ids=["patch1", "patch2"], out_dir=tmp_path)
+        )
+        assert (tmp_path / "patch1").read_bytes() == b"one"
+        assert (tmp_path / "patch2").read_bytes() == b"two"
+        assert len(client.received_commands) == 2
+        assert client.received_commands[0].patch_id == "patch1"
+        assert client.received_commands[1].patch_id == "patch2"
+
+    async def test_batch_patch_keys_writes_out_dir(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        client = _FakeMultiReadQuiltClient(
+            results=[
+                SuiRpcResult(True, "", QuiltPatch(content=b"one")),
+                SuiRpcResult(True, "", QuiltPatch(content=b"two")),
+            ]
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        await tusky_cmds_read.read_quilt(
+            _read_quilt_args(
+                quilt_id="q1",
+                patch_keys=["file_a", "file_b"],
+                out_dir=tmp_path,
+            )
+        )
+        assert (tmp_path / "file_a").read_bytes() == b"one"
+        assert (tmp_path / "file_b").read_bytes() == b"two"
+
+    async def test_tag_match_resolves_and_writes_out_dir(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        listing = QuiltPatchListing(
+            patches=[
+                QuiltPatchItem(
+                    patch_key="file_a",
+                    patch_id="pid_a",
+                    tags={"kind": "image"},
+                ),
+                QuiltPatchItem(
+                    patch_key="file_b",
+                    patch_id="pid_b",
+                    tags={"kind": "text"},
+                ),
+            ]
+        )
+        client = _FakeMultiReadQuiltClient(
+            results=[
+                SuiRpcResult(True, "", listing),
+                SuiRpcResult(True, "", QuiltPatch(content=b"image-bytes")),
+            ]
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        await tusky_cmds_read.read_quilt(
+            _read_quilt_args(
+                quilt_id="q1", tags=["kind=image"], out_dir=tmp_path
+            )
+        )
+        assert (tmp_path / "file_a").read_bytes() == b"image-bytes"
+        assert isinstance(client.received_commands[0], ReadQuiltPatches)
+        assert isinstance(client.received_commands[1], ReadQuiltPatchById)
+        assert client.received_commands[1].patch_id == "pid_a"
+
+    async def test_tag_no_match_exits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        listing = QuiltPatchListing(
+            patches=[
+                QuiltPatchItem(
+                    patch_key="file_a", patch_id="pid_a", tags={"kind": "text"}
+                ),
+            ]
+        )
+        client = _FakeMultiReadQuiltClient(
+            results=[SuiRpcResult(True, "", listing)]
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(
+                _read_quilt_args(
+                    quilt_id="q1", tags=["kind=image"], out_dir=tmp_path
+                )
+            )
+
+    async def test_duplicate_output_names_exits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        client = _FakeMultiReadQuiltClient(
+            results=[
+                SuiRpcResult(True, "", QuiltPatch(content=b"one")),
+                SuiRpcResult(True, "", QuiltPatch(content=b"two")),
+            ]
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "config_from_args", lambda args: object()
+        )
+        monkeypatch.setattr(
+            tusky_cmds_read, "WalrusClient", lambda *, pytusk_config: client
+        )
+        with pytest.raises(SystemExit):
+            await tusky_cmds_read.read_quilt(
+                _read_quilt_args(
+                    patch_ids=["patch1", "patch1"], out_dir=tmp_path
+                )
+            )
+
+    async def test_safe_out_name_strips_path_traversal(self) -> None:
+        assert tusky_cmds_read._safe_out_name("../../etc/passwd") == "passwd"
+        assert tusky_cmds_read._safe_out_name("plain-key") == "plain-key"
+        assert tusky_cmds_read._safe_out_name("..") == "patch"
+        assert tusky_cmds_read._safe_out_name("") == "patch"
+
+    def test_parse_tag_splits_key_value(self) -> None:
+        assert tusky_cmds_read._parse_tag("kind=image") == ("kind", "image")
+        assert tusky_cmds_read._parse_tag("k=v=w") == ("k", "v=w")
+
+    def test_parse_tag_rejects_missing_equals(self) -> None:
+        with pytest.raises(SystemExit):
+            tusky_cmds_read._parse_tag("no-equals-sign")

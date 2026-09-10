@@ -16,7 +16,7 @@ import logging
 import time
 
 from pytusk.client.walrus_client import WalrusClient
-from pytusk.commands.relay_commands import UploadRelayBlob
+from pytusk.commands.relay_commands import WriteRelayBlob
 from pytusk.core.types import RelayUploadOutcome, RelayUploadResult
 
 __all__ = [
@@ -108,7 +108,7 @@ async def upload_to_relay(
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be at least 1, got {max_attempts}")
 
-    command = UploadRelayBlob(
+    command = WriteRelayBlob(
         blob_id=blob_id,
         data=data,
         register_tip_tx_digest=register_tip_tx_digest,
